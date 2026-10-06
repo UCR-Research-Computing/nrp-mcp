@@ -24,7 +24,7 @@ Assistant:  Running on an RTX A4000... Finished in 41 minutes. Copy results/ bac
 ```
 
 Built by [UCR Research Computing](https://ucr-research-computing.github.io/). Works with
-Claude Code, Claude Desktop, Gemini CLI, VS Code, Cursor and any other MCP client.
+Hermes Agent, Gemini CLI, OpenCode, Claude Code, Claude Desktop, VS Code, Cursor and any other MCP client.
 
 ## Contents
 
@@ -88,13 +88,16 @@ signs you in through your browser. It ends with *"This computer is ready for Nau
 
 **4. Add it to your AI client**
 
-Claude Code:
+Tested end to end (live cluster, Gemini API key) with each of these:
 
-```
-claude mcp add nrp -- nrp-mcp serve
-```
+| Client | Add nrp |
+|---|---|
+| [Hermes Agent](https://hermes-agent.nousresearch.com/) | `hermes mcp add nrp --command nrp-mcp --args serve` |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `gemini mcp add nrp nrp-mcp serve` |
+| [OpenCode](https://opencode.ai/) | add `"mcp": {"nrp": {"type": "local", "command": ["nrp-mcp", "serve"]}}` to `opencode.json` |
+| Claude Code | `claude mcp add nrp -- nrp-mcp serve` |
 
-Claude Desktop, Cursor, VS Code, Gemini CLI and others (`mcpServers` block):
+Claude Desktop, Cursor, VS Code and others (`mcpServers` block):
 
 ```json
 {"mcpServers": {"nrp": {"command": "nrp-mcp", "args": ["serve"]}}}
@@ -186,7 +189,7 @@ Command-line flags for `serve`, `setup` and `doctor`: `--kubeconfig`, `--context
 ## How it works
 
 ```
-AI client (Claude Code, Claude Desktop, Gemini CLI, VS Code, Cursor, ...)
+AI client (Hermes Agent, Gemini CLI, OpenCode, Claude Code, ...)
    | MCP over stdio
 nrp-mcp serve                    on your computer
    |-- inspect   reads your project folder (language, GPU use, entry point, web app, Slurm script)

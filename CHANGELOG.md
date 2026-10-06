@@ -3,6 +3,15 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before 1.0
 minor versions may change behavior.
 
+## [0.6.2] - 2026-10-06
+
+### Fixed
+
+- Gemini models rejected the `nrp_plan` tool schema (`urls` was typed `["null", "array"]`;
+  Gemini accepts one type per field), so OpenCode on a Gemini model failed before its first
+  call. Input schemas now use single types; a test checks every tool. Found by testing
+  Hermes Agent, Gemini CLI and OpenCode side by side with a Gemini API key.
+
 ## [0.6.1] - 2026-10-06
 
 - `nrp-mcp setup --no-sign-in` stops before the browser sign-in (CI, offline checks).

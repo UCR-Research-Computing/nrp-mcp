@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/google/jsonschema-go/jsonschema"
 	"net/http"
 	"os"
 	"os/exec"
@@ -250,7 +251,7 @@ func New(s *Server) *mcp.Server {
 			return nil, st, err
 		})
 
-	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_plan", Description: "Plan work on Nautilus from a project folder and a goal (job, sweep, web, session, llm-batch, volume, pull). Inspects the code (language, GPU use, entry point, web app, Slurm script), picks an image, sizes it, applies every NRP rule, and returns a plain-language summary, decisions, refusals, manifests and, if runnable, a single-use confirm_token for nrp_run. Creates nothing. For web, suggests names.", Annotations: readOnly("Plan")}, s.planTool)
+	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_plan", Description: "Plan work on Nautilus from a project folder and a goal (job, sweep, web, session, llm-batch, volume, pull). Inspects the code (language, GPU use, entry point, web app, Slurm script), picks an image, sizes it, applies every NRP rule, and returns a plain-language summary, decisions, refusals, manifests and, if runnable, a single-use confirm_token for nrp_run. Creates nothing. For web, suggests names.", Annotations: readOnly("Plan"), InputSchema: singleTypeSchema[planIn]()}, s.planTool)
 
 	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_run", Description: "Run an approved plan: needs plan_id and the confirm_token from nrp_plan (single use, 10 minutes, bound to the exact plan). Web plans also need public_ack equal to the plan's public URL. Validates with a server dry run, applies, labels everything for cleanup, writes a run card in the project's .nrp/runs/.", Annotations: writes("Run", false)}, s.runTool)
 
@@ -883,5 +884,44 @@ func addPrompts(srv *mcp.Server) {
 			func(context.Context, *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
 				return &mcp.GetPromptResult{Description: p.title, Messages: []*mcp.PromptMessage{{Role: "user", Content: &mcp.TextContent{Text: p.text}}}}, nil
 			})
+	}
+}
+
+// singleTypeSchema infers the input schema for T and rewrites every nullable union
+// ("type": ["null", "array"], which jsonschema-go emits for Go slices and maps) to the
+// single non-null type. Gemini's function declarations accept one type per field and
+// reject the union outright ("field predicate failed: $type == Type.ARRAY"), so a client
+// such as OpenCode on a Gemini model fails before the first call. An omitted field
+// already means "not set", so nothing is lost.
+func singleTypeSchema[T any]() *jsonschema.Schema {
+	s, err := jsonschema.For[T](nil)
+	if err != nil {
+		panic(err)
+	}
+	collapseNullable(s)
+	return s
+}
+
+func collapseNullable(s *jsonschema.Schema) {
+	if s == nil {
+		return
+	}
+	if len(s.Types) > 0 {
+		var keep []string
+		for _, t := range s.Types {
+			if t != "null" {
+				keep = append(keep, t)
+			}
+		}
+		if len(keep) == 1 {
+			s.Type, s.Types = keep[0], nil
+		}
+	}
+	collapseNullable(s.Items)
+	for _, p := range s.Properties {
+		collapseNullable(p)
+	}
+	for _, sub := range s.AnyOf {
+		collapseNullable(sub)
 	}
 }
