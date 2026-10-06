@@ -1,8 +1,11 @@
 package plan
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -129,8 +132,13 @@ func TestSlurmTranslation(t *testing.T) {
 	if *js.ActiveDeadlineSeconds != 27*3600 {
 		t.Fatalf("deadline %d", *js.ActiveDeadlineSeconds)
 	}
-	if !strings.Contains(c.Command[2], "fold.py $JOB_COMPLETION_INDEX") {
+	// --array=1-50%10: Slurm ids 1..50, ten at a time, and the script keeps reading
+	// $SLURM_ARRAY_TASK_ID (now set per task).
+	if !strings.Contains(c.Command[2], "SLURM_ARRAY_TASK_ID=$((1 + JOB_COMPLETION_INDEX))") || !strings.HasSuffix(c.Command[2], "python fold.py $SLURM_ARRAY_TASK_ID") {
 		t.Fatalf("command %v", c.Command)
+	}
+	if *js.Parallelism != 10 {
+		t.Fatalf("parallelism %d, want 10 from %%10", *js.Parallelism)
 	}
 	if len(p.Slurm) < 7 {
 		t.Fatalf("mapping %v", p.Slurm)
@@ -171,5 +179,67 @@ func TestDNSName(t *testing.T) {
 		if got := DNSName(in); got != want {
 			t.Errorf("%q -> %q want %q", in, got, want)
 		}
+	}
+}
+
+func TestArrayIDs(t *testing.T) {
+	cases := []struct {
+		in       string
+		want     []int
+		throttle int
+	}{
+		{"0-9", []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, 0},
+		{"1-5%2", []int{1, 2, 3, 4, 5}, 2},
+		{"0-20:5", []int{0, 5, 10, 15, 20}, 0},
+		{"1,3,7", []int{1, 3, 7}, 0},
+		{"2,4-6", []int{2, 4, 5, 6}, 0},
+		{"5", []int{5}, 0},
+		{"9-1", nil, 0},
+	}
+	for _, c := range cases {
+		got, th := arrayIDs(c.in)
+		if fmt.Sprint(got) != fmt.Sprint(c.want) || th != c.throttle {
+			t.Errorf("%s: got %v %%%d, want %v %%%d", c.in, got, th, c.want, c.throttle)
+		}
+	}
+	if ids, _ := arrayIDs("0-999999"); len(ids) != maxArrayTasks {
+		t.Errorf("cap: %d", len(ids))
+	}
+}
+
+// Run the exact shell prefix nrp puts in the pod, once per task index, and check that
+// every task sees a different SLURM_ARRAY_TASK_ID matching the Slurm ids.
+func TestArrayEnvGivesEachTaskItsOwnID(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("no bash")
+	}
+	for _, spec := range []string{"0-9", "1-5", "0-20:5", "1,3,7", "2,4-6"} {
+		ids, _ := arrayIDs(spec)
+		pre := arrayEnv(ids, len(ids))
+		for i, want := range ids {
+			cmd := exec.Command(bash, "-c", "set -e; "+pre+"echo $SLURM_ARRAY_TASK_ID $SLURM_ARRAY_TASK_COUNT")
+			cmd.Env = []string{"JOB_COMPLETION_INDEX=" + strconv.Itoa(i), "PATH=/usr/bin:/bin"}
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%s task %d: %v %s", spec, i, err, out)
+			}
+			if got := strings.TrimSpace(string(out)); got != fmt.Sprintf("%d %d", want, len(ids)) {
+				t.Errorf("%s task %d: got %q, want id %d", spec, i, got, want)
+			}
+		}
+	}
+}
+
+// A sweep made from count alone (no Slurm script) still gets SLURM_ARRAY_TASK_ID = index.
+func TestPlainSweepSetsArrayID(t *testing.T) {
+	f := proj(t, map[string]string{"task.py": "import os\nprint(os.environ['SLURM_ARRAY_TASK_ID'])\n"})
+	p, err := Build(f, Request{Namespace: "ucr-example", Goal: GoalSweep, Count: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := p.Objects[len(p.Objects)-1].JobSpec.Template.Spec.Containers[0]
+	if !strings.Contains(c.Command[2], "export SLURM_ARRAY_TASK_ID=$JOB_COMPLETION_INDEX SLURM_ARRAY_TASK_COUNT=4") {
+		t.Fatalf("command %v", c.Command)
 	}
 }

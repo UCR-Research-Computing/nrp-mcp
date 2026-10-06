@@ -3,6 +3,23 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before 1.0
 minor versions may change behavior.
 
+## [0.6.3] - 2026-10-06
+
+### Fixed
+
+- Slurm array scripts ran every task with the same id. nrp renamed `$SLURM_ARRAY_TASK_ID`
+  in the command line but not inside the script, so a script that read the variable (as
+  most do) saw it empty in every task: ten tasks, ten identical answers. Each sweep task
+  now gets Slurm's array variables (`SLURM_ARRAY_TASK_ID`, `_COUNT`, `_MIN`, `_MAX`) set
+  from `$JOB_COMPLETION_INDEX`, mapped to the script's real ids: `--array=1-50` gives
+  1..50, `0-20:5` gives 0, 5, .., 20, and lists like `1,3,7` work. The same file now runs
+  unchanged on Slurm and on Nautilus. `%N` becomes the sweep's parallelism.
+
+### Added
+
+- `examples/slurm-array-bootstrap`: an R bootstrap with a `--array=0-9` Slurm script.
+- `scripts/e2earray`: live check that every array task gets a distinct id and result.
+
 ## [0.6.2] - 2026-10-06
 
 ### Fixed

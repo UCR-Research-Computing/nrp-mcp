@@ -54,6 +54,7 @@ type Request struct {
 	URLs      []string // pull: files to download
 	Subdir    string   // pull: folder inside the volume
 	DataIsP1  bool     // pull/volume: user confirmed the data is P1 (non-sensitive)
+	ArrayIDs  []int    // sweep from a Slurm --array: the task ids, in order
 }
 
 // Plan is the reviewed result.
@@ -367,6 +368,9 @@ func buildJob(f *inspect.Facts, r Request, p *Plan) error {
 		p.Decisions = append(p.Decisions, "Installs requirements.txt at start (fine for small projects; for big ones build an image with nrp_build).")
 	}
 	script := "set -e; cd /work; " + install + cmd
+	if r.Goal == GoalSweep && r.Count > 0 {
+		script = "set -e; cd /work; " + arrayEnv(r.ArrayIDs, r.Count) + install + cmd
+	}
 	ctr := k8s.Container{Name: "main", Image: p.Image, Command: []string{"bash", "-c", script}, WorkingDir: "/work", Resources: res,
 		VolumeMounts: []k8s.Mount{{Name: "code", MountPath: "/work"}}}
 	vols := []k8s.Volume{{Name: "code", EmptyDir: &k8s.EmptyDir{}}}
@@ -413,7 +417,15 @@ func buildJob(f *inspect.Facts, r Request, p *Plan) error {
 		}
 		js.Completions, js.Parallelism, js.CompletionMode = k8s.IntPtr(n), k8s.IntPtr(par), "Indexed"
 		js.BackoffLimit = k8s.IntPtr(max(2, n/10))
-		p.Decisions = append(p.Decisions, fmt.Sprintf("Indexed Job: %d tasks, %d at a time. Each task reads its number from $JOB_COMPLETION_INDEX (0..%d) to pick its parameters.", n, par, n-1))
+		ids := r.ArrayIDs
+		if len(ids) != n {
+			ids = nil
+		}
+		task := fmt.Sprintf("0..%d", n-1)
+		if ids != nil {
+			task = idRange(ids)
+		}
+		p.Decisions = append(p.Decisions, fmt.Sprintf("Indexed Job: %d tasks, %d at a time. Each task gets its own number in $SLURM_ARRAY_TASK_ID (%s) and $JOB_COMPLETION_INDEX (0..%d); seed or pick parameters from it.", n, par, task, n-1))
 	}
 	p.Objects = append(p.Objects, k8s.Object{APIVersion: "batch/v1", Kind: "Job", Metadata: k8s.Meta{Name: p.Name + "-" + shortRun(p.Run), Namespace: r.Namespace, Labels: copyLabels(p.Labels), Annotations: owner(r)}, JobSpec: js})
 	p.Extra["code_delivery"] = "nrp_run copies your project (small text files, no data or secrets) into the Job with a ConfigMap; large projects should use nrp_build or git"
@@ -702,14 +714,23 @@ func translateSlurm(f *inspect.Facts, r *Request) []SlurmMapping {
 				}
 				out = append(out, SlurmMapping{t, fmt.Sprintf("activeDeadlineSeconds %d (%d h)", h*3600, h)})
 			case "--array", "-a":
-				n := arrayCount(val)
+				ids, throttle := arrayIDs(val)
+				n := len(ids)
 				if n > 0 && r.Count == 0 {
 					r.Count = n
+					r.ArrayIDs = ids
 					if r.Goal == "" || r.Goal == GoalJob {
 						r.Goal = GoalSweep
 					}
 				}
-				out = append(out, SlurmMapping{t, fmt.Sprintf("Indexed Job with %d tasks; $SLURM_ARRAY_TASK_ID becomes $JOB_COMPLETION_INDEX", n)})
+				if throttle > 0 && r.Parallel == 0 {
+					r.Parallel = throttle
+				}
+				msg := fmt.Sprintf("Indexed Job with %d tasks; each task gets its own $SLURM_ARRAY_TASK_ID (%s), set from $JOB_COMPLETION_INDEX", n, idRange(ids))
+				if throttle > 0 {
+					msg += fmt.Sprintf("; %%%d becomes parallelism %d", throttle, throttle)
+				}
+				out = append(out, SlurmMapping{t, msg})
 			case "--partition", "-p", "--account", "-A", "--qos":
 				out = append(out, SlurmMapping{t, "no equivalent: Kubernetes picks a node that fits the request"})
 			case "--job-name", "-J":
@@ -731,7 +752,7 @@ func translateSlurm(f *inspect.Facts, r *Request) []SlurmMapping {
 			out = append(out, SlurmMapping{t, "replaced by the container image"})
 			continue
 		}
-		cmds = append(cmds, strings.ReplaceAll(t, "$SLURM_ARRAY_TASK_ID", "$JOB_COMPLETION_INDEX"))
+		cmds = append(cmds, t)
 	}
 	if r.Command == "" && len(cmds) > 0 {
 		r.Command = strings.Join(cmds, " && ")
@@ -776,19 +797,118 @@ func slurmHours(v string) int {
 	return days*24 + h
 }
 
-func arrayCount(v string) int {
-	v = strings.Split(v, "%")[0]
-	total := 0
+// arrayIDs expands a Slurm --array value ("0-9", "1-50%10", "1,3,7", "0-20:2") into its
+// task ids, in order, and returns the "%N" concurrency limit (0 if none). Ids are capped
+// at maxArrayTasks so a typo cannot plan a million pods.
+func arrayIDs(v string) ([]int, int) {
+	throttle := 0
+	if i := strings.Index(v, "%"); i >= 0 {
+		throttle, _ = strconv.Atoi(v[i+1:])
+		v = v[:i]
+	}
+	var ids []int
 	for _, part := range strings.Split(v, ",") {
-		if i := strings.Index(part, "-"); i >= 0 {
-			a, _ := strconv.Atoi(part[:i])
-			b, _ := strconv.Atoi(strings.Split(part[i+1:], ":")[0])
-			total += b - a + 1
-		} else if part != "" {
-			total++
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		step := 1
+		if i := strings.Index(part, ":"); i >= 0 {
+			if s, err := strconv.Atoi(part[i+1:]); err == nil && s > 0 {
+				step = s
+			}
+			part = part[:i]
+		}
+		a, b := part, part
+		if i := strings.Index(part, "-"); i > 0 {
+			a, b = part[:i], part[i+1:]
+		}
+		lo, err1 := strconv.Atoi(a)
+		hi, err2 := strconv.Atoi(b)
+		if err1 != nil || err2 != nil || hi < lo {
+			continue
+		}
+		for x := lo; x <= hi && len(ids) < maxArrayTasks; x += step {
+			ids = append(ids, x)
 		}
 	}
-	return total
+	return ids, throttle
+}
+
+const maxArrayTasks = 10000
+
+// idRange describes ids for people: "0..9", "1..50", "0..20 step 2", or "1, 3, 7".
+func idRange(ids []int) string {
+	if len(ids) == 0 {
+		return "none"
+	}
+	if lo, step, ok := arithmetic(ids); ok {
+		hi := ids[len(ids)-1]
+		if step == 1 {
+			return fmt.Sprintf("%d..%d", lo, hi)
+		}
+		return fmt.Sprintf("%d..%d step %d", lo, hi, step)
+	}
+	s := make([]string, len(ids))
+	for i, x := range ids {
+		s[i] = strconv.Itoa(x)
+	}
+	return strings.Join(s, ", ")
+}
+
+// arithmetic reports whether ids is lo, lo+step, lo+2*step, ...
+func arithmetic(ids []int) (lo, step int, ok bool) {
+	if len(ids) == 0 {
+		return 0, 0, false
+	}
+	lo, step = ids[0], 1
+	if len(ids) > 1 {
+		step = ids[1] - ids[0]
+	}
+	if step <= 0 {
+		return 0, 0, false
+	}
+	for i, x := range ids {
+		if x != lo+i*step {
+			return 0, 0, false
+		}
+	}
+	return lo, step, true
+}
+
+// arrayEnv is the shell prefix that gives each sweep task Slurm's array variables, so a
+// script written for Slurm (reading $SLURM_ARRAY_TASK_ID) gets a different id per task
+// instead of the same empty value. Kubernetes numbers tasks 0..n-1 in
+// $JOB_COMPLETION_INDEX; Slurm ids can start at 1, skip by a step, or be a list.
+func arrayEnv(ids []int, n int) string {
+	if len(ids) != n {
+		ids = make([]int, n)
+		for i := range ids {
+			ids[i] = i
+		}
+	}
+	var id string
+	if lo, step, ok := arithmetic(ids); ok {
+		switch {
+		case lo == 0 && step == 1:
+			id = "$JOB_COMPLETION_INDEX"
+		case step == 1:
+			id = fmt.Sprintf("$((%d + JOB_COMPLETION_INDEX))", lo)
+		default:
+			id = fmt.Sprintf("$((%d + JOB_COMPLETION_INDEX * %d))", lo, step)
+		}
+	} else {
+		s := make([]string, len(ids))
+		for i, x := range ids {
+			s[i] = strconv.Itoa(x)
+		}
+		id = "$(set -- " + strings.Join(s, " ") + "; shift $JOB_COMPLETION_INDEX; echo $1)"
+	}
+	mn, mx := ids[0], ids[0]
+	for _, x := range ids {
+		mn, mx = min(mn, x), max(mx, x)
+	}
+	return fmt.Sprintf("export SLURM_ARRAY_TASK_ID=%s SLURM_ARRAY_TASK_COUNT=%d SLURM_ARRAY_TASK_MIN=%d SLURM_ARRAY_TASK_MAX=%d; ", id, n, mn, mx)
 }
 
 func buildVolume(r Request, p *Plan) error {

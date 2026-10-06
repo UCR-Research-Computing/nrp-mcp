@@ -104,7 +104,7 @@ useful the `kubectl` equivalent so people learn. Errors are explanations, not st
 | Goal | Workload | Notes |
 |---|---|---|
 | `job` | `batch/v1 Job` | default; one run to completion |
-| `sweep` | Indexed Job | `count` tasks, `parallel` at a time; task index in `JOB_COMPLETION_INDEX`; >100 tasks forces limits = requests |
+| `sweep` | Indexed Job | `count` tasks, `parallel` at a time; task index in `JOB_COMPLETION_INDEX`, plus `SLURM_ARRAY_TASK_ID` (the Slurm `--array` id when translated from a script, else the index); >100 tasks forces limits = requests |
 | `web` | Deployment + Service + Ingress | app type detection (Shiny 3838, Streamlit 8501, Flask/FastAPI/uvicorn 8000/5000, static nginx 80, Node 3000), readiness probe, no GPU, TLS, suggested hosts |
 | `session` | Deployment (1 replica) | used by `nrp_session` |
 | `llm-batch` | Job | LLM token in a Secret; script retries with backoff; `cache_salt` advice |
