@@ -151,7 +151,7 @@ Also served: resources `nrp://policy`, `nrp://gpus`, `nrp://storage`, `nrp://llm
   A plan that breaks a rule is refused, with the reason and the fix.
 - **Shared namespaces are safe.** Every object is labelled with its owner, and cleanup only
   sees your own runs unless you are the namespace admin and ask for everyone's.
-- **Caps** on pods, GPUs and hours per run.
+- **Caps** on pods and GPUs running at once, tasks per sweep, and hours per run.
 - **Audit log** of every change at `~/.local/state/nrp-mcp/audit.log`.
 - **Setup only touches your user folder.** kubectl and kubelogin go into `~/.local/bin`
   (Windows: `%LOCALAPPDATA%\Programs\nrp-mcp\bin`). They come only from dl.k8s.io and the
@@ -168,8 +168,9 @@ kubeconfig: ~/.kube/config    # the NRP config from https://nrp.ai/config
 context: nautilus
 namespace: my-lab             # default namespace
 kubectl: kubectl              # full path if kubectl is not on PATH
-pods_per_run: 50              # plans over these caps are refused
-gpus_per_run: 4
+pods_per_run: 50              # pods at the same time; plans over these caps are refused
+gpus_per_run: 4               # GPUs in use at the same time
+tasks_per_run: 10000          # total tasks in one sweep
 hours_per_run: 48
 upload_gb_per_run: 50
 ```

@@ -3,6 +3,19 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before 1.0
 minor versions may change behavior.
 
+## [0.6.4] - 2026-10-06
+
+### Fixed
+
+- The pod and GPU caps counted every task in a sweep instead of the tasks running at the
+  same time, so a 1,000-task sweep run 50 at a time was refused under the default
+  `pods_per_run: 50`. `pods_per_run` and `gpus_per_run` now limit what runs at once
+  (a Job counts min(parallelism, completions)), and the refusal says to lower `parallel`
+  rather than the count. A new cap, `tasks_per_run` (default 10,000), limits a sweep's
+  total. The NRP's rule that more than 100 pods need limit = request still counts the
+  total, conservatively. Found while writing realistic research examples, where most large
+  sweeps hit it.
+
 ## [0.6.3] - 2026-10-06
 
 ### Fixed

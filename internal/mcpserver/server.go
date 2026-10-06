@@ -228,7 +228,7 @@ func (s *Server) nsCtx(ctx context.Context, in string) string {
 }
 
 func (s *Server) ruleCtx(ctx context.Context, ns string, p *plan.Plan) rules.Context {
-	rc := rules.Context{PodsPerRun: s.Cfg.PodsPerRun, GPUsPerRun: s.Cfg.GPUsPerRun, HoursPerRun: s.Cfg.HoursPerRun, Session: p.Goal == plan.GoalSession}
+	rc := rules.Context{PodsPerRun: s.Cfg.PodsPerRun, GPUsPerRun: s.Cfg.GPUsPerRun, HoursPerRun: s.Cfg.HoursPerRun, TasksPerRun: s.Cfg.TasksPerRun, Session: p.Goal == plan.GoalSession}
 	if p.Goal == plan.GoalSweep {
 		if v, ok := p.Request["Count"].(float64); ok {
 			rc.SweepCount = int(v)
