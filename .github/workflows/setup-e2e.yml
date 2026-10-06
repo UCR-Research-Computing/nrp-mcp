@@ -35,8 +35,13 @@ jobs:
           mkdir -p "$FRESH/Downloads"
           cp testdata/nrp-sample-kubeconfig.yaml "$FRESH/Downloads/config"
           echo "FRESH=$FRESH" >> "$GITHUB_ENV"
-          # Hide any kubectl the runner image ships, so setup must install its own.
-          echo "CLEANPATH=$(dirname "$(command -v bash)"):/usr/bin:/bin" >> "$GITHUB_ENV"
+          # A PATH with only the basic tools setup needs, and no kubectl: runner images
+          # ship one in /usr/bin or /usr/local/bin, which would hide the fresh install.
+          SAFE="$RUNNER_TEMP/safe-bin"; mkdir -p "$SAFE"
+          for tool in sh bash env uname; do
+            p="$(command -v "$tool" || true)"; [ -n "$p" ] && ln -sf "$p" "$SAFE/$tool"
+          done
+          echo "CLEANPATH=$SAFE" >> "$GITHUB_ENV"
       - name: nrp-mcp setup (fresh machine)
         run: |
           set -euo pipefail
@@ -50,6 +55,7 @@ jobs:
           fi
           grep -q "installed kubectl" setup.out
           grep -q "installed kubelogin" setup.out
+          ! grep -E "ok +kubectl .* at /usr" setup.out
           grep -q "SHA256 verified" setup.out
           grep -q "copied the NRP config" setup.out
           grep -q "Everything is in place" setup.out

@@ -73,19 +73,21 @@ type Env struct {
 	Run          func(ctx context.Context, name string, args ...string) ([]byte, error)
 	LookPath     func(string) (string, error)
 	Now          func() time.Time
-	Downloads    []string      // folders to look for a downloaded NRP config
-	cluster      func() string // tests: cluster version instead of asking the server
+	Downloads    []string                                              // folders to look for a downloaded NRP config
+	cluster      func() string                                         // tests: cluster version instead of asking the server
+	Redirect     func(ctx context.Context, url string) (string, error) // nil: real HEAD request
 }
 
 // Defaults for the NRP.
 const (
-	NRPServerHint  = "nrp-nautilus.io"
-	NRPConfigURL   = "https://nrp.ai/config"
-	KubectlBase    = "https://dl.k8s.io/release"
-	KubeloginAPI   = "https://api.github.com/repos/int128/kubelogin/releases/latest"
-	KubeloginBase  = "https://github.com/int128/kubelogin/releases/download"
-	maxDownload    = 200 << 20
-	defaultContext = "nautilus"
+	NRPServerHint   = "nrp-nautilus.io"
+	NRPConfigURL    = "https://nrp.ai/config"
+	KubectlBase     = "https://dl.k8s.io/release"
+	KubeloginAPI    = "https://api.github.com/repos/int128/kubelogin/releases/latest"
+	KubeloginLatest = "https://github.com/int128/kubelogin/releases/latest"
+	KubeloginBase   = "https://github.com/int128/kubelogin/releases/download"
+	maxDownload     = 200 << 20
+	defaultContext  = "nautilus"
 )
 
 // DefaultEnv builds an Env for this machine.
@@ -676,10 +678,25 @@ func (e *Env) installKubectl(ctx context.Context) (string, error) {
 	return msg, nil
 }
 
-func (e *Env) installKubelogin(ctx context.Context) (string, error) {
+// kubeloginTag finds the latest kubelogin release. The github.com "latest" page
+// redirects to /releases/tag/<tag> and is not rate-limited; the GitHub API allows 60
+// unauthenticated calls an hour per IP address, which a classroom on one campus network
+// can exhaust, so it is only the fallback.
+func (e *Env) kubeloginTag(ctx context.Context) (string, error) {
+	resolve := e.Redirect
+	if resolve == nil {
+		resolve = finalURL
+	}
+	if u, err := resolve(ctx, KubeloginLatest); err == nil {
+		if i := strings.LastIndex(u, "/tag/"); i >= 0 {
+			if tag := u[i+5:]; verRe.MatchString(tag) {
+				return tag, nil
+			}
+		}
+	}
 	b, err := e.HTTP(ctx, KubeloginAPI)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("could not find the latest kubelogin release: %w", err)
 	}
 	var rel struct {
 		Tag string `json:"tag_name"`
@@ -687,6 +704,34 @@ func (e *Env) installKubelogin(ctx context.Context) (string, error) {
 	if err := json.Unmarshal(b, &rel); err != nil || !verRe.MatchString(rel.Tag) {
 		return "", fmt.Errorf("could not read the latest kubelogin release")
 	}
+	return rel.Tag, nil
+}
+
+// finalURL returns where url redirects to (one hop), without downloading a body.
+func finalURL(ctx context.Context, url string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "nrp-mcp-setup")
+	c := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	r, err := c.Do(req)
+	if err != nil {
+		return "", err
+	}
+	r.Body.Close()
+	if loc := r.Header.Get("Location"); loc != "" {
+		return loc, nil
+	}
+	return "", fmt.Errorf("no redirect from %s (HTTP %d)", url, r.StatusCode)
+}
+
+func (e *Env) installKubelogin(ctx context.Context) (string, error) {
+	tag, err := e.kubeloginTag(ctx)
+	if err != nil {
+		return "", err
+	}
+	rel := struct{ Tag string }{tag}
 	asset := fmt.Sprintf("kubelogin_%s_%s.zip", e.GOOS, e.GOARCH)
 	url := fmt.Sprintf("%s/%s/%s", KubeloginBase, rel.Tag, asset)
 	z, err := e.HTTP(ctx, url)

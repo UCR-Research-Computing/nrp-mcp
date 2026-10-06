@@ -77,6 +77,9 @@ func fakeEnv(t *testing.T, tamper bool) (*Env, *[]string) {
 		return nil, fmt.Errorf("404 %s", url)
 	}
 	e.LookPath = func(name string) (string, error) { return "", errors.New("not found") }
+	e.Redirect = func(_ context.Context, url string) (string, error) {
+		return "", errors.New("no network in tests") // exercises the API fallback
+	}
 	e.Run = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		j := strings.Join(args, " ")
 		switch {
@@ -349,5 +352,26 @@ func TestKubeloginVersionFallbackAndBroken(t *testing.T) {
 	}
 	if status(e.Inspect(context.Background(), false), "kubelogin") != Problem {
 		t.Fatal("broken kubelogin reported ok")
+	}
+}
+
+func TestKubeloginTagPrefersRedirect(t *testing.T) {
+	e, fetched := fakeEnv(t, false)
+	e.Redirect = func(_ context.Context, url string) (string, error) {
+		return "https://github.com/int128/kubelogin/releases/tag/v1.36.4", nil
+	}
+	tag, err := e.kubeloginTag(context.Background())
+	if err != nil || tag != "v1.36.4" {
+		t.Fatalf("%q %v", tag, err)
+	}
+	for _, u := range *fetched {
+		if u == KubeloginAPI {
+			t.Fatal("used the rate-limited API although the redirect worked")
+		}
+	}
+	// Junk redirect: fall back to the API.
+	e.Redirect = func(_ context.Context, url string) (string, error) { return "https://github.com/login", nil }
+	if tag, err := e.kubeloginTag(context.Background()); err != nil || tag != "v1.36.4" {
+		t.Fatalf("fallback: %q %v", tag, err)
 	}
 }

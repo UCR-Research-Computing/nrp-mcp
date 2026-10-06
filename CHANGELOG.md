@@ -9,6 +9,9 @@ minor versions may change behavior.
 - Windows: setup now reads kubelogin's version there too (Windows kubelogin rejects
   `--version`; setup falls back to `version`, then `--help`), and a kubelogin that does not
   run at all is reported as a problem instead of ok. Found by the new Windows CI run.
+- setup finds the latest kubelogin through the github.com release redirect instead of the
+  GitHub API, which allows only 60 calls an hour per IP address (a classroom on one campus
+  network could hit it). The API stays as a fallback. Found by the macOS CI run (HTTP 403).
 - New CI workflow `setup-e2e`: on Linux, Windows, macOS (Apple Silicon) and macOS (Intel),
   a fresh home folder gets kubectl and kubelogin installed by `nrp-mcp setup` from the real
   release downloads, the sample NRP config placed, the tools run, and a second run changes
