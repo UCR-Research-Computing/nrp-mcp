@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security problem
+    url: https://github.com/UCR-Research-Computing/nrp-mcp/security/advisories/new
+    about: Report privately, please.
+  - name: Nautilus cluster support (NRP)
+    url: https://nrp.ai/contact
+    about: Accounts, namespaces, quotas and outages are handled by the NRP.

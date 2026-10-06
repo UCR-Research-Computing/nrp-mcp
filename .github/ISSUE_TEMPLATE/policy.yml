@@ -1,0 +1,21 @@
+name: NRP policy correction
+description: A rule or piece of NRP guidance in nrp-mcp is wrong or out of date
+labels: [policy]
+body:
+  - type: input
+    id: rule
+    attributes:
+      label: Rule id or resource
+      placeholder: R6, nrp://gpus
+  - type: input
+    id: source
+    attributes:
+      label: Link to the current NRP documentation
+    validations:
+      required: true
+  - type: textarea
+    id: change
+    attributes:
+      label: What should change?
+    validations:
+      required: true

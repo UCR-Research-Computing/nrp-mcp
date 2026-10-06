@@ -1,0 +1,5 @@
+/nrp-mcp
+/dist/
+.nrp/
+*.test
+.env*
