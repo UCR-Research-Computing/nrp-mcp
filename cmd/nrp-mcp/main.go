@@ -33,7 +33,7 @@ Usage:
   nrp-mcp serve      run the MCP server on stdio (what your MCP client starts)
   nrp-mcp setup      get this computer ready: checks kubectl, kubelogin, the NRP config and
                      sign-in, and offers to install or update what is missing (asks first;
-                     --yes to skip the question)
+                     --yes to skip the question, --no-sign-in to stop before the browser)
   nrp-mcp doctor     check kubectl, the NRP config and sign-in, and print your namespaces
   nrp-mcp init       write an example ~/.config/nrp-mcp/config.yaml (never overwrites)
   nrp-mcp version
@@ -62,6 +62,7 @@ func main() {
 		kctx := fs.String("context", "", "kubeconfig context (default nautilus)")
 		ns := fs.String("namespace", "", "default namespace")
 		yes := fs.Bool("yes", false, "setup: install without asking")
+		noSignIn := fs.Bool("no-sign-in", false, "setup: stop before the browser sign-in (CI, offline checks)")
 		_ = fs.Parse(args)
 		cfg := config.Load(*cfgPath)
 		if *kc != "" {
@@ -77,7 +78,7 @@ func main() {
 			os.Exit(runDoctor(cfg))
 		}
 		if cmd == "setup" {
-			os.Exit(runSetup(cfg, *yes))
+			os.Exit(runSetup(cfg, *yes, *noSignIn))
 		}
 		os.Exit(runServe(cfg))
 	case "-h", "--help", "help":
@@ -198,7 +199,7 @@ func printReport(r *setup.Report) {
 	}
 }
 
-func runSetup(cfg config.Config, yes bool) int {
+func runSetup(cfg config.Config, yes, noSignIn bool) int {
 	fmt.Printf("nrp-mcp %s setup (%s)\n\n", version.Version, "checks first, changes nothing without asking")
 	e := setup.DefaultEnv(cfg.Kubeconfig, cfg.Context, cfg.Kubectl)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
@@ -241,6 +242,11 @@ func runSetup(cfg config.Config, yes bool) int {
 		if c.Status != setup.OK && c.Status != setup.Note && c.ID != "signin" {
 			pending = true
 		}
+	}
+	if !pending && noSignIn {
+		fmt.Println("\nEverything is in place; sign-in skipped (--no-sign-in).")
+		fmt.Println("Next: run `nrp-mcp setup` again, or `kubectl auth whoami`, to sign in.")
+		return 0
 	}
 	if !pending {
 		fmt.Println("\nSigning in to Nautilus (your browser opens the first time)...")

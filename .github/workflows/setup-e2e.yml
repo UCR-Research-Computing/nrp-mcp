@@ -1,0 +1,91 @@
+name: setup-e2e
+# A fresh "laptop" on each OS: nrp-mcp setup installs kubectl and kubelogin from the
+# official releases (real downloads, SHA256 checked) into an empty home folder, places a
+# downloaded NRP config, and the installed tools must run. Browser sign-in is skipped.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * 1"   # weekly: catches upstream release or URL changes
+permissions:
+  contents: read
+jobs:
+  setup:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build
+        run: go build -o "$RUNNER_TEMP/nrp-mcp$( [ "$RUNNER_OS" = Windows ] && echo .exe )" ./cmd/nrp-mcp
+      - name: Fresh home with a downloaded NRP config
+        run: |
+          set -euo pipefail
+          FRESH="$RUNNER_TEMP/fresh-home"
+          mkdir -p "$FRESH/Downloads"
+          cp testdata/nrp-sample-kubeconfig.yaml "$FRESH/Downloads/config"
+          echo "FRESH=$FRESH" >> "$GITHUB_ENV"
+          # Hide any kubectl the runner image ships, so setup must install its own.
+          echo "CLEANPATH=$(dirname "$(command -v bash)"):/usr/bin:/bin" >> "$GITHUB_ENV"
+      - name: nrp-mcp setup (fresh machine)
+        run: |
+          set -euo pipefail
+          BIN="$RUNNER_TEMP/nrp-mcp"; [ "$RUNNER_OS" = Windows ] && BIN="$BIN.exe"
+          if [ "$RUNNER_OS" = Windows ]; then
+            export USERPROFILE="$(cygpath -w "$FRESH")" LOCALAPPDATA="$(cygpath -w "$FRESH/AppData/Local")"
+            mkdir -p "$FRESH/AppData/Local"
+            PATH="/usr/bin:/c/Windows/System32:/c/Windows" "$BIN" setup --yes --no-sign-in | tee setup.out
+          else
+            env -i HOME="$FRESH" PATH="$CLEANPATH" "$BIN" setup --yes --no-sign-in | tee setup.out
+          fi
+          grep -q "installed kubectl" setup.out
+          grep -q "installed kubelogin" setup.out
+          grep -q "SHA256 verified" setup.out
+          grep -q "copied the NRP config" setup.out
+          grep -q "Everything is in place" setup.out
+      - name: Installed tools run, config is in place
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = Windows ]; then
+            D="$FRESH/AppData/Local/Programs/nrp-mcp/bin"; K="$D/kubectl.exe"; L="$D/kubectl-oidc_login.exe"
+          else
+            D="$FRESH/.local/bin"; K="$D/kubectl"; L="$D/kubectl-oidc_login"
+          fi
+          ls -la "$D"
+          "$K" version --client
+          "$L" --version
+          test -f "$FRESH/.kube/config"
+          cmp "$FRESH/.kube/config" testdata/nrp-sample-kubeconfig.yaml
+          # kubectl finds the sign-in plugin by name on PATH, as a real laptop would.
+          PATH="$D:$PATH" "$K" oidc-login --help | head -3
+          # The installed kubectl is within one minor version of the cluster.
+          grep -E "ok +kubectl .*cluster v1\." setup.out || grep -E "kubectl .* v1\." setup.out
+      - name: Second run changes nothing
+        run: |
+          set -euo pipefail
+          BIN="$RUNNER_TEMP/nrp-mcp"; [ "$RUNNER_OS" = Windows ] && BIN="$BIN.exe"
+          if [ "$RUNNER_OS" = Windows ]; then
+            export USERPROFILE="$(cygpath -w "$FRESH")" LOCALAPPDATA="$(cygpath -w "$FRESH/AppData/Local")"
+            PATH="/usr/bin:/c/Windows/System32:/c/Windows" "$BIN" setup --yes --no-sign-in | tee setup2.out
+          else
+            env -i HOME="$FRESH" PATH="$CLEANPATH" "$BIN" setup --yes --no-sign-in | tee setup2.out
+          fi
+          ! grep -q "installed kubectl" setup2.out
+          ! grep -q "installed kubelogin" setup2.out
+          grep -q "Everything is in place" setup2.out
+      - name: Upload output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: setup-${{ matrix.os }}
+          path: setup*.out

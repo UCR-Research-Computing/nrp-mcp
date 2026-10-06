@@ -1,6 +1,6 @@
 # nrp-mcp SPEC
 
-Version 0.6 (2026-10-06; code 0.6.0). Owner: UCR Research Computing.
+Version 0.6.1 (2026-10-06; code 0.6.1). Owner: UCR Research Computing.
 Repo: `UCR-Research-Computing/nrp-mcp`. License: MIT.
 
 ## 1. What it is
@@ -209,7 +209,8 @@ Prompts: `first_run`, `port_slurm_script`, `parameter_sweep`, `my_job_failed`,
 | P5 | 0.5.0 | `nrp_build` | 0.3.0 suggests Dockerfile + NRP GitLab kaniko CI; does not build (decided: build on NRP GitLab, not a kaniko Job in the namespace, so no registry credentials touch nrp-mcp) |
 | P5b | 0.5.0 | `nrp_setup` and `nrp-mcp setup` (laptop readiness) | done; live-tested on fresh laptops |
 | P6 | 0.6.0 | public repo, release binaries for Linux/macOS/Windows, install script, per-person cleanup | done 2026-10-06 |
-| P7 | 1.0.0 | pilot with RC and a first lab workshop; macOS and Windows setup tested on real machines | next |
+| P6b | 0.6.1 | `setup-e2e` CI: `nrp-mcp setup` on Linux, Windows, macOS arm64 and macOS Intel runners (real downloads, sample config, second run idempotent) | done |
+| P7 | 1.0.0 | pilot with RC and a first lab workshop; browser sign-in on macOS and Windows checked by hand | next |
 
 ## 12. Testing
 
@@ -273,6 +274,14 @@ refused unless the caller is admin of that namespace (test). Found while adding 
 did not fall back to the user's namespace when none was configured (status did); every tool
 now resolves the namespace the same way.
 
+Cross-platform setup (`.github/workflows/setup-e2e.yml`, 0.6.1): on Linux, Windows, macOS
+(Apple Silicon) and macOS (Intel) GitHub runners, an empty home folder with
+`testdata/nrp-sample-kubeconfig.yaml` in Downloads (public server address and CA,
+placeholder OIDC values) runs `nrp-mcp setup --yes --no-sign-in` with a PATH that hides
+the runner's own kubectl. It must install kubectl and kubelogin (SHA256 verified), copy
+the config byte for byte, run both tools, let kubectl find the plugin by name, and change
+nothing on a second run. Runs on every push, pull request and weekly.
+
 ## 13. Change log
 
 | Version | Date | Change |
@@ -283,3 +292,4 @@ now resolves the namespace the same way.
 | 0.4 | 2026-10-06 | Code 0.4.1: first web publish (P4b); watch checks public URLs by run |
 | 0.5 | 2026-10-06 | Code 0.5.0: ninth tool `nrp_setup` and `nrp-mcp setup` (laptop readiness and install) |
 | 0.6 | 2026-10-06 | Code 0.6.0: public release; per-person cleanup (owner-id label); one namespace resolution for all tools; release binaries and install script |
+| 0.6.1 | 2026-10-06 | Code 0.6.1: `setup --no-sign-in`; setup-e2e CI on four OS runners |

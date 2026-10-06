@@ -1,6 +1,7 @@
 # nrp-mcp
 
 [![CI](https://github.com/UCR-Research-Computing/nrp-mcp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/UCR-Research-Computing/nrp-mcp/actions/workflows/ci.yml)
+[![Setup on Linux, macOS, Windows](https://github.com/UCR-Research-Computing/nrp-mcp/actions/workflows/setup-e2e.yml/badge.svg?branch=main)](https://github.com/UCR-Research-Computing/nrp-mcp/actions/workflows/setup-e2e.yml)
 [![Release](https://img.shields.io/github/v/release/UCR-Research-Computing/nrp-mcp)](https://github.com/UCR-Research-Computing/nrp-mcp/releases)
 [![Go](https://img.shields.io/github/go-mod/go-version/UCR-Research-Computing/nrp-mcp)](go.mod)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -177,7 +178,7 @@ Command-line flags for `serve`, `setup` and `doctor`: `--kubeconfig`, `--context
 | Command | What it does |
 |---|---|
 | `nrp-mcp serve` | The MCP server on stdio (what your AI client starts) |
-| `nrp-mcp setup` | Check and ready this computer (asks first; `--yes` to skip the question) |
+| `nrp-mcp setup` | Check and ready this computer (asks first; `--yes` to skip the question, `--no-sign-in` to stop before the browser) |
 | `nrp-mcp doctor` | Check kubectl, sign-in, namespaces and quotas |
 | `nrp-mcp init` | Write an example config (never overwrites) |
 | `nrp-mcp version` | Print the version |
@@ -209,8 +210,9 @@ rule and the test record are in [SPEC.md](SPEC.md).
 - S3 uploads are guidance only; S3 keys come from the NRP portal.
 - Sessions are port-forwarded and never public. For zero install, the NRP runs a hosted
   JupyterHub at https://jupyterhub-west.nrp-nautilus.io.
-- `nrp-mcp setup` is tested on Linux; macOS and Windows support is built in but not yet
-  tested on real machines. Please [report](https://github.com/UCR-Research-Computing/nrp-mcp/issues)
+- `nrp-mcp setup` installs and checks kubectl and kubelogin on Linux, Windows and macOS
+  (Intel and Apple Silicon) in CI on every change; the browser sign-in step can't run in
+  CI and is tested by hand. Please [report](https://github.com/UCR-Research-Computing/nrp-mcp/issues)
   anything that goes wrong.
 
 ## Development

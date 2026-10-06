@@ -3,6 +3,14 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before 1.0
 minor versions may change behavior.
 
+## [0.6.1] - 2026-10-06
+
+- `nrp-mcp setup --no-sign-in` stops before the browser sign-in (CI, offline checks).
+- New CI workflow `setup-e2e`: on Linux, Windows, macOS (Apple Silicon) and macOS (Intel),
+  a fresh home folder gets kubectl and kubelogin installed by `nrp-mcp setup` from the real
+  release downloads, the sample NRP config placed, the tools run, and a second run changes
+  nothing. Runs on every change and weekly.
+
 ## [0.6.0] - 2026-10-06
 
 First public release.
@@ -41,4 +49,5 @@ First public release.
   `nrp_session`, `nrp_data`, `nrp_build`; NRP rules engine; confirm tokens; run cards;
   audit log; knowledge resources and prompts.
 
+[0.6.1]: https://github.com/UCR-Research-Computing/nrp-mcp/releases/tag/v0.6.1
 [0.6.0]: https://github.com/UCR-Research-Computing/nrp-mcp/releases/tag/v0.6.0
