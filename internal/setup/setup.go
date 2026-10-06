@@ -390,11 +390,26 @@ func (e *Env) Inspect(ctx context.Context, signIn bool) *Report {
 		add(Check{ID: "kubelogin", Title: "kubelogin (the sign-in plugin, kubectl-oidc_login)", Status: Missing, Detail: "not found on PATH or in " + e.BinDir,
 			Fix: "install the official kubelogin into " + e.BinDir + " as " + e.exe("kubectl-oidc_login"), Auto: true})
 	} else {
-		v := ""
-		if out, err := e.Run(ctx, kl, "--version"); err == nil {
-			v = strings.TrimSpace(string(out))
+		// kubelogin answers --version on Linux and macOS but rejects it on Windows
+		// ("unknown flag"), so fall back to the version subcommand, then --help.
+		v, ran := "", false
+		for _, args := range [][]string{{"--version"}, {"version"}, {"--help"}} {
+			out, err := e.Run(ctx, kl, args...)
+			if err != nil {
+				continue
+			}
+			ran = true
+			if args[0] != "--help" {
+				v = strings.TrimSpace(string(out))
+			}
+			break
 		}
-		add(Check{ID: "kubelogin", Title: "kubelogin (the sign-in plugin, kubectl-oidc_login)", Status: OK, Detail: strings.TrimSpace(v + " at " + kl)})
+		if !ran {
+			add(Check{ID: "kubelogin", Title: "kubelogin (the sign-in plugin, kubectl-oidc_login)", Status: Problem, Detail: "found " + kl + " but it does not run",
+				Fix: "reinstall the official kubelogin into " + e.BinDir, Auto: true})
+		} else {
+			add(Check{ID: "kubelogin", Title: "kubelogin (the sign-in plugin, kubectl-oidc_login)", Status: OK, Detail: strings.TrimSpace(v + " at " + kl)})
+		}
 	}
 
 	// 3. PATH

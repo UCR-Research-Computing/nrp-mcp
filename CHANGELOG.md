@@ -6,6 +6,9 @@ minor versions may change behavior.
 ## [0.6.1] - 2026-10-06
 
 - `nrp-mcp setup --no-sign-in` stops before the browser sign-in (CI, offline checks).
+- Windows: setup now reads kubelogin's version there too (Windows kubelogin rejects
+  `--version`; setup falls back to `version`, then `--help`), and a kubelogin that does not
+  run at all is reported as a problem instead of ok. Found by the new Windows CI run.
 - New CI workflow `setup-e2e`: on Linux, Windows, macOS (Apple Silicon) and macOS (Intel),
   a fresh home folder gets kubectl and kubelogin installed by `nrp-mcp setup` from the real
   release downloads, the sample NRP config placed, the tools run, and a second run changes

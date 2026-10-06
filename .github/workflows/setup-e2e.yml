@@ -57,19 +57,22 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$RUNNER_OS" = Windows ]; then
-            D="$FRESH/AppData/Local/Programs/nrp-mcp/bin"; K="$D/kubectl.exe"; L="$D/kubectl-oidc_login.exe"
+            D="$(cygpath -u "$FRESH")/AppData/Local/Programs/nrp-mcp/bin"; K="$D/kubectl.exe"
+            CFG="$(cygpath -u "$FRESH")/.kube/config"
           else
-            D="$FRESH/.local/bin"; K="$D/kubectl"; L="$D/kubectl-oidc_login"
+            D="$FRESH/.local/bin"; K="$D/kubectl"; CFG="$FRESH/.kube/config"
           fi
           ls -la "$D"
           "$K" version --client
-          "$L" --version
-          test -f "$FRESH/.kube/config"
-          cmp "$FRESH/.kube/config" testdata/nrp-sample-kubeconfig.yaml
-          # kubectl finds the sign-in plugin by name on PATH, as a real laptop would.
-          PATH="$D:$PATH" "$K" oidc-login --help | head -3
-          # The installed kubectl is within one minor version of the cluster.
-          grep -E "ok +kubectl .*cluster v1\." setup.out || grep -E "kubectl .* v1\." setup.out
+          test -f "$CFG"
+          cmp "$CFG" testdata/nrp-sample-kubeconfig.yaml
+          # kubectl finds the sign-in plugin by name on PATH, exactly as the NRP config
+          # calls it (kubectl oidc-login get-token ...).
+          out="$(PATH="$D:$PATH" "$K" oidc-login --help 2>&1)"
+          printf '%s\n' "$out" | sed -n 1,3p
+          printf '%s' "$out" | grep -qi "openid connect"
+          # The installed kubectl matches the cluster's minor line.
+          grep -E "ok +kubectl +v1\.[0-9]+\.[0-9]+ .*cluster v1\." setup.out
       - name: Second run changes nothing
         run: |
           set -euo pipefail

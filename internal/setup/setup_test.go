@@ -316,3 +316,38 @@ func TestNewerKubectlIsANoteNotABlocker(t *testing.T) {
 		t.Fatalf("old kubectl should block: %+v", r.Checks)
 	}
 }
+
+func TestKubeloginVersionFallbackAndBroken(t *testing.T) {
+	e, _ := fakeEnv(t, false)
+	_ = os.MkdirAll(e.BinDir, 0o755)
+	_ = os.WriteFile(filepath.Join(e.BinDir, "kubectl-oidc_login"), []byte("x"), 0o755)
+	base := e.Run
+	// Windows behaviour: --version is rejected, the version subcommand works.
+	e.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if strings.HasSuffix(name, "kubectl-oidc_login") {
+			switch strings.Join(args, " ") {
+			case "--version":
+				return nil, errors.New("unknown flag: --version")
+			case "version":
+				return []byte("kubelogin version v1.36.4"), nil
+			}
+		}
+		return base(ctx, name, args...)
+	}
+	r := e.Inspect(context.Background(), false)
+	for _, c := range r.Checks {
+		if c.ID == "kubelogin" && (c.Status != OK || !strings.Contains(c.Detail, "v1.36.4")) {
+			t.Fatalf("fallback: %+v", c)
+		}
+	}
+	// A binary that runs nothing is a problem, not ok.
+	e.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if strings.HasSuffix(name, "kubectl-oidc_login") {
+			return nil, errors.New("exec format error")
+		}
+		return base(ctx, name, args...)
+	}
+	if status(e.Inspect(context.Background(), false), "kubelogin") != Problem {
+		t.Fatal("broken kubelogin reported ok")
+	}
+}
