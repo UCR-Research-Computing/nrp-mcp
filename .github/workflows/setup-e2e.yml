@@ -1,0 +1,100 @@
+name: setup-e2e
+# A fresh "laptop" on each OS: nrp-mcp setup installs kubectl and kubelogin from the
+# official releases (real downloads, SHA256 checked) into an empty home folder, places a
+# downloaded NRP config, and the installed tools must run. Browser sign-in is skipped.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * 1"   # weekly: catches upstream release or URL changes
+permissions:
+  contents: read
+jobs:
+  setup:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build
+        run: go build -o "$RUNNER_TEMP/nrp-mcp$( [ "$RUNNER_OS" = Windows ] && echo .exe )" ./cmd/nrp-mcp
+      - name: Fresh home with a downloaded NRP config
+        run: |
+          set -euo pipefail
+          FRESH="$RUNNER_TEMP/fresh-home"
+          mkdir -p "$FRESH/Downloads"
+          cp testdata/nrp-sample-kubeconfig.yaml "$FRESH/Downloads/config"
+          echo "FRESH=$FRESH" >> "$GITHUB_ENV"
+          # A PATH with only the basic tools setup needs, and no kubectl: runner images
+          # ship one in /usr/bin or /usr/local/bin, which would hide the fresh install.
+          SAFE="$RUNNER_TEMP/safe-bin"; mkdir -p "$SAFE"
+          for tool in sh bash env uname; do
+            p="$(command -v "$tool" || true)"; [ -n "$p" ] && ln -sf "$p" "$SAFE/$tool"
+          done
+          echo "CLEANPATH=$SAFE" >> "$GITHUB_ENV"
+      - name: nrp-mcp setup (fresh machine)
+        run: |
+          set -euo pipefail
+          BIN="$RUNNER_TEMP/nrp-mcp"; [ "$RUNNER_OS" = Windows ] && BIN="$BIN.exe"
+          if [ "$RUNNER_OS" = Windows ]; then
+            export USERPROFILE="$(cygpath -w "$FRESH")" LOCALAPPDATA="$(cygpath -w "$FRESH/AppData/Local")"
+            mkdir -p "$FRESH/AppData/Local"
+            PATH="/usr/bin:/c/Windows/System32:/c/Windows" "$BIN" setup --yes --no-sign-in | tee setup.out
+          else
+            env -i HOME="$FRESH" PATH="$CLEANPATH" "$BIN" setup --yes --no-sign-in | tee setup.out
+          fi
+          grep -q "installed kubectl" setup.out
+          grep -q "installed kubelogin" setup.out
+          ! grep -E "ok +kubectl .* at /usr" setup.out
+          grep -q "SHA256 verified" setup.out
+          grep -q "copied the NRP config" setup.out
+          grep -q "Everything is in place" setup.out
+      - name: Installed tools run, config is in place
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = Windows ]; then
+            D="$(cygpath -u "$FRESH")/AppData/Local/Programs/nrp-mcp/bin"; K="$D/kubectl.exe"
+            CFG="$(cygpath -u "$FRESH")/.kube/config"
+          else
+            D="$FRESH/.local/bin"; K="$D/kubectl"; CFG="$FRESH/.kube/config"
+          fi
+          ls -la "$D"
+          "$K" version --client
+          test -f "$CFG"
+          cmp "$CFG" testdata/nrp-sample-kubeconfig.yaml
+          # kubectl finds the sign-in plugin by name on PATH, exactly as the NRP config
+          # calls it (kubectl oidc-login get-token ...).
+          out="$(PATH="$D:$PATH" "$K" oidc-login --help 2>&1)"
+          printf '%s\n' "$out" | sed -n 1,3p
+          printf '%s' "$out" | grep -qi "openid connect"
+          # The installed kubectl matches the cluster's minor line.
+          grep -E "ok +kubectl +v1\.[0-9]+\.[0-9]+ .*cluster v1\." setup.out
+      - name: Second run changes nothing
+        run: |
+          set -euo pipefail
+          BIN="$RUNNER_TEMP/nrp-mcp"; [ "$RUNNER_OS" = Windows ] && BIN="$BIN.exe"
+          if [ "$RUNNER_OS" = Windows ]; then
+            export USERPROFILE="$(cygpath -w "$FRESH")" LOCALAPPDATA="$(cygpath -w "$FRESH/AppData/Local")"
+            PATH="/usr/bin:/c/Windows/System32:/c/Windows" "$BIN" setup --yes --no-sign-in | tee setup2.out
+          else
+            env -i HOME="$FRESH" PATH="$CLEANPATH" "$BIN" setup --yes --no-sign-in | tee setup2.out
+          fi
+          ! grep -q "installed kubectl" setup2.out
+          ! grep -q "installed kubelogin" setup2.out
+          grep -q "Everything is in place" setup2.out
+      - name: Upload output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: setup-${{ matrix.os }}
+          path: setup*.out

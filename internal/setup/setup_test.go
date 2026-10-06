@@ -77,6 +77,9 @@ func fakeEnv(t *testing.T, tamper bool) (*Env, *[]string) {
 		return nil, fmt.Errorf("404 %s", url)
 	}
 	e.LookPath = func(name string) (string, error) { return "", errors.New("not found") }
+	e.Redirect = func(_ context.Context, url string) (string, error) {
+		return "", errors.New("no network in tests") // exercises the API fallback
+	}
 	e.Run = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		j := strings.Join(args, " ")
 		switch {
@@ -314,5 +317,61 @@ func TestNewerKubectlIsANoteNotABlocker(t *testing.T) {
 	r = e.Inspect(context.Background(), true)
 	if status(r, "kubectl") != Old || r.Ready {
 		t.Fatalf("old kubectl should block: %+v", r.Checks)
+	}
+}
+
+func TestKubeloginVersionFallbackAndBroken(t *testing.T) {
+	e, _ := fakeEnv(t, false)
+	_ = os.MkdirAll(e.BinDir, 0o755)
+	_ = os.WriteFile(filepath.Join(e.BinDir, "kubectl-oidc_login"), []byte("x"), 0o755)
+	base := e.Run
+	// Windows behaviour: --version is rejected, the version subcommand works.
+	e.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if strings.HasSuffix(name, "kubectl-oidc_login") {
+			switch strings.Join(args, " ") {
+			case "--version":
+				return nil, errors.New("unknown flag: --version")
+			case "version":
+				return []byte("kubelogin version v1.36.4"), nil
+			}
+		}
+		return base(ctx, name, args...)
+	}
+	r := e.Inspect(context.Background(), false)
+	for _, c := range r.Checks {
+		if c.ID == "kubelogin" && (c.Status != OK || !strings.Contains(c.Detail, "v1.36.4")) {
+			t.Fatalf("fallback: %+v", c)
+		}
+	}
+	// A binary that runs nothing is a problem, not ok.
+	e.Run = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		if strings.HasSuffix(name, "kubectl-oidc_login") {
+			return nil, errors.New("exec format error")
+		}
+		return base(ctx, name, args...)
+	}
+	if status(e.Inspect(context.Background(), false), "kubelogin") != Problem {
+		t.Fatal("broken kubelogin reported ok")
+	}
+}
+
+func TestKubeloginTagPrefersRedirect(t *testing.T) {
+	e, fetched := fakeEnv(t, false)
+	e.Redirect = func(_ context.Context, url string) (string, error) {
+		return "https://github.com/int128/kubelogin/releases/tag/v1.36.4", nil
+	}
+	tag, err := e.kubeloginTag(context.Background())
+	if err != nil || tag != "v1.36.4" {
+		t.Fatalf("%q %v", tag, err)
+	}
+	for _, u := range *fetched {
+		if u == KubeloginAPI {
+			t.Fatal("used the rate-limited API although the redirect worked")
+		}
+	}
+	// Junk redirect: fall back to the API.
+	e.Redirect = func(_ context.Context, url string) (string, error) { return "https://github.com/login", nil }
+	if tag, err := e.kubeloginTag(context.Background()); err != nil || tag != "v1.36.4" {
+		t.Fatalf("fallback: %q %v", tag, err)
 	}
 }
