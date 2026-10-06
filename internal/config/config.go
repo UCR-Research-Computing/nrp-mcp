@@ -18,6 +18,7 @@ type Config struct {
 	PodsPerRun  int
 	GPUsPerRun  int
 	HoursPerRun int
+	TasksPerRun int
 	UploadGB    int
 	Path        string
 }
@@ -33,7 +34,7 @@ func DefaultPath() string {
 
 // Load reads the file (missing is fine) then applies env overrides.
 func Load(path string) Config {
-	c := Config{Context: "nautilus", Kubectl: "kubectl", PodsPerRun: 50, GPUsPerRun: 4, HoursPerRun: 48, UploadGB: 50, Path: path}
+	c := Config{Context: "nautilus", Kubectl: "kubectl", PodsPerRun: 50, GPUsPerRun: 4, HoursPerRun: 48, TasksPerRun: 10000, UploadGB: 50, Path: path}
 	if f, err := os.Open(path); err == nil {
 		defer f.Close()
 		sc := bufio.NewScanner(f)
@@ -63,6 +64,8 @@ func Load(path string) Config {
 				c.GPUsPerRun = n
 			case "hours_per_run":
 				c.HoursPerRun = n
+			case "tasks_per_run":
+				c.TasksPerRun = n
 			case "upload_gb_per_run":
 				c.UploadGB = n
 			}
@@ -98,8 +101,9 @@ context: nautilus
 namespace:                    # your default namespace (nrp_status lists yours)
 kubectl: kubectl              # full path if kubectl is not on PATH
 # caps: plans over these are refused
-pods_per_run: 50
-gpus_per_run: 4
+pods_per_run: 50              # pods running at the same time (a sweep's parallel)
+gpus_per_run: 4               # GPUs in use at the same time
+tasks_per_run: 10000          # total tasks in one sweep
 hours_per_run: 48
 upload_gb_per_run: 50
 `

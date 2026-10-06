@@ -36,10 +36,12 @@ type Context struct {
 	// GPUQuota is the namespace hard quota per special GPU resource, e.g.
 	// {"nvidia.com/a100": 0}. Missing means no quota applies.
 	GPUQuota map[string]int
-	// Caps from the user's config.
+	// Caps from the user's config. PodsPerRun and GPUsPerRun limit what runs at the same
+	// time (a sweep's parallelism), TasksPerRun limits a sweep's total task count.
 	PodsPerRun  int
 	GPUsPerRun  int
 	HoursPerRun int
+	TasksPerRun int
 	// SweepCount is the number of tasks for an Indexed Job plan (0 if none).
 	SweepCount int
 	// Session is true for nrp_session plans (an interactive Deployment that may hold a GPU).
@@ -79,6 +81,7 @@ func Check(objs []k8s.Object, c Context) []Finding {
 	add := func(f Finding) { fs = append(fs, f) }
 	totalGPU := 0
 	totalPods := 0
+	totalTasks := 0
 	for i := range objs {
 		o := &objs[i]
 		ref := o.Kind + "/" + o.Metadata.Name
@@ -99,14 +102,23 @@ func Check(objs []k8s.Object, c Context) []Finding {
 		if ps == nil {
 			continue
 		}
-		pods := 1
-		if o.JobSpec != nil && o.JobSpec.Completions != nil {
-			pods = *o.JobSpec.Completions
+		// pods is how many run at the same time: a Job runs min(parallelism, completions)
+		// pods at once (Kubernetes defaults parallelism to 1); tasks is how many it runs in all.
+		pods, tasks := 1, 1
+		if o.JobSpec != nil {
+			if o.JobSpec.Completions != nil {
+				tasks = *o.JobSpec.Completions
+			}
+			if o.JobSpec.Parallelism != nil {
+				pods = *o.JobSpec.Parallelism
+			}
+			pods = min(pods, tasks)
 		}
 		if o.DeploymentSpec != nil {
-			pods = o.DeploymentSpec.Replicas
+			pods, tasks = o.DeploymentSpec.Replicas, o.DeploymentSpec.Replicas
 		}
 		totalPods += pods
+		totalTasks += tasks
 		if !allowedPriority[ps.PriorityClassName] {
 			add(Finding{ID: "R5", Severity: Refuse, Object: ref, Source: srcPriority,
 				Message: fmt.Sprintf("priorityClassName %q is banned in user namespaces; the pod would be rejected.", ps.PriorityClassName),
@@ -115,7 +127,7 @@ func Check(objs []k8s.Object, c Context) []Finding {
 		podGPU := 0
 		for _, ctr := range append(append([]k8s.Container{}, ps.InitContainers...), ps.Containers...) {
 			cref := ref + " container " + ctr.Name
-			fs = append(fs, checkResources(ctr, cref, c, pods)...)
+			fs = append(fs, checkResources(ctr, cref, c, tasks)...) // R4 (NRP: >100 pods -> limit = request) stays on the total, conservatively
 			for _, g := range GPUResources {
 				podGPU += k8s.ParseCount(ctr.Resources.Requests[g])
 				if n := k8s.ParseCount(ctr.Resources.Limits[g]); n > k8s.ParseCount(ctr.Resources.Requests[g]) {
@@ -185,13 +197,18 @@ func Check(objs []k8s.Object, c Context) []Finding {
 	}
 	if c.PodsPerRun > 0 && totalPods > c.PodsPerRun {
 		add(Finding{ID: "R14", Severity: Refuse, Source: srcConfig,
-			Message: fmt.Sprintf("%d pods in this run is over your cap of %d.", totalPods, c.PodsPerRun),
-			Fix:     "Lower count, or raise caps.pods_per_run in your nrp-mcp config."})
+			Message: fmt.Sprintf("%d pods at the same time is over your cap of %d.", totalPods, c.PodsPerRun),
+			Fix:     fmt.Sprintf("Run fewer at once (a sweep's parallel, e.g. parallel=%d; the total count can stay), or raise pods_per_run in your nrp-mcp config.", c.PodsPerRun)})
 	}
-	if c.GPUsPerRun >= 0 && totalGPU > c.GPUsPerRun && c.GPUsPerRun > 0 {
+	if c.GPUsPerRun > 0 && totalGPU > c.GPUsPerRun {
 		add(Finding{ID: "R14", Severity: Refuse, Source: srcConfig,
-			Message: fmt.Sprintf("%d GPUs in this run is over your cap of %d.", totalGPU, c.GPUsPerRun),
-			Fix:     "Use fewer GPUs per task or fewer parallel tasks, or raise caps.gpus_per_run."})
+			Message: fmt.Sprintf("%d GPUs at the same time is over your cap of %d.", totalGPU, c.GPUsPerRun),
+			Fix:     "Run fewer GPU tasks at once (lower a sweep's parallel) or use fewer GPUs per task; the total count can stay. Or raise gpus_per_run in your nrp-mcp config."})
+	}
+	if c.TasksPerRun > 0 && totalTasks > c.TasksPerRun {
+		add(Finding{ID: "R14", Severity: Refuse, Source: srcConfig,
+			Message: fmt.Sprintf("%d tasks in this run is over your cap of %d.", totalTasks, c.TasksPerRun),
+			Fix:     "Split the sweep into smaller runs or bundle several cases per task, or raise tasks_per_run in your nrp-mcp config."})
 	}
 	return fs
 }

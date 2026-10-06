@@ -1,6 +1,8 @@
 package rules
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/k8s"
@@ -29,7 +31,9 @@ func has(fs []Finding, id string, sev Severity) bool {
 	return false
 }
 
-func base() Context { return Context{PodsPerRun: 50, GPUsPerRun: 4, HoursPerRun: 48} }
+func base() Context {
+	return Context{PodsPerRun: 50, GPUsPerRun: 4, HoursPerRun: 48, TasksPerRun: 10000}
+}
 
 func TestCleanJobPasses(t *testing.T) {
 	fs := Check([]k8s.Object{job(ctr("python", "train.py"))}, base())
@@ -208,5 +212,61 @@ func TestR16UsageWarning(t *testing.T) {
 	c.Resources.Requests["cpu"], c.Resources.Limits["cpu"] = "4", "4"
 	if !has(Check([]k8s.Object{job(c)}, base()), "R16", Warn) {
 		t.Error("usage warning missing above 1 cpu")
+	}
+}
+
+// The pod and GPU caps limit what runs at the same time, not a sweep's total: 1,000 tasks
+// at parallel 50 is fine under pods_per_run 50; parallel 51 is not. tasks_per_run caps
+// the total.
+func TestR14CapsCountConcurrency(t *testing.T) {
+	sweep := func(completions, parallel, gpu int) k8s.Object {
+		c := ctr("python", "a.py")
+		if gpu > 0 {
+			g := fmt.Sprint(gpu)
+			c.Resources.Requests["nvidia.com/gpu"], c.Resources.Limits["nvidia.com/gpu"] = g, g
+		}
+		j := job(c)
+		j.JobSpec.Completions, j.JobSpec.Parallelism = k8s.IntPtr(completions), k8s.IntPtr(parallel)
+		j.JobSpec.CompletionMode = "Indexed"
+		return j
+	}
+	cases := []struct {
+		name          string
+		obj           k8s.Object
+		refused       bool
+		wantInMessage string
+	}{
+		{"1000 tasks at 50", sweep(1000, 50, 0), false, ""},
+		{"1000 tasks at 51", sweep(1000, 51, 0), true, "51 pods at the same time"},
+		{"parallel above completions counts completions", sweep(3, 100, 0), false, ""},
+		{"200 GPU tasks, 4 at a time, 1 GPU each", sweep(200, 4, 1), false, ""},
+		{"200 GPU tasks, 5 at a time", sweep(200, 5, 1), true, "5 GPUs at the same time"},
+		{"2 at a time with 2 GPUs each = 4", sweep(50, 2, 2), false, ""},
+		{"20,000 tasks over tasks_per_run", sweep(20000, 10, 0), true, "20000 tasks in this run"},
+	}
+	for _, tc := range cases {
+		fs := Check([]k8s.Object{tc.obj}, base())
+		got := has(fs, "R14", Refuse)
+		if got != tc.refused {
+			t.Errorf("%s: refused=%v want %v (%v)", tc.name, got, tc.refused, fs)
+			continue
+		}
+		if tc.wantInMessage != "" {
+			found := false
+			for _, f := range fs {
+				if f.ID == "R14" && strings.Contains(f.Message, tc.wantInMessage) {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("%s: no R14 message containing %q in %v", tc.name, tc.wantInMessage, fs)
+			}
+		}
+	}
+	// A Job without parallelism runs one pod at a time (the Kubernetes default).
+	j := sweep(500, 1, 0)
+	j.JobSpec.Parallelism = nil
+	if has(Check([]k8s.Object{j}, base()), "R14", Refuse) {
+		t.Error("500 tasks one at a time refused")
 	}
 }

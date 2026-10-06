@@ -73,8 +73,9 @@ context: nautilus
 namespace: ucr-example         # default; tools take a namespace argument too
 kubectl: kubectl               # path if not on PATH
 caps:
-  pods_per_run: 50
-  gpus_per_run: 4
+  pods_per_run: 50       # pods running at the same time (a sweep's parallel)
+  gpus_per_run: 4        # GPUs in use at the same time
+  tasks_per_run: 10000   # total tasks in one sweep
   hours_per_run: 48
   upload_gb_per_run: 50
 ```
@@ -137,7 +138,7 @@ pure function `Check(manifests, ctx) -> []Finding`; refusals block the token.
 | R1 | A Job's command must not be (or end with) `sleep` / `sleep infinity` / `tail -f /dev/null` | refuse | NRP Cluster Policies |
 | R2 | Every container sets cpu and memory requests and limits | refuse | Cluster Policies (resource allocation) |
 | R3 | Limits within 20% of requests (cpu, memory, ephemeral-storage) | refuse | Cluster Policies |
-| R4 | > 100 pods (sweep count) requires limit = request | refuse | Cluster Policies |
+| R4 | > 100 pods (sweep count, counted on the total, conservatively) requires limit = request | refuse | Cluster Policies |
 | R5 | No banned `priorityClassName` (only unset, `armada-default`, `owner-no-preempt`, `opportunistic`, `opportunistic2`) | refuse | Opportunistic Use page |
 | R6 | Special GPU (`nvidia.com/a100`, `h100`, `h200`, `gh200`) needs quota > 0 or `opportunistic` | refuse | GPU Pods page + live quota |
 | R7 | GPUs per pod: at most 8 for Jobs, 2 for bare pods/interactive | refuse | GPU Pods page |
@@ -147,7 +148,7 @@ pure function `Check(manifests, ctx) -> []Finding`; refusals block the token.
 | R11 | No secret-looking literal env values (keys, tokens, passwords) in specs; use Secrets | refuse | Scheduling page (specs visible) |
 | R12 | Ingress: class `haproxy`, TLS host listed, HTTP only, host under `nrp-nautilus.io` or user domain with certificate | refuse | Exposing HTTP page |
 | R13 | Web/publish requires `public_ack` equal to the plan's URL | refuse (at run) | RC 2026-10-06 |
-| R14 | Caps: pods, GPUs, hours per run (config) | refuse | nrp-mcp config |
+| R14 | Caps (config): pods and GPUs running at the same time (a Job counts min(parallelism, completions); Kubernetes defaults parallelism to 1), total tasks per sweep, hours per run | refuse | nrp-mcp config |
 | R15 | Jobs get `ttlSecondsAfterFinished` and `backoffLimit` | auto-fix | good citizen |
 | R16 | Requests over 1 CPU / 2 GiB are subject to usage-violation checks (GPU < 40%, CPU outside 20-200%, RAM outside 20-150%) | warn | Cluster Policies |
 | R17 | Deployments are removed after 2 weeks unless the namespace is on the exceptions list | warn | Long Idle Pods page |
