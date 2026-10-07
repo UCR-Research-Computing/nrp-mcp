@@ -81,3 +81,15 @@ func TestSlurmScript(t *testing.T) {
 		t.Fatalf("got %+v", f)
 	}
 }
+
+func TestFlaskWithDashIsFlask(t *testing.T) {
+	d := t.TempDir()
+	_ = os.WriteFile(filepath.Join(d, "app.py"), []byte("from flask import Flask\nfrom dash import Dash\nserver = Flask(__name__)\napp = server\nDash(__name__, server=server)\n"), 0o644)
+	f, err := Dir(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.WebApp != "flask" || f.WebPort != 5000 {
+		t.Fatalf("got %s:%d, want flask:5000", f.WebApp, f.WebPort)
+	}
+}

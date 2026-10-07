@@ -51,7 +51,8 @@ Hermes Agent, Gemini CLI, OpenCode, Claude Code, Claude Desktop, VS Code, Cursor
 | "Give me a GPU notebook" | A private Jupyter or VS Code session through port-forward |
 | "Download this dataset to the cluster" | A shared volume and an in-cluster download, so big files skip your laptop |
 | "Put my lab's tool on the web" | Deployment, Service and HTTPS address; suggests names; publishes only after you type the URL back |
-| "Containerize this" | A Dockerfile and a GitLab CI file that builds it on NRP GitLab |
+| "Containerize this" | A Dockerfile and a GitHub Actions workflow that builds your image on every push (no new account, no keys); NRP GitLab as an option |
+| "Deploy the new version" | Updates your running web app in place, same address |
 | "Clean up" | Lists what you made and deletes it after a second yes |
 
 See it applied to real science: [20 research examples](docs/examples/README.md), from bee
@@ -111,6 +112,19 @@ Use the full path to `nrp-mcp` if your client doesn't see your shell's PATH, and
 
 **5. Ask:** *"Where do I stand on Nautilus?"*
 
+### A bigger app (your code on GitHub)
+
+1. In your project folder: *"Containerize this."* nrp suggests a Dockerfile (keeps yours if you
+   have one) and `.github/workflows/nrp-image.yml`.
+2. Commit and push. GitHub builds the image (Actions tab) and saves it as
+   `ghcr.io/<owner>/<repo>`, private at first. It uses GitHub's built-in token: no secrets to add.
+3. Make the package public (Packages, Package settings, Change visibility), or keep it private and
+   store a read-only `read:packages` token once as a pull secret (nrp explains both).
+4. *"Put it on the web with image ghcr.io/<owner>/<repo>:<commit>."* nrp plans it, you type the
+   URL back, it goes live.
+5. New version: push, wait for the build, then *"deploy the new version"*. The running app is
+   updated in place at the same address.
+
 ## The tools
 
 Nine tools, each named for what you want rather than for Kubernetes objects. Every result
@@ -127,7 +141,7 @@ learn as you go.
 | `nrp_cleanup` | yes, two steps | Lists your runs, then deletes one after a second confirm |
 | `nrp_session` | no | Readiness, port-forward command and local link for a notebook or VS Code session |
 | `nrp_data` | uploads only | List, upload small non-sensitive files, download results from a volume |
-| `nrp_build` | no | Suggests a Dockerfile and an NRP GitLab CI (kaniko) file |
+| `nrp_build` | no | Suggests a Dockerfile and a GitHub Actions workflow that builds it into ghcr.io (or, with `target=gitlab`, an NRP GitLab kaniko file); explains public vs private images |
 
 Also served: resources `nrp://policy`, `nrp://gpus`, `nrp://storage`, `nrp://llm`,
 `nrp://kb`, and prompts `first_run`, `port_slurm_script`, `parameter_sweep`,
@@ -206,14 +220,17 @@ Nautilus (Kubernetes): Jobs, Deployments, volumes, Ingress in your namespace
 ```
 
 Small projects are copied into the pod as a ConfigMap and their requirements installed at
-start. Bigger ones get an image built on NRP GitLab (`nrp_build`). The full design, every
+start. Bigger ones get an image: `nrp_build` writes a GitHub Actions workflow, GitHub builds
+the image on every push into its container registry (ghcr.io), and `nrp_plan image=...` deploys
+it as built. A private image needs `pull_secret=` (a read-only token stored once in your
+namespace); a public one needs nothing. The full design, every
 rule and the test record are in [SPEC.md](SPEC.md).
 
 ## Limits
 
 - Code is copied as text files under 200 KB each (900 KB total). Bigger projects need an
   image (`nrp_build`) or git.
-- `nrp_build` suggests files; it doesn't build. Builds run on NRP GitLab.
+- `nrp_build` suggests files; it doesn't build. Builds run on GitHub Actions (or NRP GitLab).
 - S3 uploads are guidance only; S3 keys come from the NRP portal.
 - Sessions are port-forwarded and never public. For zero install, the NRP runs a hosted
   JupyterHub at https://jupyterhub-west.nrp-nautilus.io.

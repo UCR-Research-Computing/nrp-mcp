@@ -243,3 +243,54 @@ func TestPlainSweepSetsArrayID(t *testing.T) {
 		t.Fatalf("command %v", c.Command)
 	}
 }
+
+func TestPrebuiltWebImage(t *testing.T) {
+	f := proj(t, map[string]string{
+		"app.py":     "from flask import Flask\napp = Flask(__name__)\n",
+		"Dockerfile": "FROM python:3.12-slim\nEXPOSE 8000\nCMD [\"gunicorn\",\"-b\",\"0.0.0.0:8000\",\"app:app\"]\n",
+	})
+	p, err := Build(f, Request{Namespace: "ucr-example", Goal: GoalWeb, Image: "ghcr.io/some-lab/spice-web:abc123", PullSecret: "ghcr-pull"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Prebuilt || p.NeedsBuild {
+		t.Fatalf("prebuilt=%v needs_build=%v", p.Prebuilt, p.NeedsBuild)
+	}
+	ps := p.Objects[0].PodSpecOf()
+	c := ps.Containers[0]
+	if len(c.Command) != 0 || len(c.VolumeMounts) != 0 || len(ps.Volumes) != 0 {
+		t.Fatalf("prebuilt image must run its own CMD with no code volume: %+v %+v", c, ps.Volumes)
+	}
+	if c.Ports[0].ContainerPort != 8000 || c.ReadinessProbe.HTTPGet.Port != 8000 {
+		t.Fatalf("port from EXPOSE: %+v", c.Ports)
+	}
+	if len(ps.ImagePullSecrets) != 1 || ps.ImagePullSecrets[0].Name != "ghcr-pull" {
+		t.Fatalf("pull secret: %+v", ps.ImagePullSecrets)
+	}
+	if rules.Blocking(rules.Check(p.Objects, ctx())) {
+		t.Fatalf("refused: %+v", rules.Check(p.Objects, ctx()))
+	}
+}
+
+func TestDockerfileWithoutImageNeedsBuildOnGHCR(t *testing.T) {
+	f := proj(t, map[string]string{"app.py": "from flask import Flask\napp = Flask(__name__)\n", "Dockerfile": "FROM python:3.12-slim\n"})
+	p, err := Build(f, Request{Namespace: "ucr-example", Goal: GoalWeb})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.NeedsBuild || !strings.HasPrefix(p.Image, "ghcr.io/") {
+		t.Fatalf("needs_build=%v image=%s", p.NeedsBuild, p.Image)
+	}
+}
+
+func TestPrebuiltJobKeepsData(t *testing.T) {
+	p, err := Build(nil, Request{Namespace: "ucr-example", Goal: GoalJob, Image: "ghcr.io/lab/tool:1", Command: "tool --run", DataPVC: "lab-data"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := p.Objects[0].PodSpecOf()
+	c := ps.Containers[0]
+	if c.Command[2] != "tool --run" || len(c.VolumeMounts) != 1 || c.VolumeMounts[0].MountPath != "/data" || len(ps.Volumes) != 1 {
+		t.Fatalf("job: %+v %+v", c, ps.Volumes)
+	}
+}

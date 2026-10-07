@@ -118,6 +118,12 @@ type PodSpec struct {
 	Containers        []Container `json:"containers"`
 	InitContainers    []Container `json:"initContainers,omitempty"`
 	Volumes           []Volume    `json:"volumes,omitempty"`
+	ImagePullSecrets  []NameRef   `json:"imagePullSecrets,omitempty"`
+}
+
+// NameRef is a reference by name (imagePullSecrets).
+type NameRef struct {
+	Name string `json:"name"`
 }
 
 // PodTemplate wraps a pod spec.

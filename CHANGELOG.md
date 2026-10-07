@@ -3,9 +3,40 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before 1.0
 minor versions may change behavior.
 
-## [Unreleased]
+## [0.7.0] - 2026-10-07
 
-- Docs: 20 research examples in docs/examples/, linked from the README.
+### Added
+
+- GitHub is now the default way to build an image. `nrp_build` writes a GitHub Actions
+  workflow that builds the project's Dockerfile on every push and saves the image in the
+  GitHub container registry as `ghcr.io/<owner>/<repo>` (taken from the git remote). It logs
+  in with GitHub's built-in token, so there is no new account and no key to store. NRP GitLab
+  stays available with `target=gitlab`.
+- `nrp_build` explains public vs private images: how to make the package public, or how to
+  store a read-only `read:packages` token once as a pull secret.
+- `nrp_plan image=...` runs a built image as built: its own start command, the port from
+  `EXPOSE`, no project files copied in and no install step. New `pull_secret=` for private
+  images.
+- The suggested Dockerfile installs build tools and runs `make` for projects with compiled
+  code, and starts Flask with gunicorn, FastAPI with uvicorn, Streamlit and Dash on the right
+  port.
+- Deploying a new version of a web app updates the running one in place, at the same address.
+
+### Docs
+
+- 20 research examples in docs/examples/, linked from the README.
+
+### Fixed
+
+- A Flask app with a Dash dashboard mounted on it was detected as a plain Dash app (wrong
+  port and start command).
+- Planning a web app whose name was already deployed collided with the running Deployment
+  ("spec.selector: field is immutable"). Now the plan reuses the run and updates it.
+- The image pull diagnosis now explains private ghcr.io packages.
+
+Live test (2026-10-07): a Flask + Dash app with a compiled C helper, built by GitHub Actions
+in a private repo, refused cleanly while private, then live over HTTPS once public, then
+updated in place.
 
 ## [0.6.4] - 2026-10-06
 

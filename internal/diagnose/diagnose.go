@@ -68,7 +68,7 @@ func Explain(p Pod) Finding {
 		case c.Waiting == "ImagePullBackOff" || c.Waiting == "ErrImagePull" || c.Waiting == "InvalidImageName":
 			f.State = c.Waiting
 			f.Explain = "Kubernetes cannot download the container image. " + firstLine(c.WaitingMsg)
-			f.Fix = "Check the image name and tag. A private registry image needs an image pull secret; nrp_build pushes to the NRP GitLab registry."
+			f.Fix = "Check the image name and tag. A private image (GitHub ghcr.io packages start private) needs pull_secret=<secret> in nrp_plan, or make the package public; nrp_build explains both."
 			return f
 		case c.Waiting == "CrashLoopBackOff" || (c.Terminated == "Error" || (c.Terminated != "" && c.ExitCode != 0 && c.Terminated != "Completed")):
 			f.State = "Failed"

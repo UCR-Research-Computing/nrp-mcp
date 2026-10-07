@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -33,6 +34,9 @@ type Facts struct {
 	Notebooks   []string `json:"notebooks,omitempty"`
 	Slurm       []string `json:"slurm_scripts,omitempty"`
 	GitRemote   string   `json:"git_remote,omitempty"`
+	GitHubRepo  string   `json:"github_repo,omitempty"` // owner/repo when the remote is on github.com
+	DockerPort  int      `json:"docker_port,omitempty"` // EXPOSE in the Dockerfile
+	Makefile    bool     `json:"makefile,omitempty"`
 	GitCommit   string   `json:"git_commit,omitempty"`
 	Skipped     []string `json:"skipped_sensitive,omitempty"`
 	Title       string   `json:"title,omitempty"`
@@ -123,6 +127,8 @@ var (
 	gpuRe     = regexp.MustCompile(`(?m)(^\s*(import|from)\s+(torch|tensorflow|jax|cupy|transformers|vllm|diffusers|accelerate)\b|\.cuda\(|device\s*=\s*['"]cuda|torch\.cuda|tf\.config\.list_physical_devices\(['"]GPU|#SBATCH\s+--gres=gpu|nvidia-smi)`)
 	pkgLineRe = regexp.MustCompile(`^\s*([A-Za-z0-9_.\-]+)`)
 	sbatchRe  = regexp.MustCompile(`(?m)^#SBATCH\s`)
+	exposeRe  = regexp.MustCompile(`(?mi)^\s*EXPOSE\s+(\d+)`)
+	githubRe  = regexp.MustCompile(`github\.com[^:/]*[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$`)
 	mainRe    = regexp.MustCompile(`(?m)^if\s+__name__\s*==\s*['"]__main__['"]`)
 	titleRe   = regexp.MustCompile(`(?mi)(?:st\.title|st\.set_page_config\(\s*page_title\s*=|titlePanel|<title>|page_title\s*=)\(?\s*['"]([^'"]{3,60})['"]`)
 )
@@ -132,6 +138,11 @@ func scanFile(f *Facts, p, rel string) {
 	switch base {
 	case "dockerfile", "containerfile":
 		f.Dockerfile = true
+		if m := exposeRe.FindStringSubmatch(readSmall(p)); m != nil {
+			f.DockerPort, _ = strconv.Atoi(m[1])
+		}
+	case "makefile":
+		f.Makefile = true
 	case "requirements.txt", "pyproject.toml", "environment.yml", "environment.yaml", "setup.py", "renv.lock",
 		"description", "package.json", "project.toml", "pixi.toml":
 		f.DepFiles = append(f.DepFiles, rel)
@@ -210,7 +221,9 @@ func detectWeb(f *Facts, rel, base, b string) {
 		set("streamlit", 8501, rel)
 	case strings.Contains(b, "import gradio") && strings.HasSuffix(base, ".py"):
 		set("gradio", 7860, rel)
-	case (strings.Contains(b, "from dash import") || strings.Contains(b, "import dash")) && strings.HasSuffix(base, ".py"):
+	case (strings.Contains(b, "from dash import") || strings.Contains(b, "import dash")) && strings.HasSuffix(base, ".py") &&
+		!strings.Contains(b, "Flask(__name__)"):
+		// Dash mounted on a Flask server (Dash(server=...)) is served as a Flask app below.
 		set("dash", 8050, rel)
 	case strings.Contains(b, "FastAPI(") && strings.HasSuffix(base, ".py"):
 		set("fastapi", 8000, rel)
@@ -248,6 +261,9 @@ func readGit(f *Facts) {
 	cfg := readSmall(filepath.Join(f.Root, ".git", "config"))
 	if m := regexp.MustCompile(`(?m)^\s*url\s*=\s*(\S+)`).FindStringSubmatch(cfg); m != nil {
 		f.GitRemote = m[1]
+		if g := githubRe.FindStringSubmatch(f.GitRemote); g != nil {
+			f.GitHubRepo = strings.ToLower(g[1] + "/" + g[2])
+		}
 	}
 }
 
