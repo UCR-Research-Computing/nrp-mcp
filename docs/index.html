@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nrp-mcp - run research on Nautilus by talking to your AI assistant</title>
+<meta name="description" content="nrp-mcp is a small MCP server that runs on your own computer and turns &quot;here is my code, run it on a GPU&quot; into a reviewed plan and a running job on the National Research Platform's Nautilus cluster.">
+<meta name="theme-color" content="#00287a">
+<link rel="canonical" href="https://ucr-research-computing.github.io/nrp-mcp/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="nrp-mcp - run research on Nautilus by talking to your AI assistant">
+<meta property="og:description" content="A small MCP server from UCR Research Computing. It reads your project, applies the NRP rules, shows you a plan, and runs it on Nautilus after you say yes.">
+<meta property="og:url" content="https://ucr-research-computing.github.io/nrp-mcp/">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&amp;family=Fira+Sans+Condensed:wght@500;600;700&amp;family=Fira+Code:wght@400;500&amp;display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<div class="util">
+  <div class="container">
+    <a href="https://ucr-research-computing.github.io/">UCR Research Computing</a>
+    <span class="util-sep" aria-hidden="true">/</span>
+    <span class="util-proj">nrp-mcp</span>
+    <span class="sp"></span>
+    <a href="https://github.com/UCR-Research-Computing/nrp-mcp" class="util-gh"><i class="fa-brands fa-github" aria-hidden="true"></i> GitHub</a>
+  </div>
+</div>
+
+<header class="top">
+  <div class="container">
+    <a class="brand" href="#main">
+      <span class="brand-name">nrp-mcp<small>An MCP server for the NRP Nautilus cluster</small></span>
+    </a>
+    <nav class="nav" aria-label="Sections">
+      <a href="#features">What it does</a>
+      <a href="#how">How it works</a>
+      <a href="#safety">Safety</a>
+      <a href="#start">Quick start</a>
+      <a href="#examples">Examples</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="hero">
+  <div class="container hero-grid">
+    <div class="hero-copy">
+      <div class="kicker">MCP server<span class="sep">/</span>Nautilus<span class="sep">/</span>v0.6.4</div>
+      <h1>Run your research on Nautilus by talking to your AI assistant.</h1>
+      <p class="lead"><code>nrp-mcp</code> is a small MCP server that runs on your own computer. Point it at your Nautilus sign-in and it turns "here is my code, run it on a GPU" into a reviewed plan and a running job. It knows the NRP's rules, so you don't have to learn Kubernetes first.</p>
+      <div class="actions">
+        <a class="btn gold solid" href="#start"><i class="fa-solid fa-play" aria-hidden="true"></i> Get started</a>
+        <a class="btn gold" href="https://github.com/UCR-Research-Computing/nrp-mcp"><i class="fa-brands fa-github" aria-hidden="true"></i> View on GitHub</a>
+        <a class="btn gold" href="https://github.com/UCR-Research-Computing/nrp-mcp/releases/tag/v0.6.4"><i class="fa-solid fa-tag" aria-hidden="true"></i> Release v0.6.4</a>
+      </div>
+      <div class="badges">
+        <a href="https://github.com/UCR-Research-Computing/nrp-mcp/actions/workflows/ci.yml"><img src="https://github.com/UCR-Research-Computing/nrp-mcp/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status" height="20" loading="lazy"></a>
+        <a href="https://github.com/UCR-Research-Computing/nrp-mcp/actions/workflows/setup-e2e.yml"><img src="https://github.com/UCR-Research-Computing/nrp-mcp/actions/workflows/setup-e2e.yml/badge.svg?branch=main" alt="Setup on Linux, macOS, Windows CI status" height="20" loading="lazy"></a>
+      </div>
+    </div>
+    <figure class="chat" aria-label="Example conversation from the README">
+      <div class="chat-bar"><span></span><span></span><span></span><b>your AI client + nrp</b></div>
+      <dl class="chat-body">
+        <dt class="you">You</dt>
+        <dd>Run train.py in ~/proj/leafnet on a GPU.</dd>
+        <dt class="bot">Assistant</dt>
+        <dd>Plan: one Job using pytorch/pytorch, 1 standard GPU, 4 cores, 16 GiB, 24-hour limit. It installs requirements.txt and runs <code>python train.py</code>. A100s need a quota you don't have, so this asks for any free standard GPU. Run it?</dd>
+        <dt class="you">You</dt>
+        <dd>Yes.</dd>
+        <dt class="bot">Assistant</dt>
+        <dd>Running on an RTX A4000... Finished in 41 minutes. Copy results/ back?</dd>
+      </dl>
+    </figure>
+  </div>
+  <div class="slash" aria-hidden="true"></div>
+</section>
+
+<section class="band" id="features">
+  <div class="container">
+    <div class="band-head">
+      <div>
+        <div class="kicker">What it does</div>
+        <h2>From "run this" to a running job</h2>
+        <p class="sub">Each tool is named for what you want rather than for Kubernetes objects. Every result starts with a plain-language summary and, where useful, the <code>kubectl</code> equivalent so you learn as you go.</p>
+      </div>
+    </div>
+    <div class="tasks">
+      <article class="task">
+        <div class="ic"><i class="fa-solid fa-laptop-code" aria-hidden="true"></i></div>
+        <h3>Runs locally, as you</h3>
+        <p>It runs on your computer with your kubeconfig and the NRP's own sign-in. It never reads or stores your token, and nothing leaves your computer except the Kubernetes calls you approve.</p>
+      </article>
+      <article class="task">
+        <div class="ic"><i class="fa-solid fa-clipboard-check" aria-hidden="true"></i></div>
+        <h3>Reviewed plans, two-step confirm</h3>
+        <p>Planning creates nothing. You see the image, size, decisions and manifests first. Running and cleanup need a single-use token bound to the exact plan, valid for 10 minutes.</p>
+      </article>
+      <article class="task">
+        <div class="ic"><i class="fa-solid fa-scale-balanced" aria-hidden="true"></i></div>
+        <h3>Knows the NRP rules</h3>
+        <p>Non-sensitive data only, Jobs instead of sleep loops, limits within 20% of requests, quota-gated GPUs and more. A plan that breaks a rule is refused, with the reason and the fix.</p>
+      </article>
+      <article class="task">
+        <div class="ic"><i class="fa-solid fa-layer-group" aria-hidden="true"></i></div>
+        <h3>Jobs, sweeps and Slurm scripts</h3>
+        <p>"Run it 200 times with different seeds" becomes an Indexed Job. <code>#SBATCH</code> lines are translated, and a Slurm array script runs unchanged with its array variables set per task.</p>
+      </article>
+      <article class="task">
+        <div class="ic"><i class="fa-solid fa-stethoscope" aria-hidden="true"></i></div>
+        <h3>"Why did it fail?"</h3>
+        <p>Plain-language diagnosis with a fix: out of memory, no free GPU, quota, image pull, crashes. Progress and logs with tail and grep.</p>
+      </article>
+      <article class="task">
+        <div class="ic"><i class="fa-solid fa-book-open" aria-hidden="true"></i></div>
+        <h3>Notebooks, data and web apps</h3>
+        <p>Private Jupyter or VS Code sessions through port-forward, in-cluster dataset downloads to a shared volume, and lab tools on HTTPS, published only after you type the URL back.</p>
+      </article>
+      <article class="task">
+        <div class="ic"><i class="fa-solid fa-screwdriver-wrench" aria-hidden="true"></i></div>
+        <h3>Laptop setup on Linux, macOS, Windows</h3>
+        <p><code>nrp-mcp setup</code> installs kubectl and kubelogin into your user folder (SHA256-checked, no admin rights) and signs you in. CI installs and checks them on every change on all three systems.</p>
+      </article>
+      <article class="task">
+        <div class="ic"><i class="fa-solid fa-plug" aria-hidden="true"></i></div>
+        <h3>Works with your MCP client</h3>
+        <p>Tested end to end with Hermes Agent, Gemini CLI, OpenCode and Claude Code. Also works with Claude Desktop, VS Code, Cursor and any other MCP client.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="band alt" id="tools">
+  <div class="container">
+    <div class="band-head">
+      <div>
+        <div class="kicker">The tools</div>
+        <h2>Nine tools</h2>
+        <p class="sub">Five are read-only. The rest change things only as listed: with a flag, a confirm token, or a second confirm.</p>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table class="tools">
+        <thead>
+          <tr><th scope="col">Tool</th><th scope="col">Changes things?</th><th scope="col">What it does</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>nrp_setup</code></td><td><span class="pill warn">only with fix=true</span></td><td>Laptop readiness: kubectl (version vs the cluster), kubelogin, NRP config, sign-in; installs or updates them with your yes</td></tr>
+          <tr><td><code>nrp_status</code></td><td><span class="pill no">no</span></td><td>Identity, namespaces, GPU quotas, workloads and what they ask for, volumes, public URLs, warnings</td></tr>
+          <tr><td><code>nrp_plan</code></td><td><span class="pill no">no</span></td><td>Inspects a project and a goal (<code>job</code>, <code>sweep</code>, <code>web</code>, <code>session</code>, <code>llm-batch</code>, <code>volume</code>, <code>pull</code>), applies every rule, returns a summary, decisions, refusals, manifests and a confirm token</td></tr>
+          <tr><td><code>nrp_run</code></td><td><span class="pill yes">yes, with a token</span></td><td>Runs an approved plan; web plans also need <code>public_ack</code>; writes a run card to <code>&lt;project&gt;/.nrp/runs/</code></td></tr>
+          <tr><td><code>nrp_watch</code></td><td><span class="pill no">no</span></td><td>Progress, logs (tail/grep), diagnosis with a fix, public URL check</td></tr>
+          <tr><td><code>nrp_cleanup</code></td><td><span class="pill yes">yes, two steps</span></td><td>Lists your runs, then deletes one after a second confirm</td></tr>
+          <tr><td><code>nrp_session</code></td><td><span class="pill no">no</span></td><td>Readiness, port-forward command and local link for a notebook or VS Code session</td></tr>
+          <tr><td><code>nrp_data</code></td><td><span class="pill warn">uploads only</span></td><td>List, upload small non-sensitive files, download results from a volume</td></tr>
+          <tr><td><code>nrp_build</code></td><td><span class="pill no">no</span></td><td>Suggests a Dockerfile and an NRP GitLab CI (kaniko) file</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">Also served: resources <code>nrp://policy</code>, <code>nrp://gpus</code>, <code>nrp://storage</code>, <code>nrp://llm</code>, <code>nrp://kb</code>, and prompts <code>first_run</code>, <code>port_slurm_script</code>, <code>parameter_sweep</code>, <code>my_job_failed</code>, <code>host_web_tool</code>, <code>teach_workshop</code>.</p>
+  </div>
+</section>
+
+<section class="band" id="how">
+  <div class="container">
+    <div class="band-head">
+      <div>
+        <div class="kicker">How it works</div>
+        <h2>One binary between your assistant and the cluster</h2>
+        <p class="sub">Your AI client starts <code>nrp-mcp serve</code> and talks to it over stdio. Planning and rule checks are pure, tested code; only the <code>kube</code> step touches the cluster, using kubectl as you.</p>
+      </div>
+    </div>
+    <div class="diagram" role="img" aria-label="Diagram: AI client talks MCP over stdio to nrp-mcp serve on your computer, which has inspect, plan, rules, store and kube stages; kube runs kubectl as you against Nautilus.">
+      <div class="node client">
+        <i class="fa-solid fa-comments" aria-hidden="true"></i>
+        <b>AI client</b>
+        <span>Hermes Agent, Gemini CLI, OpenCode, Claude Code, ...</span>
+      </div>
+      <div class="arrow"><span>MCP over stdio</span></div>
+      <div class="node server">
+        <div class="server-head"><i class="fa-solid fa-laptop" aria-hidden="true"></i> <b>nrp-mcp serve</b> <em>on your computer</em></div>
+        <ol class="stages">
+          <li><code>inspect</code><span>reads your project folder: language, GPU use, entry point, web app, Slurm script</span></li>
+          <li><code>plan</code><span>builds manifests from facts + goal (pure, tested)</span></li>
+          <li><code>rules</code><span>checks every NRP policy (pure, tested)</span></li>
+          <li><code>store</code><span>plans, hashed confirm tokens, audit log</span></li>
+          <li><code>kube</code><span>runs kubectl as you (kubelogin handles the sign-in)</span></li>
+        </ol>
+      </div>
+      <div class="arrow"><span>your approved calls</span></div>
+      <div class="node cluster">
+        <i class="fa-solid fa-server" aria-hidden="true"></i>
+        <b>Nautilus (Kubernetes)</b>
+        <span>Jobs, Deployments, volumes, Ingress in your namespace</span>
+      </div>
+    </div>
+    <p class="note">Small projects are copied into the pod as a ConfigMap and their requirements installed at start. Bigger ones get an image built on NRP GitLab (<code>nrp_build</code>). The full design, every rule and the test record are in <a href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/SPEC.md">SPEC.md</a>.</p>
+  </div>
+</section>
+
+<section class="band navy" id="safety">
+  <div class="container">
+    <div class="band-head">
+      <div>
+        <div class="kicker">Safety</div>
+        <h2>Nothing happens without a yes</h2>
+        <p class="sub">From the README's safety section. See <a href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/SECURITY.md">SECURITY.md</a> for details and how to report a problem.</p>
+      </div>
+    </div>
+    <div class="safety">
+      <div class="s-item"><i class="fa-solid fa-user-lock" aria-hidden="true"></i><div><h3>Runs as you, on your computer</h3><p>Uses your kubeconfig and the NRP's sign-in. Never reads or stores your token.</p></div></div>
+      <div class="s-item"><i class="fa-solid fa-key" aria-hidden="true"></i><div><h3>Single-use confirm tokens</h3><p>Run and cleanup need a token bound to the exact plan, valid for 10 minutes.</p></div></div>
+      <div class="s-item"><i class="fa-solid fa-globe" aria-hidden="true"></i><div><h3>Nothing goes public by accident</h3><p>A web plan publishes only when you type its exact URL back.</p></div></div>
+      <div class="s-item"><i class="fa-solid fa-users" aria-hidden="true"></i><div><h3>Shared namespaces are safe</h3><p>Every object is labelled with its owner; cleanup sees only your runs unless a namespace admin asks for everyone's.</p></div></div>
+      <div class="s-item"><i class="fa-solid fa-gauge" aria-hidden="true"></i><div><h3>Caps</h3><p>On pods and GPUs running at once, tasks per sweep, and hours per run.</p></div></div>
+      <div class="s-item"><i class="fa-solid fa-file-lines" aria-hidden="true"></i><div><h3>Audit log</h3><p>Every change is logged at <code>~/.local/state/nrp-mcp/audit.log</code>.</p></div></div>
+    </div>
+    <div class="rules">
+      <h3>NRP rules built in, each with a test and a link to its source</h3>
+      <ul>
+        <li>non-sensitive data only</li>
+        <li>Jobs instead of sleep loops</li>
+        <li>limits within 20% of requests</li>
+        <li>quota-gated GPUs (A100/H100/H200/GH200)</li>
+        <li>no GPUs on long-running services</li>
+        <li>allowed priority classes only</li>
+        <li>secrets kept out of specs</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="start">
+  <div class="container">
+    <div class="band-head">
+      <div>
+        <div class="kicker">Quick start</div>
+        <h2>Five steps</h2>
+        <p class="sub">You need a Nautilus account and a namespace. Sign in at <a href="https://nrp.ai">nrp.ai</a> with your institution; students are added to a namespace by their PI, faculty can request one. UCR researchers: see <a href="https://ucr-research-computing.github.io/kb/kb024-nautilus-getting-access/">Getting access</a>.</p>
+      </div>
+    </div>
+    <ol class="steps">
+      <li>
+        <h3>Install nrp-mcp</h3>
+        <p>Linux or macOS:</p>
+        <div class="code"><pre><code>curl -fsSL https://raw.githubusercontent.com/UCR-Research-Computing/nrp-mcp/main/scripts/install.sh | sh</code></pre><button class="copy" type="button" aria-label="Copy install command">Copy</button></div>
+        <p>Windows: download <code>nrp-mcp_&lt;version&gt;_windows_amd64.zip</code> from <a href="https://github.com/UCR-Research-Computing/nrp-mcp/releases">Releases</a>, unzip it and keep <code>nrp-mcp.exe</code> somewhere handy. With Go installed, this works everywhere:</p>
+        <div class="code"><pre><code>go install github.com/UCR-Research-Computing/nrp-mcp/cmd/nrp-mcp@latest</code></pre><button class="copy" type="button" aria-label="Copy go install command">Copy</button></div>
+      </li>
+      <li>
+        <h3>Download your NRP config</h3>
+        <p>At <a href="https://nrp.ai/config">nrp.ai/config</a> (it lands in Downloads).</p>
+      </li>
+      <li>
+        <h3>Get your computer ready</h3>
+        <div class="code"><pre><code>nrp-mcp setup</code></pre><button class="copy" type="button" aria-label="Copy setup command">Copy</button></div>
+        <p><code>setup</code> checks everything first and asks before changing anything. Then it installs kubectl and the kubelogin sign-in plugin (official releases, SHA256-checked, into your user folder, no admin rights), puts the NRP config in <code>~/.kube/config</code> (backing up an existing one), and signs you in through your browser. It ends with "This computer is ready for Nautilus."</p>
+      </li>
+      <li>
+        <h3>Add it to your AI client</h3>
+        <p>Tested end to end (live cluster, Gemini API key) with each of these:</p>
+        <div class="table-wrap">
+          <table class="clients">
+            <thead><tr><th scope="col">Client</th><th scope="col">Add nrp</th></tr></thead>
+            <tbody>
+              <tr><td><a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a></td><td><code>hermes mcp add nrp --command nrp-mcp --args serve</code></td></tr>
+              <tr><td><a href="https://github.com/google-gemini/gemini-cli">Gemini CLI</a></td><td><code>gemini mcp add nrp nrp-mcp serve</code></td></tr>
+              <tr><td><a href="https://opencode.ai/">OpenCode</a></td><td>add <code>"mcp": {"nrp": {"type": "local", "command": ["nrp-mcp", "serve"]}}</code> to <code>opencode.json</code></td></tr>
+              <tr><td>Claude Code</td><td><code>claude mcp add nrp -- nrp-mcp serve</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Claude Desktop, Cursor, VS Code and others (<code>mcpServers</code> block):</p>
+        <div class="code"><pre><code>{"mcpServers": {"nrp": {"command": "nrp-mcp", "args": ["serve"]}}}</code></pre><button class="copy" type="button" aria-label="Copy mcpServers block">Copy</button></div>
+        <p>Use the full path to <code>nrp-mcp</code> if your client doesn't see your shell's PATH, and add <code>"--namespace", "&lt;your-namespace&gt;"</code> to <code>args</code> to pick a default.</p>
+      </li>
+      <li>
+        <h3>Ask</h3>
+        <p class="ask-line">"Where do I stand on Nautilus?"</p>
+      </li>
+    </ol>
+    <div class="limits">
+      <h3><i class="fa-solid fa-circle-info" aria-hidden="true"></i> Limits</h3>
+      <ul>
+        <li>Code is copied as text files under 200 KB each (900 KB total). Bigger projects need an image (<code>nrp_build</code>) or git.</li>
+        <li><code>nrp_build</code> suggests files; it doesn't build. Builds run on NRP GitLab.</li>
+        <li>S3 uploads are guidance only; S3 keys come from the NRP portal.</li>
+        <li>Sessions are port-forwarded and never public. For zero install, the NRP runs a hosted JupyterHub.</li>
+        <li>The browser sign-in step of <code>setup</code> can't run in CI and is tested by hand.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="band alt" id="examples">
+  <div class="container">
+    <div class="band-head">
+      <div>
+        <div class="kicker">Research examples</div>
+        <h2>20 fields, 20 worked examples</h2>
+        <p class="sub">Each shows a realistic conversation with an AI assistant, what nrp-mcp builds, a compute estimate, honest limits, and a starter kit you can adapt. These are illustrations, not case studies: none of these groups use nrp-mcp today, none of these runs happened, and times and costs are stated assumptions. <a href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/README.md">Read the index</a>.</p>
+      </div>
+    </div>
+    <div class="ex-grid">
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/01-bee-repellent-screening.md"><span class="ex-n">01</span><b>Bee repellent screening</b><span class="ex-f">Chemical ecology, ML</span></a>
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/02-atmospheric-rivers-ensemble.md"><span class="ex-n">02</span><b>Atmospheric rivers in CMIP6</b><span class="ex-f">Climate dynamics</span></a>
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/03-sea-ice-floe-sweep.md"><span class="ex-n">03</span><b>Sea-ice floe sweep</b><span class="ex-f">Granular physics</span></a>
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/04-plant-genome-scans.md"><span class="ex-n">04</span><b>Plant genome scans</b><span class="ex-f">Plant genomics</span></a>
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/05-mission-records-llm.md"><span class="ex-n">05</span><b>Mission records with an LLM</b><span class="ex-f">History, digital humanities</span></a>
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/06-exoplanet-enceladus-spectra.md"><span class="ex-n">06</span><b>Exoplanet and Enceladus spectra</b><span class="ex-f">Astrobiology</span></a>
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/07-avian-flu-proteomics-ai.md"><span class="ex-n">07</span><b>Avian flu proteomics</b><span class="ex-f">Virology, proteomics</span></a>
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/08-video-computing-training.md"><span class="ex-n">08</span><b>Video model training</b><span class="ex-f">Computer vision</span></a>
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/09-llm-confidence-probing.md"><span class="ex-n">09</span><b>LLM confidence probing</b><span class="ex-f">Trustworthy AI</span></a>
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/10-cloud-droplet-parcel-sweeps.md"><span class="ex-n">10</span><b>Cloud droplet parcel sweeps</b><span class="ex-f">Atmospheric chemistry</span></a>
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/11-joint-model-simulation-study.md"><span class="ex-n">11</span><b>Joint-model simulation study</b><span class="ex-f">Statistics</span></a>
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/12-mosquito-wolbachia-genomics.md"><span class="ex-n">12</span><b>Wolbachia genomics</b><span class="ex-f">Entomology</span></a>
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/13-open-neuroimaging-pipelines.md"><span class="ex-n">13</span><b>Open neuroimaging</b><span class="ex-f">Neuroscience</span></a>
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/14-air-quality-dashboard.md"><span class="ex-n">14</span><b>Air-quality dashboard</b><span class="ex-f">Air quality</span></a>
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/15-seismic-waveform-processing.md"><span class="ex-n">15</span><b>Seismic waveforms</b><span class="ex-f">Seismology</span></a>
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/16-2d-materials-dft-scans.md"><span class="ex-n">16</span><b>2D materials DFT scans</b><span class="ex-f">Condensed matter</span></a>
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/17-metabolomics-spectral-matching.md"><span class="ex-n">17</span><b>Metabolomics matching</b><span class="ex-f">Metabolomics</span></a>
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/18-course-notebooks-for-a-class.md"><span class="ex-n">18</span><b>Course notebooks</b><span class="ex-f">Teaching</span></a>
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/19-econometrics-monte-carlo.md"><span class="ex-n">19</span><b>Econometrics Monte Carlo</b><span class="ex-f">Econometrics</span></a>
+      <a class="ex" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/20-open-text-llm-coding.md"><span class="ex-n">20</span><b>Open-text LLM coding</b><span class="ex-f">Social science</span></a>
+    </div>
+    <p class="note">Runnable sample projects live in <a href="https://github.com/UCR-Research-Computing/nrp-mcp/tree/main/examples">examples/</a>: <a href="https://github.com/UCR-Research-Computing/nrp-mcp/tree/main/examples/leaf-area-explorer">leaf-area-explorer</a> (a web app) and <a href="https://github.com/UCR-Research-Computing/nrp-mcp/tree/main/examples/slurm-array-bootstrap">slurm-array-bootstrap</a> (an R bootstrap with a <code>--array=0-9</code> Slurm script).</p>
+  </div>
+</section>
+
+<section class="band" id="links">
+  <div class="container">
+    <div class="band-head">
+      <div>
+        <div class="kicker">Links</div>
+        <h2>Read more</h2>
+      </div>
+    </div>
+    <div class="links">
+      <a class="lk" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/README.md"><i class="fa-solid fa-book" aria-hidden="true"></i><span>README</span></a>
+      <a class="lk" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/SPEC.md"><i class="fa-solid fa-compass-drafting" aria-hidden="true"></i><span>Spec</span></a>
+      <a class="lk" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/CHANGELOG.md"><i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i><span>Changelog</span></a>
+      <a class="lk" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/examples/README.md"><i class="fa-solid fa-flask" aria-hidden="true"></i><span>Research examples</span></a>
+      <a class="lk" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/SECURITY.md"><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><span>Security</span></a>
+      <a class="lk" href="https://github.com/UCR-Research-Computing/nrp-mcp/releases"><i class="fa-solid fa-tags" aria-hidden="true"></i><span>Releases</span></a>
+      <a class="lk" href="https://github.com/UCR-Research-Computing/nrp-mcp/issues"><i class="fa-solid fa-circle-exclamation" aria-hidden="true"></i><span>Issues</span></a>
+      <a class="lk" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/LICENSE"><i class="fa-solid fa-scale-balanced" aria-hidden="true"></i><span>MIT License</span></a>
+    </div>
+    <p class="note">Nautilus is operated by the National Research Platform (UC San Diego / SDSC). This is a community tool from UCR Research Computing, not an NRP product. Please follow the <a href="https://nrp.ai/documentation/userdocs/start/policies/">NRP policies</a>. UCR researchers: see the <a href="https://ucr-research-computing.github.io/kb/kb023-nautilus-researcher-guide/">Nautilus guides</a>.</p>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="container">
+    <p>Built by <a href="https://ucr-research-computing.github.io/">UCR Research Computing</a>, University of California, Riverside.</p>
+    <p>nrp-mcp is released under the <a href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/LICENSE">MIT License</a>.</p>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>
