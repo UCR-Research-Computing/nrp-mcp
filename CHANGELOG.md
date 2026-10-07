@@ -3,6 +3,10 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before 1.0
 minor versions may change behavior.
 
+## [Unreleased]
+
+- Docs: 20 research examples in docs/examples/, linked from the README.
+
 ## [0.6.4] - 2026-10-06
 
 ### Fixed
