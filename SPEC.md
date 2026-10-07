@@ -1,6 +1,6 @@
 # nrp-mcp SPEC
 
-Version 0.6.1 (2026-10-06; code 0.6.1). Owner: UCR Research Computing.
+Version 0.7.0 (2026-10-07; code 0.7.0). Owner: UCR Research Computing.
 Repo: `UCR-Research-Computing/nrp-mcp`. License: MIT.
 
 ## 1. What it is
@@ -106,13 +106,14 @@ useful the `kubectl` equivalent so people learn. Errors are explanations, not st
 |---|---|---|
 | `job` | `batch/v1 Job` | default; one run to completion |
 | `sweep` | Indexed Job | `count` tasks, `parallel` at a time; task index in `JOB_COMPLETION_INDEX`, plus `SLURM_ARRAY_TASK_ID` (the Slurm `--array` id when translated from a script, else the index); >100 tasks forces limits = requests |
-| `web` | Deployment + Service + Ingress | app type detection (Shiny 3838, Streamlit 8501, Flask/FastAPI/uvicorn 8000/5000, static nginx 80, Node 3000), readiness probe, no GPU, TLS, suggested hosts |
+| `web` | Deployment + Service + Ingress | app type detection (Shiny 3838, Streamlit 8501, Dash 8050, Gradio 7860, FastAPI 8000, Flask 5000 incl. Flask with a mounted Dash app, static nginx 8080, Node 3000), readiness probe, no GPU, TLS, suggested hosts; a prebuilt image takes its port from the Dockerfile's `EXPOSE`; same name and owner = update in place |
 | `session` | Deployment (1 replica) | used by `nrp_session` |
 | `llm-batch` | Job | LLM token in a Secret; script retries with backoff; `cache_salt` advice |
 
 Inputs: `project` (path), `goal`, `command` (what to run; inferred if omitted), `gpu` (0..n
 or a type), `cpu`, `memory`, `count`/`parallel` (sweep), `image` (override), `name`,
-`namespace`, `host` (web), `data` (list of sources), `slurm_script` (translate).
+`namespace`, `host` (web), `port` (web), `data_volume`, `pull_secret` (private image),
+`llm_secret`, `size`/`urls`/`subdir`/`data_is_p1` (volume, pull), `session`, `opportunistic`.
 
 Image choice order: user `image` (with a Dockerfile or no project: run as built, port from
 `EXPOSE`, no code copy or install); project Dockerfile without `image` (needs a build first;
@@ -121,16 +122,18 @@ suggests `ghcr.io/<owner>/<repo>:latest`); detected stack
 `tensorflow/tensorflow:latest-gpu`, Jupyter/data science ->
 `quay.io/jupyter/scipy-notebook`, R -> `rocker/r-ver`, Shiny -> `rocker/shiny`, Python ->
 `python:3.12-slim`); requirements installed at start only for small projects, otherwise a
-build is recommended.
+build is recommended. `pull_secret` names a docker-registry Secret for a private image
+(added as `imagePullSecrets`); without it, a ghcr.io or NRP GitLab image gets a note that a
+private image needs one or must be made public.
+
+Web plans reuse the run id of the person's own nrp-mcp Deployment of the same name, so a new
+version updates it in place (a Deployment selector is immutable); a same-named Deployment that
+someone else made is refused.
 
 ### 5.2 Confirm tokens
 
 Token = 32 random bytes, base64url, returned once. Store keeps sha256(token), plan id, plan
 hash (sha256 of the canonical manifests + goal + public URL), expiry (10 min), used flag.
-Web plans reuse the run id of the person's own nrp-mcp Deployment of the same name, so a new
-version updates it in place (a Deployment selector is immutable); a same-named Deployment that
-someone else made is refused.
-
 `nrp_run`/`nrp_build`/`nrp_cleanup` recompute the plan hash and refuse on mismatch, expiry
 or reuse.
 
@@ -180,7 +183,7 @@ Pattern table on pod status, container states and events:
 | Pending, `Insufficient nvidia.com/gpu` / `didn't match` | no free node fits right now | smaller GPU, fewer GPUs, or wait |
 | Pending, `high-priority-ban` / `low-priority-ban` | banned priorityClassName | remove it |
 | `OOMKilled` | ran out of memory at the limit | raise memory 50% and rerun |
-| `ImagePullBackOff` / `ErrImagePull` | image missing or private | check the name; add a pull secret |
+| `ImagePullBackOff` / `ErrImagePull` | image missing or private | check the name and tag; a private ghcr.io/GitLab image needs `pull_secret=` or a public package (live-checked 2026-10-07) |
 | `CrashLoopBackOff` / exit != 0 | the program failed | last 40 log lines |
 | `ContainerCreating` long, `FailedMount` | volume can't mount on that node (seen with CephFS) | delete the pod so the Job reschedules |
 | exit 137 without OOM | killed (deadline or preemption) | check activeDeadlineSeconds / opportunistic |
@@ -213,11 +216,12 @@ Prompts: `first_run`, `port_slurm_script`, `parameter_sweep`, `my_job_failed`,
 | P3 | 0.3.0 | `nrp_run`, tokens, run cards, `nrp_cleanup` | done; live-tested 2026-10-06 |
 | P4 | 0.4.0 | `nrp_data`, `nrp_session` | done; live-tested 2026-10-06 (`scripts/e2e2`) |
 | P4b | 0.4.1 | web publish end to end with `public_ack` | done 2026-10-06: leaf-area-explorer published through the MCP tools, live in about 1 minute, HTTP 200, TLS valid (NRP wildcard cert, Let's Encrypt), then removed |
-| P5 | 0.5.0 | `nrp_build` | 0.3.0 suggests Dockerfile + NRP GitLab kaniko CI; does not build (decided: build on NRP GitLab, not a kaniko Job in the namespace, so no registry credentials touch nrp-mcp) |
-| P5b | 0.7.0 | GitHub image path | GitHub Actions -> ghcr.io build (default), prebuilt image runs, pull_secret, in-place web updates; live-tested 2026-10-07 (Flask+Dash+C helper: build green, private pull refused with the right fix, public deploy HTTP 200, update in place) |
-| P5b | 0.5.0 | `nrp_setup` and `nrp-mcp setup` (laptop readiness) | done; live-tested on fresh laptops |
+| P5 | 0.5.0 | `nrp_build` | 0.3.0 suggests Dockerfile + NRP GitLab kaniko CI; does not build (decided: builds never run in the namespace, so no registry credentials touch nrp-mcp) |
+| P5a | 0.5.0 | `nrp_setup` and `nrp-mcp setup` (laptop readiness) | done; live-tested on fresh laptops |
 | P6 | 0.6.0 | public repo, release binaries for Linux/macOS/Windows, install script, per-person cleanup | done 2026-10-06 |
 | P6b | 0.6.1 | `setup-e2e` CI: `nrp-mcp setup` on Linux, Windows, macOS arm64 and macOS Intel runners (real downloads, sample config, second run idempotent) | done |
+| P6c | 0.6.2-0.6.4 | client compatibility and sweep fixes: single-typed tool schemas (Gemini), Slurm array ids inside scripts, caps count what runs at once | done 2026-10-06; Hermes Agent, Gemini CLI and OpenCode tested live |
+| P5b | 0.7.0 | GitHub image path: GitHub Actions -> ghcr.io (default, built-in token), prebuilt image runs, `pull_secret`, in-place web updates; NRP GitLab as `target=gitlab` | done; live-tested 2026-10-07 (section 12). Not yet live-tested: the `pull_secret` path with a real token, and `target=gitlab` |
 | P7 | 1.0.0 | pilot with RC and a first lab workshop; browser sign-in on macOS and Windows checked by hand | next |
 
 ## 12. Testing
@@ -232,7 +236,12 @@ In-process MCP tests (`internal/mcpserver`) drive the real protocol over an in-m
 transport with a fake kubectl: nine tools, five resources, six prompts; plan creates
 nothing; wrong, reused tokens refused; web refused without or with a wrong `public_ack`
 (token survives a failed ack); A100 with quota 0 not runnable; cleanup two-step and only
-by the managed-by label; volume refused without `data_is_p1`; build writes nothing.
+by the managed-by label; volume refused without `data_is_p1`; build writes nothing; build
+defaults to GitHub (workflow uses GITHUB_TOKEN and ghcr.io; image from the git remote;
+compiled code gets build-essential and `make`; Flask gets gunicorn and EXPOSE) and
+`target=gitlab` gives kaniko. Plan tests: a prebuilt image runs its own CMD with no code
+volume, port from EXPOSE and the pull secret; a Dockerfile without an image needs a build on
+ghcr.io; a prebuilt Job keeps /data.
 
 Live end-to-end (`scripts/e2e`, a real stdio client against Nautilus), 2026-10-06 in an
 RC namespace: status, plan (1 CPU, 1 GiB, python:3.12-slim), run, watch
@@ -290,6 +299,24 @@ the runner's own kubectl. It must install kubectl and kubelogin (SHA256 verified
 the config byte for byte, run both tools, let kubectl find the plugin by name, and change
 nothing on a second run. Runs on every push, pull request and weekly.
 
+Clients, 2026-10-06 (0.6.2): Hermes Agent, Gemini CLI and OpenCode, each with a Gemini API
+key, answered "where do I stand on Nautilus?" from the live cluster. OpenCode on Gemini first
+failed because one tool schema used a two-type field; fixed with single types and a test.
+
+GitHub image path, 2026-10-07 (0.7.0, RC namespace, synthetic data): a Flask app with a
+mounted Dash dashboard, a C helper built with `make`, a CSV over 900 KB and a Dockerfile, in a
+throwaway private GitHub repo. `nrp_build` gave the workflow and image name from the remote;
+the push built green on GitHub Actions (built-in token, no secrets added). With the package
+private, the Deployment stopped at ErrImagePull and `nrp_watch` named the cause and the fix
+(pull secret or public package). After the package was made public, `nrp_plan image=...`
+then `nrp_run` with `public_ack` gave HTTP 200 on the Flask page, the compiled helper and the
+Dash chart. A new image was then deployed in place at the same address. Found and fixed: (1) a
+Flask app with Dash mounted was detected as Dash (wrong port and command); (2) re-planning a
+deployed name collided with the running Deployment (`spec.selector: field is immutable`);
+plans now reuse the person's run. Also seen: two crash loops from the test app's own missing
+packages (numpy, pandas), each shown with the exact error by `nrp_watch`. Everything was
+removed with `nrp_cleanup` and the repo deleted.
+
 ## 13. Change log
 
 | Version | Date | Change |
@@ -301,3 +328,5 @@ nothing on a second run. Runs on every push, pull request and weekly.
 | 0.5 | 2026-10-06 | Code 0.5.0: ninth tool `nrp_setup` and `nrp-mcp setup` (laptop readiness and install) |
 | 0.6 | 2026-10-06 | Code 0.6.0: public release; per-person cleanup (owner-id label); one namespace resolution for all tools; release binaries and install script |
 | 0.6.1 | 2026-10-06 | Code 0.6.1: `setup --no-sign-in`; setup-e2e CI on four OS runners |
+| 0.6.4 | 2026-10-06 | Code 0.6.2-0.6.4: single-typed schemas (Gemini), Slurm array ids, caps count concurrent pods, `tasks_per_run`; client tests |
+| 0.7.0 | 2026-10-07 | Code 0.7.0: GitHub image builds by default (D4 revised), prebuilt images with `pull_secret`, in-place web updates, Flask+Dash detection; live test recorded; phase table cleaned (duplicate P5b) |
