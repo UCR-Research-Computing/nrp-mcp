@@ -50,13 +50,13 @@
 <section class="hero">
   <div class="container hero-grid">
     <div class="hero-copy">
-      <div class="kicker">MCP server<span class="sep">/</span>Nautilus<span class="sep">/</span>v0.6.4</div>
+      <div class="kicker">MCP server<span class="sep">/</span>Nautilus<span class="sep">/</span>v0.7.0</div>
       <h1>Run your research on Nautilus by talking to your AI assistant.</h1>
       <p class="lead"><code>nrp-mcp</code> is a small MCP server that runs on your own computer. Point it at your Nautilus sign-in and it turns "here is my code, run it on a GPU" into a reviewed plan and a running job. It knows the NRP's rules, so you don't have to learn Kubernetes first.</p>
       <div class="actions">
         <a class="btn gold solid" href="#start"><i class="fa-solid fa-play" aria-hidden="true"></i> Get started</a>
         <a class="btn gold" href="https://github.com/UCR-Research-Computing/nrp-mcp"><i class="fa-brands fa-github" aria-hidden="true"></i> View on GitHub</a>
-        <a class="btn gold" href="https://github.com/UCR-Research-Computing/nrp-mcp/releases/tag/v0.6.4"><i class="fa-solid fa-tag" aria-hidden="true"></i> Release v0.6.4</a>
+        <a class="btn gold" href="https://github.com/UCR-Research-Computing/nrp-mcp/releases/latest"><i class="fa-solid fa-tag" aria-hidden="true"></i> Release v0.7.0</a>
       </div>
       <div class="badges">
         <a href="https://github.com/UCR-Research-Computing/nrp-mcp/actions/workflows/ci.yml"><img src="https://github.com/UCR-Research-Computing/nrp-mcp/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status" height="20" loading="lazy"></a>
@@ -157,7 +157,7 @@
           <tr><td><code>nrp_cleanup</code></td><td><span class="pill yes">yes, two steps</span></td><td>Lists your runs, then deletes one after a second confirm</td></tr>
           <tr><td><code>nrp_session</code></td><td><span class="pill no">no</span></td><td>Readiness, port-forward command and local link for a notebook or VS Code session</td></tr>
           <tr><td><code>nrp_data</code></td><td><span class="pill warn">uploads only</span></td><td>List, upload small non-sensitive files, download results from a volume</td></tr>
-          <tr><td><code>nrp_build</code></td><td><span class="pill no">no</span></td><td>Suggests a Dockerfile and an NRP GitLab CI (kaniko) file</td></tr>
+          <tr><td><code>nrp_build</code></td><td><span class="pill no">no</span></td><td>Suggests a Dockerfile and a GitHub Actions workflow that builds it into ghcr.io (or, with <code>target=gitlab</code>, an NRP GitLab kaniko file); explains public vs private images</td></tr>
         </tbody>
       </table>
     </div>
@@ -198,7 +198,7 @@
         <span>Jobs, Deployments, volumes, Ingress in your namespace</span>
       </div>
     </div>
-    <p class="note">Small projects are copied into the pod as a ConfigMap and their requirements installed at start. Bigger ones get an image built on NRP GitLab (<code>nrp_build</code>). The full design, every rule and the test record are in <a href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/SPEC.md">SPEC.md</a>.</p>
+    <p class="note">Small projects are copied into the pod as a ConfigMap and their requirements installed at start. Bigger ones get an image: <code>nrp_build</code> writes a GitHub Actions workflow, GitHub builds the image on every push into its container registry (ghcr.io), and <code>nrp_plan image=...</code> deploys it as built. A private image needs <code>pull_secret=</code> (a read-only token stored once in your namespace); a public one needs nothing. The full design, every rule and the test record are in <a href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/SPEC.md">SPEC.md</a>.</p>
   </div>
 </section>
 
@@ -287,7 +287,7 @@
       <h3><i class="fa-solid fa-circle-info" aria-hidden="true"></i> Limits</h3>
       <ul>
         <li>Code is copied as text files under 200 KB each (900 KB total). Bigger projects need an image (<code>nrp_build</code>) or git.</li>
-        <li><code>nrp_build</code> suggests files; it doesn't build. Builds run on NRP GitLab.</li>
+        <li><code>nrp_build</code> suggests files; it doesn't build. Builds run on GitHub Actions (or NRP GitLab).</li>
         <li>S3 uploads are guidance only; S3 keys come from the NRP portal.</li>
         <li>Sessions are port-forwarded and never public. For zero install, the NRP runs a hosted JupyterHub.</li>
         <li>The browser sign-in step of <code>setup</code> can't run in CI and is tested by hand.</li>
