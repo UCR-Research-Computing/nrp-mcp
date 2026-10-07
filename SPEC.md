@@ -21,7 +21,7 @@ than Kubernetes objects.
 | D1 | Name `nrp`; binary `nrp-mcp`; tools `nrp_<verb>` | RC 2026-10-06 |
 | D2 | Local only: stdio MCP on the user's machine; their kubeconfig; acts as them through the kubelogin exec plugin. Never reads, prints or sends the token | design |
 | D3 | Plan, approve, run. Anything that creates, deletes, publishes or spends GPU time takes a single-use confirm token bound to the exact plan hash (10 minutes) | design (two-step pattern from RC's other MCP servers) |
-| D4 | Builds run on NRP GitLab CI with kaniko (changed 2026-10-06 from a kaniko Job in the namespace: no registry credentials in nrp-mcp, and NRP documents GitLab CI as the build path). `nrp_build` suggests the Dockerfile and CI file | design, revised |
+| D4 | Builds run outside the namespace and nrp-mcp never holds registry credentials. Default (2026-10-07, Chuck: most researchers already keep code on GitHub): a GitHub Actions workflow builds into ghcr.io with the built-in GITHUB_TOKEN. Alternative: NRP GitLab CI with kaniko (2026-10-06). `nrp_build` suggests the Dockerfile and workflow; `nrp_plan image=` runs a built image as is (`prebuilt`: its own CMD, no code copy), with `pull_secret=` for private images | design, revised 2026-10-07; live-tested |
 | D5 | Web hosting in v1 as a goal of `nrp_plan`; publishing also needs `public_ack` equal to the exact public URL | RC 2026-10-06 |
 | D6 | The tool suggests names (2-3, checked unused, default first) from the app or project; no person or lab names unless the user asks | RC 2026-10-06 |
 | D7 | Go, one static binary, `kubectl` (with `kubectl-oidc_login`) as the cluster client | design |
@@ -93,7 +93,7 @@ useful the `kubectl` equivalent so people learn. Errors are explanations, not st
 | `nrp_setup` | only with `fix=true` | the model asks the user; CLI `nrp-mcp setup` asks [y/N] | laptop readiness: kubectl (version vs the cluster's public /version, verified against the kubeconfig CA), kubelogin, NRP config, sign-in. Fix: official kubectl (dl.k8s.io, matched to the cluster's minor line via stable-X.Y.txt) and kubelogin (GitHub latest release) into the user bin folder, SHA256 verified against the published files, atomic install with a dated backup of any old copy; downloaded NRP config copied to ~/.kube/config (0600), or merged with `kubectl config view --flatten` after a dated backup when a non-NRP config exists. Never needs admin rights; never reads the sign-in token |
 | `nrp_status` | no | - | who am I, namespaces, quotas, limit ranges, running workloads and their use, policy warnings, public URLs, upcoming purges/expiries |
 | `nrp_plan` | no | - | inspect a project + goal; return summary, manifests, rules applied, warnings, refusals, suggested names (web), `plan_id`, and a `confirm_token` when the plan is runnable |
-| `nrp_build` | no | no | containerize: suggests a Dockerfile and a `.gitlab-ci.yml` (kaniko on NRP GitLab) plus steps; writes nothing |
+| `nrp_build` | no | no | containerize: suggests a Dockerfile and a GitHub Actions workflow (`target=github`, default; image `ghcr.io/<owner>/<repo>` from the git remote) or a `.gitlab-ci.yml` (`target=gitlab`), plus steps and public/private image guidance; writes nothing |
 | `nrp_run` | yes | token (+ `public_ack` for web) | apply an approved plan; label; secrets; TTL; run card |
 | `nrp_watch` | no | - | progress, logs (tail/grep), events, plain-language diagnosis with a suggested fix |
 | `nrp_data` | yes for uploads | `data_is_p1` for up | list / up (under 100 MB, kubectl cp through a small labelled helper pod) / down; bigger data is pointed to `nrp_plan goal=pull` or NRP S3. No token in 0.3.0 (TODO: token for uploads) |
@@ -114,7 +114,9 @@ Inputs: `project` (path), `goal`, `command` (what to run; inferred if omitted), 
 or a type), `cpu`, `memory`, `count`/`parallel` (sweep), `image` (override), `name`,
 `namespace`, `host` (web), `data` (list of sources), `slurm_script` (translate).
 
-Image choice order: user `image`; project Dockerfile (needs `nrp_build`); detected stack
+Image choice order: user `image` (with a Dockerfile or no project: run as built, port from
+`EXPOSE`, no code copy or install); project Dockerfile without `image` (needs a build first;
+suggests `ghcr.io/<owner>/<repo>:latest`); detected stack
 -> known public image (PyTorch -> `pytorch/pytorch`, TensorFlow ->
 `tensorflow/tensorflow:latest-gpu`, Jupyter/data science ->
 `quay.io/jupyter/scipy-notebook`, R -> `rocker/r-ver`, Shiny -> `rocker/shiny`, Python ->
@@ -125,6 +127,10 @@ build is recommended.
 
 Token = 32 random bytes, base64url, returned once. Store keeps sha256(token), plan id, plan
 hash (sha256 of the canonical manifests + goal + public URL), expiry (10 min), used flag.
+Web plans reuse the run id of the person's own nrp-mcp Deployment of the same name, so a new
+version updates it in place (a Deployment selector is immutable); a same-named Deployment that
+someone else made is refused.
+
 `nrp_run`/`nrp_build`/`nrp_cleanup` recompute the plan hash and refuse on mismatch, expiry
 or reuse.
 
@@ -208,6 +214,7 @@ Prompts: `first_run`, `port_slurm_script`, `parameter_sweep`, `my_job_failed`,
 | P4 | 0.4.0 | `nrp_data`, `nrp_session` | done; live-tested 2026-10-06 (`scripts/e2e2`) |
 | P4b | 0.4.1 | web publish end to end with `public_ack` | done 2026-10-06: leaf-area-explorer published through the MCP tools, live in about 1 minute, HTTP 200, TLS valid (NRP wildcard cert, Let's Encrypt), then removed |
 | P5 | 0.5.0 | `nrp_build` | 0.3.0 suggests Dockerfile + NRP GitLab kaniko CI; does not build (decided: build on NRP GitLab, not a kaniko Job in the namespace, so no registry credentials touch nrp-mcp) |
+| P5b | 0.7.0 | GitHub image path | GitHub Actions -> ghcr.io build (default), prebuilt image runs, pull_secret, in-place web updates; live-tested 2026-10-07 (Flask+Dash+C helper: build green, private pull refused with the right fix, public deploy HTTP 200, update in place) |
 | P5b | 0.5.0 | `nrp_setup` and `nrp-mcp setup` (laptop readiness) | done; live-tested on fresh laptops |
 | P6 | 0.6.0 | public repo, release binaries for Linux/macOS/Windows, install script, per-person cleanup | done 2026-10-06 |
 | P6b | 0.6.1 | `setup-e2e` CI: `nrp-mcp setup` on Linux, Windows, macOS arm64 and macOS Intel runners (real downloads, sample config, second run idempotent) | done |

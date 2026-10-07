@@ -311,11 +311,44 @@ func TestBuildSuggests(t *testing.T) {
 		t.Fatal(text)
 	}
 	df, _ := m["dockerfile_suggestion"].(string)
-	if !strings.Contains(df, "pip install") || !strings.Contains(m["gitlab_ci_suggestion"].(string), "kaniko") {
+	wf, _ := m["workflow_suggestion"].(string)
+	if !strings.Contains(df, "pip install") || m["target"] != "github" || !strings.Contains(wf, "ghcr.io") || !strings.Contains(wf, "GITHUB_TOKEN") {
 		t.Fatalf("%v", m)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "Dockerfile")); err == nil {
 		t.Fatal("nrp_build must not write files")
+	}
+	m, isErr, text = call(t, cs, "nrp_build", map[string]any{"project": dir, "target": "gitlab"})
+	if isErr || !strings.Contains(fmt.Sprint(m["gitlab_ci_suggestion"]), "kaniko") {
+		t.Fatalf("gitlab target: %s %v", text, m)
+	}
+}
+
+func TestBuildUsesGitHubRemote(t *testing.T) {
+	cs, _ := setup(t)
+	dir := project(t, map[string]string{
+		"app.py":           "from flask import Flask\napp = Flask(__name__)\n",
+		"requirements.txt": "flask\n",
+		"Makefile":         "all:\n\tcc -O2 -o helper helper.c\n",
+		"helper.c":         "int main(){return 0;}\n",
+		".git/HEAD":        "ref: refs/heads/main\n",
+		".git/config":      "[remote \"origin\"]\n\turl = git@github.com:Some-Lab/Spice-Web.git\n",
+	})
+	m, isErr, text := call(t, cs, "nrp_build", map[string]any{"project": dir})
+	if isErr {
+		t.Fatal(text)
+	}
+	if m["image"] != "ghcr.io/some-lab/spice-web:latest" {
+		t.Fatalf("image %v", m["image"])
+	}
+	df := fmt.Sprint(m["dockerfile_suggestion"])
+	for _, want := range []string{"build-essential", "RUN make", "gunicorn", "EXPOSE 5000"} {
+		if !strings.Contains(df, want) {
+			t.Fatalf("dockerfile missing %q:\n%s", want, df)
+		}
+	}
+	if !strings.Contains(fmt.Sprint(m["private_image"]), "read:packages") {
+		t.Fatalf("private image help missing: %v", m["private_image"])
 	}
 }
 

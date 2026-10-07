@@ -101,6 +101,7 @@ type planIn struct {
 	Subdir      string   `json:"subdir,omitempty" jsonschema:"pull: folder inside the volume"`
 	DataIsP1    bool     `json:"data_is_p1,omitempty" jsonschema:"volume/pull: the user confirms the data is non-sensitive (P1)"`
 	LLMSecret   string   `json:"llm_secret,omitempty" jsonschema:"llm-batch: name of the Secret holding the LLM token (key token)"`
+	PullSecret  string   `json:"pull_secret,omitempty" jsonschema:"name of a docker-registry Secret in the namespace for a private image (nrp_build explains how to make one)"`
 }
 
 type planOut struct {
@@ -194,13 +195,20 @@ type dataOut struct {
 
 type buildIn struct {
 	Project string `json:"project" jsonschema:"project folder"`
+	Target  string `json:"target,omitempty" jsonschema:"github (default: builds on GitHub Actions into ghcr.io) or gitlab (NRP GitLab with kaniko)"`
 }
 
 type buildOut struct {
-	Summary    string   `json:"summary"`
-	Dockerfile string   `json:"dockerfile_suggestion"`
-	GitLabCI   string   `json:"gitlab_ci_suggestion"`
-	Steps      []string `json:"steps"`
+	Summary          string   `json:"summary"`
+	Target           string   `json:"target"`
+	Image            string   `json:"image"`
+	Dockerfile       string   `json:"dockerfile_suggestion"`
+	DockerfileExists bool     `json:"dockerfile_exists"`
+	WorkflowPath     string   `json:"workflow_path,omitempty"`
+	Workflow         string   `json:"workflow_suggestion,omitempty"`
+	GitLabCI         string   `json:"gitlab_ci_suggestion,omitempty"`
+	Steps            []string `json:"steps"`
+	PrivateImage     []string `json:"private_image,omitempty"`
 }
 
 type setupIn struct {
@@ -270,7 +278,7 @@ func New(s *Server) *mcp.Server {
 
 	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_data", Description: "Move data the right way for its size. list: files in a volume. up: copy a small local file/folder (under 100 MB) into a volume (needs data_is_p1). down: copy results from a volume to this computer. For big downloads use nrp_plan goal=pull (in-cluster), and for datasets in/out at scale use NRP S3 (keys from the NRP portal).", Annotations: writes("Data", false)}, s.dataTool)
 
-	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_build", Description: "Containerize a project: suggests a Dockerfile from what the code uses and a .gitlab-ci.yml that builds it on NRP GitLab with kaniko into the NRP registry, plus the steps. Writes nothing; nrp_plan then uses the image.", Annotations: readOnly("Build")}, s.buildTool)
+	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_build", Description: "Containerize a project: suggests a Dockerfile from what the code uses and a GitHub Actions workflow that builds it on every push into the GitHub container registry (ghcr.io, no new account or stored key), or with target=gitlab a kaniko file for NRP GitLab. Explains public vs private images. Writes nothing; nrp_plan image=... then deploys it.", Annotations: readOnly("Build")}, s.buildTool)
 
 	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_setup", Description: "Is this computer ready for Nautilus? Checks kubectl (and its version against the cluster), the kubelogin sign-in plugin, the NRP config file and, with sign_in=true, the sign-in. Read-only unless fix=true: then it downloads the official kubectl and kubelogin into a user folder (no admin rights), verifies their published SHA256, keeps any old copy as a backup, and puts a downloaded NRP config in place (backing up an existing one). Ask the user before fix=true. Use this first if nrp_status says kubectl or the sign-in is missing.", Annotations: writes("Setup", false)}, s.setupTool)
 
@@ -306,13 +314,26 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 	req := plan.Request{Goal: in.Goal, Namespace: ns, Name: in.Name, Command: in.Command, Image: in.Image, GPU: in.GPU, GPUType: in.GPUType,
 		CPU: in.CPU, Memory: in.Memory, Hours: in.Hours, Count: in.Count, Parallel: in.Parallel, Host: in.Host, Port: in.Port,
 		DataPVC: in.DataVolume, Owner: owner, Session: in.Session, LLMSecret: in.LLMSecret, Opportun: in.Opportunist,
-		Size: in.Size, URLs: in.URLs, Subdir: in.Subdir, DataIsP1: in.DataIsP1}
+		Size: in.Size, URLs: in.URLs, Subdir: in.Subdir, DataIsP1: in.DataIsP1, PullSecret: in.PullSecret}
 	p, err := plan.Build(facts, req)
 	if err != nil {
 		return nil, nil, err
 	}
+	if p.Goal == plan.GoalWeb && s.Ops != nil {
+		run, err := s.existingWeb(ctx, ns, p.Name, owner)
+		if err != nil {
+			return nil, nil, err
+		}
+		if run != "" && run != p.Run {
+			req.Run = run
+			if p, err = plan.Build(facts, req); err != nil {
+				return nil, nil, err
+			}
+			p.Decisions = append(p.Decisions, "Updates your running "+p.Name+" in place (run "+run+", same address): Kubernetes starts the new version and switches over once it answers.")
+		}
+	}
 	var codeFiles []string
-	if project != "" && facts != nil && (p.Goal == plan.GoalJob || p.Goal == plan.GoalSweep || p.Goal == plan.GoalWeb || p.Goal == plan.GoalLLMBatch) && !p.NeedsBuild {
+	if project != "" && facts != nil && (p.Goal == plan.GoalJob || p.Goal == plan.GoalSweep || p.Goal == plan.GoalWeb || p.Goal == plan.GoalLLMBatch) && !p.NeedsBuild && !p.Prebuilt {
 		cm, files, err := ops.CodeConfigMap(project, p.Name+"-code-"+shortRun(p.Run), ns, copyMap(p.Labels))
 		if err != nil {
 			return nil, nil, err
@@ -353,7 +374,7 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 	case len(out.Refusals) > 0:
 		out.Next = "Not runnable: fix the refusals (each has a fix) and call nrp_plan again."
 	case p.NeedsBuild:
-		out.Next = "Build the image first (nrp_build), then plan again with image=<the pushed image>."
+		out.Next = "Build the image first: nrp_build gives a GitHub Actions workflow (or an NRP GitLab file). After the first build, plan again with image=" + p.Image + "."
 	default:
 		tok, exp, err := s.Store.Issue(p, "run")
 		if err != nil {
@@ -383,6 +404,26 @@ func copyMap(m map[string]string) map[string]string {
 		o[k] = v
 	}
 	return o
+}
+
+// existingWeb returns the run id of a web Deployment with this name that nrp-mcp made for
+// the same person, so a new plan updates it instead of colliding. A Deployment of that
+// name that is not theirs is an error: pick another name.
+func (s *Server) existingWeb(ctx context.Context, ns, name, owner string) (string, error) {
+	var d struct {
+		Metadata struct {
+			Name   string            `json:"name"`
+			Labels map[string]string `json:"labels"`
+		} `json:"metadata"`
+	}
+	if err := s.Ops.K.JSON(ctx, ns, &d, "get", "deployment", name, "-o", "json"); err != nil || d.Metadata.Name != name {
+		return "", nil // not found (or cannot tell): a new app
+	}
+	l := d.Metadata.Labels
+	if l["app.kubernetes.io/managed-by"] != plan.ManagedBy || (owner != "" && l[plan.OwnerLabel] != "" && l[plan.OwnerLabel] != plan.OwnerID(owner)) {
+		return "", fmt.Errorf("a Deployment named %s already exists in %s and was not made by you with nrp-mcp: pass another name", name, ns)
+	}
+	return l["nrp-mcp/run"], nil
 }
 
 // availableHosts drops suggested hosts that already answer (in use by someone).
@@ -786,6 +827,77 @@ func (s *Server) buildTool(ctx context.Context, _ *mcp.CallToolRequest, in build
 	if err != nil {
 		return nil, nil, err
 	}
+	target := strings.ToLower(strings.TrimSpace(in.Target))
+	if target == "" {
+		target = "github"
+	}
+	if target != "github" && target != "gitlab" {
+		return nil, nil, fmt.Errorf("target must be github or gitlab, not %q", in.Target)
+	}
+	out := &buildOut{Target: target, DockerfileExists: f.Dockerfile, Dockerfile: suggestDockerfile(f)}
+	name := plan.DNSName(f.Name)
+	switch target {
+	case "github":
+		repo := f.GitHubRepo
+		if repo == "" {
+			repo = "<owner>/" + name
+		}
+		out.Image = "ghcr.io/" + repo + ":latest"
+		out.WorkflowPath = ".github/workflows/nrp-image.yml"
+		out.Workflow = githubWorkflow
+		out.Summary = fmt.Sprintf("A GitHub Actions workflow that builds %s on every push to main and saves it as %s in the GitHub container registry. It logs in with GitHub's built-in token: no new account and no key to store. Nothing was written.", f.Name, out.Image)
+		if f.GitHubRepo == "" {
+			out.Summary += " This folder has no github.com remote yet: create a GitHub repository for it first (or use target=gitlab)."
+		}
+		out.Steps = []string{
+			"Save the Dockerfile in the project (skip if you already have one) and test it builds, if you have Docker.",
+			"Save the workflow as " + out.WorkflowPath + ", commit both and push to GitHub.",
+			"Watch the build under the repository's Actions tab (a first build takes a few minutes).",
+			"The image appears under Packages on the repository page as " + out.Image + " (private by default).",
+			"Call nrp_plan with image=" + out.Image + " (add pull_secret=<name> if you keep it private).",
+		}
+		owner := strings.SplitN(repo, "/", 2)[0]
+		out.PrivateImage = []string{
+			"New images on GitHub are private. Public is simplest for open research code: on GitHub open the package (Packages, then the image), Package settings, Change visibility, Public. Nautilus then pulls it with no secret.",
+			"To keep it private: create a GitHub personal access token (classic) with only the read:packages scope, then store it in your namespace once: kubectl -n <namespace> create secret docker-registry ghcr-pull --docker-server=ghcr.io --docker-username=" + owner + " --docker-password=<the token>. Then plan with pull_secret=ghcr-pull. Never paste the token into a chat or a file in the repo.",
+			"Nautilus has a few ARM nodes but nrp-mcp schedules on the common amd64 nodes, which is what GitHub builds by default.",
+		}
+	case "gitlab":
+		out.Image = "gitlab-registry.nrp-nautilus.io/<group>/" + name + ":latest"
+		out.GitLabCI = gitlabCI
+		out.Summary = fmt.Sprintf("A GitLab CI file that builds %s on NRP GitLab with kaniko into the NRP registry. Nothing was written.", f.Name)
+		out.Steps = []string{
+			"Save the Dockerfile in the project (skip if you already have one).",
+			"Create a project at https://gitlab.nrp-nautilus.io (sign in with your institution) and push the code with the Dockerfile and .gitlab-ci.yml.",
+			"The pipeline builds and pushes " + out.Image + " (Deploy, Container Registry shows it).",
+			"Call nrp_plan with image=" + out.Image + " (add pull_secret=<name> if the project is private).",
+		}
+		out.PrivateImage = []string{
+			"Public project: Nautilus pulls with no secret.",
+			"Private project: create a deploy token with read_registry (Settings, Repository, Deploy tokens), then kubectl -n <namespace> create secret docker-registry gitlab-pull --docker-server=gitlab-registry.nrp-nautilus.io --docker-username=<token user> --docker-password=<token>, and plan with pull_secret=gitlab-pull.",
+		}
+	}
+	if f.Dockerfile {
+		out.Summary = "Your project already has a Dockerfile, so keep it (the suggestion is only for comparison). " + out.Summary
+	}
+	if f.Makefile || containsStr(f.Languages, "compiled") {
+		out.Summary += " The project has compiled code: check the Dockerfile installs build tools (build-essential) and runs your build step."
+	}
+	s.Store.Audit(map[string]any{"tool": "nrp_build", "target": target, "github_repo": f.GitHubRepo})
+	return nil, out, nil
+}
+
+func containsStr(xs []string, x string) bool {
+	for _, v := range xs {
+		if v == x {
+			return true
+		}
+	}
+	return false
+}
+
+// suggestDockerfile writes a starting Dockerfile from what the project uses.
+func suggestDockerfile(f *inspect.Facts) string {
 	p, err := plan.Build(f, plan.Request{Namespace: "x", Command: "true"})
 	base := "python:3.12-slim"
 	if err == nil && p.Image != "" && !p.NeedsBuild {
@@ -793,6 +905,9 @@ func (s *Server) buildTool(ctx context.Context, _ *mcp.CallToolRequest, in build
 	}
 	var df strings.Builder
 	fmt.Fprintf(&df, "FROM %s\nWORKDIR /work\n", base)
+	if f.Makefile || containsStr(f.Languages, "compiled") {
+		df.WriteString("RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /var/lib/apt/lists/*\n")
+	}
 	for _, d := range f.DepFiles {
 		switch strings.ToLower(filepath.Base(d)) {
 		case "requirements.txt":
@@ -806,15 +921,67 @@ func (s *Server) buildTool(ctx context.Context, _ *mcp.CallToolRequest, in build
 		}
 	}
 	df.WriteString("COPY . /work\n")
-	if f.Entry != "" {
-		switch {
-		case strings.HasSuffix(f.Entry, ".py"):
-			fmt.Fprintf(&df, "CMD [\"python\", \"%s\"]\n", f.Entry)
-		case strings.HasSuffix(strings.ToLower(f.Entry), ".r"):
-			fmt.Fprintf(&df, "CMD [\"Rscript\", \"%s\"]\n", f.Entry)
+	if f.Makefile {
+		df.WriteString("RUN make\n")
+	}
+	port := f.WebPort
+	switch f.WebApp {
+	case "flask":
+		mod := strings.TrimSuffix(strings.ReplaceAll(f.Entry, "/", "."), ".py")
+		fmt.Fprintf(&df, "RUN pip install --no-cache-dir gunicorn\nEXPOSE %d\nCMD [\"gunicorn\", \"-b\", \"0.0.0.0:%d\", \"%s:app\"]\n", port, port, mod)
+	case "fastapi":
+		mod := strings.TrimSuffix(strings.ReplaceAll(f.Entry, "/", "."), ".py")
+		fmt.Fprintf(&df, "RUN pip install --no-cache-dir uvicorn\nEXPOSE %d\nCMD [\"uvicorn\", \"%s:app\", \"--host\", \"0.0.0.0\", \"--port\", \"%d\"]\n", port, mod, port)
+	case "streamlit":
+		fmt.Fprintf(&df, "EXPOSE %d\nCMD [\"streamlit\", \"run\", \"%s\", \"--server.port=%d\", \"--server.address=0.0.0.0\", \"--server.headless=true\"]\n", port, f.Entry, port)
+	case "dash", "gradio":
+		fmt.Fprintf(&df, "EXPOSE %d\n# the app must listen on 0.0.0.0:%d\nCMD [\"python\", \"%s\"]\n", port, port, f.Entry)
+	default:
+		if f.Entry != "" {
+			switch {
+			case strings.HasSuffix(f.Entry, ".py"):
+				fmt.Fprintf(&df, "CMD [\"python\", \"%s\"]\n", f.Entry)
+			case strings.HasSuffix(strings.ToLower(f.Entry), ".r"):
+				fmt.Fprintf(&df, "CMD [\"Rscript\", \"%s\"]\n", f.Entry)
+			}
 		}
 	}
-	ci := `# .gitlab-ci.yml for https://gitlab.nrp-nautilus.io (runners are already set up)
+	return df.String()
+}
+
+const githubWorkflow = `# Builds the Dockerfile on every push to main and saves the image in the GitHub
+# container registry (ghcr.io/<owner>/<repo>). Uses GitHub's built-in token; no secrets
+# to add. Made by nrp-mcp (nrp_build).
+name: nrp-image
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.name.outputs.image }}:latest
+            ${{ steps.name.outputs.image }}:${{ github.sha }}
+`
+
+const gitlabCI = `# .gitlab-ci.yml for https://gitlab.nrp-nautilus.io (runners are already set up)
 build:
   image:
     name: ghcr.io/osscontainertools/kaniko:debug
@@ -825,20 +992,6 @@ build:
     - echo "{\"auths\":{\"$CI_REGISTRY\":{\"username\":\"$CI_REGISTRY_USER\",\"password\":\"$CI_REGISTRY_PASSWORD\"}}}" > /kaniko/.docker/config.json
     - /kaniko/executor --cache=true --push-retry=10 --context $CI_PROJECT_DIR --dockerfile $CI_PROJECT_DIR/Dockerfile --destination $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA --destination $CI_REGISTRY_IMAGE:latest
 `
-	out := &buildOut{Dockerfile: df.String(), GitLabCI: ci,
-		Summary: fmt.Sprintf("Suggested Dockerfile for %s (base %s) and a GitLab CI file that builds it on NRP GitLab with kaniko. Nothing was written.", f.Name, base),
-		Steps: []string{
-			"Review the Dockerfile; save it as Dockerfile in the project.",
-			"Create a project at https://gitlab.nrp-nautilus.io (sign in with your institution) and push the code with the Dockerfile and .gitlab-ci.yml.",
-			"The pipeline builds and pushes gitlab-registry.nrp-nautilus.io/<group>/<project>:latest (Deploy, Container Registry shows it).",
-			"Make the registry project public, or add an image pull secret in your namespace for a private one.",
-			"Call nrp_plan with image=gitlab-registry.nrp-nautilus.io/<group>/<project>:latest.",
-		}}
-	if f.Dockerfile {
-		out.Summary = "Your project already has a Dockerfile; use the GitLab CI file to build it on NRP GitLab. " + out.Summary
-	}
-	return nil, out, nil
-}
 
 // HTTPCheck returns an HTTP status code for url (used for host checks and web watch).
 func HTTPCheck(url string) (int, error) {

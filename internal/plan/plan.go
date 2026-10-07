@@ -31,30 +31,32 @@ const (
 
 // Request is what the user asked for.
 type Request struct {
-	Goal      string
-	Namespace string
-	Name      string // optional; suggested if empty
-	Command   string // shell command; inferred if empty
-	Image     string // override
-	GPU       int
-	GPUType   string // e.g. a100, a40; empty = any standard GPU
-	CPU       string
-	Memory    string
-	Hours     int
-	Count     int // sweep tasks
-	Parallel  int // sweep parallelism
-	Host      string
-	Port      int
-	DataPVC   string // existing PVC to mount at /data
-	Owner     string
-	Session   string // jupyter | vscode
-	LLMSecret string // Secret holding the LLM token (key "token")
-	Opportun  bool
-	Size      string   // volume size, e.g. 50Gi
-	URLs      []string // pull: files to download
-	Subdir    string   // pull: folder inside the volume
-	DataIsP1  bool     // pull/volume: user confirmed the data is P1 (non-sensitive)
-	ArrayIDs  []int    // sweep from a Slurm --array: the task ids, in order
+	Goal       string
+	Namespace  string
+	Name       string // optional; suggested if empty
+	Command    string // shell command; inferred if empty
+	Image      string // override
+	GPU        int
+	GPUType    string // e.g. a100, a40; empty = any standard GPU
+	CPU        string
+	Memory     string
+	Hours      int
+	Count      int // sweep tasks
+	Parallel   int // sweep parallelism
+	Host       string
+	Port       int
+	DataPVC    string // existing PVC to mount at /data
+	Owner      string
+	Session    string // jupyter | vscode
+	LLMSecret  string // Secret holding the LLM token (key "token")
+	Opportun   bool
+	Size       string   // volume size, e.g. 50Gi
+	URLs       []string // pull: files to download
+	Subdir     string   // pull: folder inside the volume
+	DataIsP1   bool     // pull/volume: user confirmed the data is P1 (non-sensitive)
+	ArrayIDs   []int    // sweep from a Slurm --array: the task ids, in order
+	PullSecret string   // docker-registry Secret for a private image
+	Run        string   // reuse a run id (update a running web app in place)
 }
 
 // Plan is the reviewed result.
@@ -68,6 +70,7 @@ type Plan struct {
 	Image      string            `json:"image"`
 	ImageWhy   string            `json:"image_reason"`
 	NeedsBuild bool              `json:"needs_build"`
+	Prebuilt   bool              `json:"prebuilt,omitempty"` // runs a built image as is: no code copy, no install
 	Decisions  []string          `json:"decisions"`
 	PublicURL  string            `json:"public_url,omitempty"`
 	Suggested  []string          `json:"suggested_names,omitempty"`
@@ -178,6 +181,9 @@ func Build(f *inspect.Facts, r Request) (*Plan, error) {
 	}
 	p := &Plan{ID: newID("p"), Created: time.Now().UTC(), Goal: r.Goal, Namespace: r.Namespace, Facts: f, Extra: map[string]any{}, Slurm: mappings}
 	p.Run = strings.TrimPrefix(newID("r"), "r")
+	if r.Run != "" {
+		p.Run = r.Run
+	}
 	sug := SuggestNames(f, r.Goal)
 	p.Suggested = sug
 	if r.Name != "" {
@@ -232,9 +238,16 @@ func pickImage(f *inspect.Facts, r *Request, p *Plan) {
 	switch {
 	case r.Image != "":
 		p.Image, p.ImageWhy = r.Image, "the image you named"
+		if f == nil || f.Dockerfile {
+			p.Prebuilt = true
+			p.ImageWhy = "the image you named, run as built (its own start command; no code copied in)"
+		}
 	case f != nil && f.Dockerfile:
-		p.Image = "gitlab-registry.nrp-nautilus.io/<you>/" + p.Name + ":latest"
-		p.ImageWhy = "your project has a Dockerfile; build it first with nrp_build (or name a registry image with image=)"
+		p.Image = "ghcr.io/<you>/" + p.Name + ":latest"
+		if f.GitHubRepo != "" {
+			p.Image = "ghcr.io/" + f.GitHubRepo + ":latest"
+		}
+		p.ImageWhy = "your project has a Dockerfile; build it first (nrp_build gives a GitHub Actions file), then plan again with image="
 		p.NeedsBuild = true
 	case r.Goal == GoalSession && r.Session == "vscode":
 		p.Image, p.ImageWhy = "codercom/code-server:latest", "VS Code in the browser (code-server)"
@@ -308,7 +321,7 @@ func sizing(r Request, f *inspect.Facts, gpu int) (cpu, mem string, why string) 
 }
 
 func installStep(f *inspect.Facts, p *Plan) string {
-	if f == nil || p.NeedsBuild {
+	if f == nil || p.NeedsBuild || p.Prebuilt {
 		return ""
 	}
 	for _, d := range f.DepFiles {
@@ -342,10 +355,17 @@ func inferCommand(f *inspect.Facts, r Request) (string, string) {
 
 func buildJob(f *inspect.Facts, r Request, p *Plan) error {
 	cmd, why := inferCommand(f, r)
-	if cmd == "" {
+	if p.Prebuilt {
+		cmd, why = r.Command, "the command you gave"
+	}
+	if cmd == "" && !p.Prebuilt {
 		return fmt.Errorf("I could not tell what to run: pass command (for example \"python train.py --epochs 10\")")
 	}
-	p.Decisions = append(p.Decisions, "Runs: "+cmd+" ("+why+").")
+	if cmd != "" {
+		p.Decisions = append(p.Decisions, "Runs: "+cmd+" ("+why+").")
+	} else {
+		p.Decisions = append(p.Decisions, "Runs the image's own start command (CMD/ENTRYPOINT).")
+	}
 	gpu := r.GPU
 	if gpu == 0 && f != nil && f.UsesGPU && r.Goal != GoalLLMBatch {
 		gpu = 1
@@ -394,7 +414,19 @@ func buildJob(f *inspect.Facts, r Request, p *Plan) error {
 		p.Decisions = append(p.Decisions, "LLM token comes from the Secret "+sec+" (key token), never the spec; base URL https://ellm.nrp-nautilus.io/v1. Retry with backoff in your script (fair use: 200K output tokens/min per token and model).")
 	}
 	ctr.Env = append(ctr.Env, k8s.EnvVar{Name: "NRP_RUN", Value: p.Run})
-	pod := k8s.PodSpec{RestartPolicy: "Never", Containers: []k8s.Container{ctr}, Volumes: vols}
+	if p.Prebuilt {
+		ctr.WorkingDir = ""
+		ctr.VolumeMounts = ctr.VolumeMounts[1:] // drop /work; keep /dev/shm and /data
+		vols = vols[1:]
+		ctr.Command = nil
+		if cmd != "" {
+			ctr.Command = []string{"sh", "-c", cmd}
+		}
+		if r.Goal == GoalSweep && r.Count > 0 {
+			p.Decisions = append(p.Decisions, "Sweep with a prebuilt image: read the task number from $JOB_COMPLETION_INDEX.")
+		}
+	}
+	pod := k8s.PodSpec{RestartPolicy: "Never", Containers: []k8s.Container{ctr}, Volumes: vols, ImagePullSecrets: pullSecrets(r, p)}
 	if r.Opportun || (gpu > 0 && isSpecial(gpuResource(r)) && r.Opportun) {
 		pod.PriorityClassName = "opportunistic"
 		p.Decisions = append(p.Decisions, "priorityClassName opportunistic: bypasses the special-GPU quota, but the pod can be preempted at any time. Checkpoint your work.")
@@ -489,18 +521,26 @@ func buildWeb(f *inspect.Facts, r Request, p *Plan) error {
 	port := r.Port
 	if f != nil {
 		app = f.WebApp
+		if port == 0 && p.Prebuilt && f.DockerPort > 0 {
+			port = f.DockerPort
+			p.Decisions = append(p.Decisions, fmt.Sprintf("Port %d from EXPOSE in your Dockerfile.", port))
+		}
 		if port == 0 {
 			port = f.WebPort
 		}
 	}
 	if port == 0 {
 		port = 8080
+		if p.Prebuilt {
+			p.Decisions = append(p.Decisions, "Port 8080 assumed: pass port= if your image listens on another one.")
+		}
 	}
 	if r.GPU > 0 {
 		p.Decisions = append(p.Decisions, "Ignoring gpu: long-running web Deployments cannot hold GPUs on Nautilus.")
 	}
 	cmd := r.Command
 	switch {
+	case p.Prebuilt:
 	case cmd != "":
 	case app == "streamlit":
 		cmd = fmt.Sprintf("streamlit run %s --server.port %d --server.address 0.0.0.0 --server.headless true", f.Entry, port)
@@ -569,11 +609,21 @@ func buildWeb(f *inspect.Facts, r Request, p *Plan) error {
 	if app == "shiny" {
 		ctr.Command = []string{"sh", "-c", "cp -r /work/. /srv/shiny-server/ && exec /init"}
 	}
+	vols := []k8s.Volume{{Name: "code", EmptyDir: &k8s.EmptyDir{}}}
+	if p.Prebuilt {
+		ctr.Command, ctr.WorkingDir, ctr.VolumeMounts, vols = nil, "", nil, nil
+		if cmd != "" {
+			ctr.Command = []string{"sh", "-c", cmd}
+			p.Decisions = append(p.Decisions, "Starts with: "+cmd+" (instead of the image's own command).")
+		} else {
+			p.Decisions = append(p.Decisions, "Runs the image's own start command (CMD/ENTRYPOINT); no project files are copied in.")
+		}
+	}
 	ctr.Env = append(ctr.Env, k8s.EnvVar{Name: "NRP_RUN", Value: p.Run})
 	dep := k8s.Object{APIVersion: "apps/v1", Kind: "Deployment", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: labels, Annotations: owner(r)},
 		DeploymentSpec: &k8s.DeploymentSpec{Replicas: 1, Selector: k8s.LabelSelector{MatchLabels: sel},
 			Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: labels}, Spec: k8s.PodSpec{Containers: []k8s.Container{ctr},
-				Volumes: []k8s.Volume{{Name: "code", EmptyDir: &k8s.EmptyDir{}}}}}}}
+				Volumes: vols, ImagePullSecrets: pullSecrets(r, p)}}}}
 	svc := k8s.Object{APIVersion: "v1", Kind: "Service", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: copyLabels(labels)},
 		ServiceSpec: &k8s.ServiceSpec{Selector: sel, Ports: []k8s.ServicePort{{Port: 80, TargetPort: port}}, Type: "ClusterIP"}}
 	tls := k8s.IngressTLS{Hosts: []string{host}}
@@ -997,4 +1047,16 @@ func Cleanup(ns, run string, objs []string) *Plan {
 	p.Summary = fmt.Sprintf("Delete %d nrp-mcp object(s) in %s (run %s).", len(objs), ns, run)
 	p.Hash = Hash(p)
 	return p
+}
+
+// pullSecrets returns imagePullSecrets for a private image and explains the choice.
+func pullSecrets(r Request, p *Plan) []k8s.NameRef {
+	if r.PullSecret != "" {
+		p.Decisions = append(p.Decisions, "Pulls the image with the Secret "+r.PullSecret+" (a read-only registry token kept in your namespace, never in the spec).")
+		return []k8s.NameRef{{Name: r.PullSecret}}
+	}
+	if strings.HasPrefix(p.Image, "ghcr.io/") || strings.HasPrefix(p.Image, "gitlab-registry.nrp-nautilus.io/") {
+		p.Decisions = append(p.Decisions, "If the image is private, make the package public or pass pull_secret=<secret> (nrp_build explains both); otherwise the pod stops at ImagePullBackOff.")
+	}
+	return nil
 }
