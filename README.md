@@ -54,6 +54,9 @@ Hermes Agent, Gemini CLI, OpenCode, Claude Code, Claude Desktop, VS Code, Cursor
 | "Containerize this" | A Dockerfile and a GitLab CI file that builds it on NRP GitLab |
 | "Clean up" | Lists what you made and deletes it after a second yes |
 
+See it applied to real science: [20 research examples](docs/examples/README.md), from bee
+repellent screening and climate ensembles to mission records, seismology and econometrics.
+
 ## Quick start
 
 You need a Nautilus account and a namespace. Sign in at https://nrp.ai with your
