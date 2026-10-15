@@ -102,6 +102,7 @@ type planIn struct {
 	DataIsP1    bool     `json:"data_is_p1,omitempty" jsonschema:"volume/pull: the user confirms the data is non-sensitive (P1)"`
 	LLMSecret   string   `json:"llm_secret,omitempty" jsonschema:"llm-batch: name of the Secret holding the LLM token (key token)"`
 	PullSecret  string   `json:"pull_secret,omitempty" jsonschema:"name of a docker-registry Secret in the namespace for a private image (nrp_build explains how to make one)"`
+	AvoidNode   string   `json:"avoid_node,omitempty" jsonschema:"node(s) to keep the pod off, comma separated, e.g. a slow node named by nrp_watch"`
 }
 
 type planOut struct {
@@ -292,6 +293,14 @@ func ToolNames() []string {
 	return []string{"nrp_setup", "nrp_status", "nrp_plan", "nrp_run", "nrp_watch", "nrp_cleanup", "nrp_session", "nrp_data", "nrp_build"}
 }
 
+// splitNodes turns the comma-separated avoid_node input into a list (nil when empty).
+func splitNodes(v string) []string {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	return strings.Split(v, ",")
+}
+
 func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn) (*mcp.CallToolResult, *planOut, error) {
 	ns := s.nsCtx(ctx, in.Namespace)
 	var facts *inspect.Facts
@@ -314,7 +323,8 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 	req := plan.Request{Goal: in.Goal, Namespace: ns, Name: in.Name, Command: in.Command, Image: in.Image, GPU: in.GPU, GPUType: in.GPUType,
 		CPU: in.CPU, Memory: in.Memory, Hours: in.Hours, Count: in.Count, Parallel: in.Parallel, Host: in.Host, Port: in.Port,
 		DataPVC: in.DataVolume, Owner: owner, Session: in.Session, LLMSecret: in.LLMSecret, Opportun: in.Opportunist,
-		Size: in.Size, URLs: in.URLs, Subdir: in.Subdir, DataIsP1: in.DataIsP1, PullSecret: in.PullSecret}
+		Size: in.Size, URLs: in.URLs, Subdir: in.Subdir, DataIsP1: in.DataIsP1, PullSecret: in.PullSecret,
+		AvoidNodes: splitNodes(in.AvoidNode)}
 	p, err := plan.Build(facts, req)
 	if err != nil {
 		return nil, nil, err

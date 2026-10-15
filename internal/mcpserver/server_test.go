@@ -412,3 +412,23 @@ func TestPlanLabelsOwner(t *testing.T) {
 		t.Fatal("owner label holds the raw username")
 	}
 }
+
+func TestPlanAvoidNode(t *testing.T) {
+	cs, _ := setup(t)
+	dir := project(t, map[string]string{"app.py": "import streamlit as st\nst.write('hi')\n", "requirements.txt": "streamlit\n"})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "goal": "web", "avoid_node": "k8s-haosu-20.sdsc.optiputer.net"})
+	if isErr {
+		t.Fatal(text)
+	}
+	b, _ := json.Marshal(m["manifests"])
+	s := string(b)
+	for _, want := range []string{`"nodeAffinity"`, `"kubernetes.io/hostname"`, `"NotIn"`, `"k8s-haosu-20.sdsc.optiputer.net"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("manifests missing %s", want)
+		}
+	}
+	_, isErr, text = call(t, cs, "nrp_plan", map[string]any{"project": dir, "goal": "web", "avoid_node": "bad_node"})
+	if !isErr || !strings.Contains(text, "avoid_node") {
+		t.Fatalf("bad node accepted: %s", text)
+	}
+}

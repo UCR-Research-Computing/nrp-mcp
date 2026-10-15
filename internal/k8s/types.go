@@ -119,6 +119,34 @@ type PodSpec struct {
 	InitContainers    []Container `json:"initContainers,omitempty"`
 	Volumes           []Volume    `json:"volumes,omitempty"`
 	ImagePullSecrets  []NameRef   `json:"imagePullSecrets,omitempty"`
+	Affinity          *Affinity   `json:"affinity,omitempty"`
+}
+
+// Affinity holds scheduling rules; nrp-mcp only uses required node affinity.
+type Affinity struct {
+	NodeAffinity *NodeAffinity `json:"nodeAffinity,omitempty"`
+}
+
+// NodeAffinity is a hard rule on which nodes a pod may use.
+type NodeAffinity struct {
+	Required *NodeSelector `json:"requiredDuringSchedulingIgnoredDuringExecution,omitempty"`
+}
+
+// NodeSelector is a list of terms; a node must match one of them.
+type NodeSelector struct {
+	NodeSelectorTerms []NodeSelectorTerm `json:"nodeSelectorTerms"`
+}
+
+// NodeSelectorTerm matches when all of its expressions match.
+type NodeSelectorTerm struct {
+	MatchExpressions []NodeSelectorRequirement `json:"matchExpressions"`
+}
+
+// NodeSelectorRequirement is one label test, e.g. kubernetes.io/hostname NotIn [a b].
+type NodeSelectorRequirement struct {
+	Key      string   `json:"key"`
+	Operator string   `json:"operator"`
+	Values   []string `json:"values,omitempty"`
 }
 
 // NameRef is a reference by name (imagePullSecrets).
