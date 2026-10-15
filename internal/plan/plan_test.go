@@ -1,6 +1,9 @@
 package plan
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/inspect"
+	"github.com/UCR-Research-Computing/nrp-mcp/internal/k8s"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/rules"
 )
 
@@ -292,5 +296,134 @@ func TestPrebuiltJobKeepsData(t *testing.T) {
 	c := ps.Containers[0]
 	if c.Command[2] != "tool --run" || len(c.VolumeMounts) != 1 || c.VolumeMounts[0].MountPath != "/data" || len(ps.Volumes) != 1 {
 		t.Fatalf("job: %+v %+v", c, ps.Volumes)
+	}
+}
+
+// avoidFacts is a small web project used by the avoid_node tests.
+func avoidFacts(t *testing.T) *inspect.Facts {
+	return proj(t, map[string]string{"app.py": "import streamlit as st\nst.title('Genome Map Viewer')\n", "requirements.txt": "streamlit\n"})
+}
+
+// manifestDigest is the sha256 of the plan objects with the random plan id masked,
+// so two builds of the same request can be compared byte for byte.
+func manifestDigest(t *testing.T, p *Plan) string {
+	t.Helper()
+	b, err := json.Marshal(p.Objects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := strings.ReplaceAll(string(b), p.ID, "PLANID")
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}
+
+func hostnameNotIn(t *testing.T, ps *k8s.PodSpec) []string {
+	t.Helper()
+	if ps.Affinity == nil || ps.Affinity.NodeAffinity == nil || ps.Affinity.NodeAffinity.Required == nil {
+		t.Fatalf("no required node affinity: %+v", ps.Affinity)
+	}
+	terms := ps.Affinity.NodeAffinity.Required.NodeSelectorTerms
+	if len(terms) != 1 || len(terms[0].MatchExpressions) != 1 {
+		t.Fatalf("terms %+v", terms)
+	}
+	e := terms[0].MatchExpressions[0]
+	if e.Key != "kubernetes.io/hostname" || e.Operator != "NotIn" {
+		t.Fatalf("expression %+v", e)
+	}
+	return e.Values
+}
+
+func TestAvoidNodesWeb(t *testing.T) {
+	p, err := Build(avoidFacts(t), Request{Namespace: "ucr-example", Goal: GoalWeb, AvoidNodes: []string{" K8S-haosu-20.sdsc.optiputer.net ", "node-b", "node-b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := hostnameNotIn(t, p.Objects[0].PodSpecOf())
+	if strings.Join(got, ",") != "k8s-haosu-20.sdsc.optiputer.net,node-b" {
+		t.Fatalf("values %v", got)
+	}
+	found := false
+	for _, d := range p.Decisions {
+		if d == "Keeps the pod off k8s-haosu-20.sdsc.optiputer.net, node-b (you asked to avoid them)." {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no avoid decision: %v", p.Decisions)
+	}
+	if rules.Blocking(rules.Check(p.Objects, ctx())) {
+		t.Fatalf("refused: %+v", rules.Check(p.Objects, ctx()))
+	}
+}
+
+func TestAvoidNodesJobAndSession(t *testing.T) {
+	f := proj(t, map[string]string{"run.py": "print(1)\n"})
+	p, err := Build(f, Request{Namespace: "ucr-example", Goal: GoalSweep, Count: 4, AvoidNodes: []string{"node-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hostnameNotIn(t, p.Objects[0].PodSpecOf()); len(got) != 1 || got[0] != "node-a" {
+		t.Fatalf("job values %v", got)
+	}
+	p, err = Build(nil, Request{Namespace: "ucr-example", Goal: GoalSession, AvoidNodes: []string{"node-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dep *k8s.Object
+	for i := range p.Objects {
+		if p.Objects[i].Kind == "Deployment" {
+			dep = &p.Objects[i]
+		}
+	}
+	if got := hostnameNotIn(t, dep.PodSpecOf()); len(got) != 1 || got[0] != "node-a" {
+		t.Fatalf("session values %v", got)
+	}
+}
+
+// goldenWebDigest is the masked manifest digest of the web plan below, recorded
+// before avoid_node existed: plans without avoid_node must not change at all.
+const goldenWebDigest = "8cfd2e5807b47804427803dcd223a8e083b49378037308d843ea553550af8b57"
+
+func TestNoAvoidNodesManifestsUnchanged(t *testing.T) {
+	f := avoidFacts(t)
+	r := Request{Namespace: "ucr-example", Goal: GoalWeb, Run: "0101-0000-test"}
+	p, err := Build(f, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(p.Objects)
+	if strings.Contains(string(b), "affinity") {
+		t.Fatalf("affinity without avoid_node: %s", b)
+	}
+	if d := manifestDigest(t, p); d != goldenWebDigest {
+		t.Fatalf("manifests changed without avoid_node: digest %s", d)
+	}
+	r.AvoidNodes = []string{"node-a"}
+	q, err := Build(f, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifestDigest(t, q) == manifestDigest(t, p) || q.Hash == p.Hash {
+		t.Fatal("avoid_node did not change the manifests or the plan hash")
+	}
+}
+
+func TestAvoidNodesRefusesBadInput(t *testing.T) {
+	f := avoidFacts(t)
+	for _, bad := range [][]string{
+		{"node_a"},
+		{"node a"},
+		{"node/../x"},
+		{"   "},
+		{strings.Repeat("a", 254)},
+		{"n1", "n2", "n3", "n4", "n5", "n6"},
+	} {
+		_, err := Build(f, Request{Namespace: "ucr-example", Goal: GoalWeb, AvoidNodes: bad})
+		if err == nil || !strings.Contains(err.Error(), "avoid_node") {
+			t.Errorf("%q: want avoid_node error, got %v", bad, err)
+		}
+	}
+	if _, err := Build(f, Request{Namespace: "ucr-example", Goal: GoalWeb, AvoidNodes: []string{"n1", "n2", "n3", "n4", "n5"}}); err != nil {
+		t.Fatalf("5 nodes refused: %v", err)
 	}
 }

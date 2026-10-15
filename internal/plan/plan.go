@@ -57,6 +57,7 @@ type Request struct {
 	ArrayIDs   []int    // sweep from a Slurm --array: the task ids, in order
 	PullSecret string   // docker-registry Secret for a private image
 	Run        string   // reuse a run id (update a running web app in place)
+	AvoidNodes []string // node names the pod must not run on (required node anti-affinity)
 }
 
 // Plan is the reviewed result.
@@ -169,6 +170,11 @@ func Build(f *inspect.Facts, r Request) (*Plan, error) {
 	if r.Namespace == "" {
 		return nil, fmt.Errorf("no namespace: pass namespace, or set one in ~/.config/nrp-mcp/config.yaml (nrp_status lists yours)")
 	}
+	avoid, err := cleanAvoid(r.AvoidNodes)
+	if err != nil {
+		return nil, err
+	}
+	r.AvoidNodes = avoid
 	var mappings []SlurmMapping
 	if f != nil && len(f.Slurm) > 0 && r.Goal != GoalWeb && r.Goal != GoalSession {
 		mappings = translateSlurm(f, &r)
@@ -196,7 +202,6 @@ func Build(f *inspect.Facts, r Request) (*Plan, error) {
 		p.Labels[OwnerLabel] = OwnerID(r.Owner)
 	}
 	pickImage(f, &r, p)
-	var err error
 	switch r.Goal {
 	case GoalJob, GoalSweep, GoalLLMBatch:
 		err = buildJob(f, r, p)
@@ -214,11 +219,57 @@ func Build(f *inspect.Facts, r Request) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(r.AvoidNodes) > 0 {
+		switch r.Goal {
+		case GoalJob, GoalSweep, GoalLLMBatch, GoalWeb, GoalSession:
+			p.Decisions = append(p.Decisions, "Keeps the pod off "+strings.Join(r.AvoidNodes, ", ")+" (you asked to avoid them).")
+		default:
+			p.Decisions = append(p.Decisions, "Ignoring avoid_node: it applies to job, sweep, llm-batch, web and session plans.")
+		}
+	}
 	req, _ := json.Marshal(r)
 	_ = json.Unmarshal(req, &p.Request)
 	p.Cleanup = fmt.Sprintf("kubectl -n %s delete all,pvc,secret,ingress -l nrp-mcp/run=%s", r.Namespace, p.Run)
 	p.Hash = Hash(p)
 	return p, nil
+}
+
+// maxAvoid caps avoid_node: a longer list is more likely a mistake than a fix.
+const maxAvoid = 5
+
+var nodeNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`)
+
+// cleanAvoid trims, lowercases and dedupes avoid_node entries and refuses anything
+// that is not a plain node host name.
+func cleanAvoid(in []string) ([]string, error) {
+	var out []string
+	for _, n := range in {
+		n = strings.ToLower(strings.TrimSpace(n))
+		if n == "" {
+			return nil, fmt.Errorf("avoid_node has an empty name: list node names separated by commas, e.g. k8s-haosu-20.sdsc.optiputer.net")
+		}
+		if len(n) > 253 || !nodeNameRe.MatchString(n) {
+			return nil, fmt.Errorf("avoid_node %q is not a node name: use letters, digits, dots and dashes only (nrp_watch shows the node name)", n)
+		}
+		if !contains(out, n) {
+			out = append(out, n)
+		}
+	}
+	if len(out) > maxAvoid {
+		return nil, fmt.Errorf("avoid_node lists %d nodes; at most %d are allowed (avoiding many nodes can leave the pod with nowhere to run)", len(out), maxAvoid)
+	}
+	return out, nil
+}
+
+// applyAvoid keeps the pod off the named nodes with a required node anti-affinity.
+// With no nodes it leaves the spec untouched, so other plans do not change.
+func applyAvoid(ps *k8s.PodSpec, nodes []string) {
+	if len(nodes) == 0 {
+		return
+	}
+	ps.Affinity = &k8s.Affinity{NodeAffinity: &k8s.NodeAffinity{Required: &k8s.NodeSelector{NodeSelectorTerms: []k8s.NodeSelectorTerm{{
+		MatchExpressions: []k8s.NodeSelectorRequirement{{Key: "kubernetes.io/hostname", Operator: "NotIn", Values: append([]string(nil), nodes...)}},
+	}}}}}
 }
 
 // Hash is the sha256 of what would be applied (objects + goal + public URL).
@@ -427,6 +478,7 @@ func buildJob(f *inspect.Facts, r Request, p *Plan) error {
 		}
 	}
 	pod := k8s.PodSpec{RestartPolicy: "Never", Containers: []k8s.Container{ctr}, Volumes: vols, ImagePullSecrets: pullSecrets(r, p)}
+	applyAvoid(&pod, r.AvoidNodes)
 	if r.Opportun || (gpu > 0 && isSpecial(gpuResource(r)) && r.Opportun) {
 		pod.PriorityClassName = "opportunistic"
 		p.Decisions = append(p.Decisions, "priorityClassName opportunistic: bypasses the special-GPU quota, but the pod can be preempted at any time. Checkpoint your work.")
@@ -620,10 +672,11 @@ func buildWeb(f *inspect.Facts, r Request, p *Plan) error {
 		}
 	}
 	ctr.Env = append(ctr.Env, k8s.EnvVar{Name: "NRP_RUN", Value: p.Run})
+	webPod := k8s.PodSpec{Containers: []k8s.Container{ctr}, Volumes: vols, ImagePullSecrets: pullSecrets(r, p)}
+	applyAvoid(&webPod, r.AvoidNodes)
 	dep := k8s.Object{APIVersion: "apps/v1", Kind: "Deployment", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: labels, Annotations: owner(r)},
 		DeploymentSpec: &k8s.DeploymentSpec{Replicas: 1, Selector: k8s.LabelSelector{MatchLabels: sel},
-			Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: labels}, Spec: k8s.PodSpec{Containers: []k8s.Container{ctr},
-				Volumes: vols, ImagePullSecrets: pullSecrets(r, p)}}}}
+			Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: labels}, Spec: webPod}}}
 	svc := k8s.Object{APIVersion: "v1", Kind: "Service", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: copyLabels(labels)},
 		ServiceSpec: &k8s.ServiceSpec{Selector: sel, Ports: []k8s.ServicePort{{Port: 80, TargetPort: port}}, Type: "ClusterIP"}}
 	tls := k8s.IngressTLS{Hosts: []string{host}}
@@ -688,6 +741,7 @@ func buildSession(r Request, p *Plan) error {
 	if r.DataPVC != "" {
 		spec.Volumes = []k8s.Volume{{Name: "data", PersistentVolumeClaim: &k8s.PVCSource{ClaimName: r.DataPVC}}}
 	}
+	applyAvoid(&spec, r.AvoidNodes)
 	labels := copyLabels(p.Labels)
 	labels["nrp-mcp/session"] = "true"
 	sec := k8s.Object{APIVersion: "v1", Kind: "Secret", Metadata: k8s.Meta{Name: p.Name + "-session", Namespace: r.Namespace, Labels: copyLabels(labels)}, StringData: map[string]string{"token": tok}}
