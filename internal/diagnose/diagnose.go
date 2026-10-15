@@ -4,7 +4,12 @@ package diagnose
 import (
 	"fmt"
 	"strings"
+	"time"
 )
+
+// slowAfter is how long a pod may sit on a node without starting before we call
+// the node slow.
+const slowAfter = 10 * time.Minute
 
 // Pod is the part of a Kubernetes pod status diagnosis needs.
 type Pod struct {
@@ -16,6 +21,9 @@ type Pod struct {
 	Containers []Container
 	Events     []Event
 	LogTail    string
+	Created    time.Time // metadata.creationTimestamp
+	Scheduled  time.Time // PodScheduled condition lastTransitionTime
+	Now        time.Time // injected clock (ops sets time.Now())
 }
 
 // Container status.
@@ -29,6 +37,9 @@ type Container struct {
 	ExitCode     int
 	LastTermRsn  string
 	LastExitCode int
+	Image        string
+	Init         bool // an init container
+	Running      bool // state.running is set
 }
 
 // Event is a Kubernetes event on the pod.
@@ -40,14 +51,135 @@ type Event struct {
 
 // Finding is a diagnosis.
 type Finding struct {
-	Pod     string `json:"pod"`
-	State   string `json:"state"`
-	Explain string `json:"explanation"`
-	Fix     string `json:"fix,omitempty"`
+	Pod        string          `json:"pod"`
+	State      string          `json:"state"`
+	Explain    string          `json:"explanation"`
+	Fix        string          `json:"fix,omitempty"`
+	Node       string          `json:"node,omitempty"`
+	AgeMinutes int             `json:"age_minutes,omitempty"`
+	Containers []ContainerInfo `json:"containers,omitempty"`
+	Events     []EventInfo     `json:"events,omitempty"`
 }
 
-// Explain diagnoses one pod.
+// ContainerInfo is one container in a Finding. State is running,
+// waiting:<reason> or terminated:<reason>.
+type ContainerInfo struct {
+	Name  string `json:"name"`
+	Image string `json:"image,omitempty"`
+	State string `json:"state,omitempty"`
+}
+
+// EventInfo is one recent pod event in a Finding.
+type EventInfo struct {
+	Type    string `json:"type,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// Explain diagnoses one pod and attaches node, containers and recent events.
 func Explain(p Pod) Finding {
+	f := explain(p)
+	f.Node = p.Node
+	for _, c := range p.Containers {
+		ci := ContainerInfo{Name: c.Name, Image: c.Image}
+		switch {
+		case c.Terminated != "":
+			ci.State = "terminated:" + c.Terminated
+		case c.Waiting != "":
+			ci.State = "waiting:" + c.Waiting
+		case c.Running:
+			ci.State = "running"
+		}
+		f.Containers = append(f.Containers, ci)
+	}
+	evs := p.Events
+	if len(evs) > 5 {
+		evs = evs[len(evs)-5:]
+	}
+	for _, e := range evs {
+		f.Events = append(f.Events, EventInfo{Type: e.Type, Reason: e.Reason, Message: firstLine(e.Message)})
+	}
+	if p.Phase == "Pending" {
+		f.AgeMinutes = pendingMinutes(p)
+	}
+	return f
+}
+
+// pendingAge is the time since the pod was scheduled (or created), never negative.
+func pendingAge(p Pod) time.Duration {
+	since := p.Scheduled
+	if since.IsZero() || p.Node == "" {
+		since = p.Created
+	}
+	if since.IsZero() || p.Now.IsZero() {
+		return 0
+	}
+	if d := p.Now.Sub(since); d > 0 {
+		return d
+	}
+	return 0
+}
+
+func pendingMinutes(p Pod) int { return int(pendingAge(p) / time.Minute) }
+
+// pullImage is the image the pod is downloading: the newest Pulling event's image,
+// else the first main container's image, else "".
+func pullImage(p Pod) string {
+	for i := len(p.Events) - 1; i >= 0; i-- {
+		e := p.Events[i]
+		if e.Reason != "Pulling" {
+			continue
+		}
+		if a := strings.IndexByte(e.Message, '"'); a >= 0 {
+			if b := strings.IndexByte(e.Message[a+1:], '"'); b > 0 {
+				return e.Message[a+1 : a+1+b]
+			}
+		}
+	}
+	for _, c := range p.Containers {
+		if !c.Init && c.Image != "" {
+			return c.Image
+		}
+	}
+	return ""
+}
+
+// explainPending covers a Pending pod with no known failure.
+func explainPending(p Pod, f Finding) Finding {
+	age := pendingAge(p)
+	n := pendingMinutes(p)
+	if p.Node == "" {
+		f.State = "Waiting for a node"
+		f.Explain = fmt.Sprintf("Not on a node yet (%d min).", n)
+		if age >= slowAfter {
+			f.Fix = "Wait a few minutes, or loosen the request."
+		}
+		return f
+	}
+	if age > slowAfter {
+		f.State = "Slow node"
+		f.Explain = fmt.Sprintf("On %s for %d min with no progress; this node may be slow or unhealthy.", p.Node, n)
+		f.Fix = "Re-plan with avoid_node=" + p.Node + " in nrp_plan, then nrp_run (the old pod is replaced)."
+		return f
+	}
+	for _, c := range p.Containers {
+		if c.Init && c.Terminated == "" && (c.Running || c.Waiting != "") {
+			f.State = "Starting"
+			f.Explain = fmt.Sprintf("On %s, preparing (unpacking your code) for %d min.", p.Node, n)
+			return f
+		}
+	}
+	f.State = "Pulling image"
+	img := pullImage(p)
+	if img != "" {
+		img = " " + img
+	}
+	f.Explain = fmt.Sprintf("On %s, downloading%s for %d min. A first pull on a node can take 5-10 min.", p.Node, img, n)
+	f.Fix = "Don't redeploy; that restarts the download."
+	return f
+}
+
+func explain(p Pod) Finding {
 	f := Finding{Pod: p.Name, State: p.Phase}
 	evt := func(sub string) *Event {
 		for i := len(p.Events) - 1; i >= 0; i-- {
@@ -130,8 +262,7 @@ func Explain(p Pod) Finding {
 			f.Fix = "Delete this pod so the Job puts it on another node (seen on Nautilus with CephFS on some nodes); nrp_cleanup can do it."
 			return f
 		}
-		f.Explain = "Waiting to be scheduled or for the image to download (large images can take a few minutes the first time on a node)."
-		return f
+		return explainPending(p, f)
 	}
 	switch p.Phase {
 	case "Running":
