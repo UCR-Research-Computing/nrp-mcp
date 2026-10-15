@@ -3,6 +3,24 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before 1.0
 minor versions may change behavior.
 
+## [0.8.0] - 2026-10-15
+
+### Added
+
+- `nrp_plan avoid_node=<node>[,<node>]` keeps a pod off up to 5 named nodes (job, sweep,
+  llm-batch, web, session). It is part of the plan, so the same confirm token covers it.
+  Re-planning a running web app with it moves the app in place.
+- `nrp_watch` returns, per pod, the node, minutes waiting, each container's image and state,
+  and the last 5 events.
+
+### Fixed
+
+- `nrp_watch` no longer says "Waiting to be scheduled" for a pod that already has a node.
+  Pending now reads as one of: waiting for a node, preparing on <node>, downloading <image>
+  on <node> (with "don't redeploy"), or slow node after 10 minutes (with the `avoid_node`
+  fix).
+- `scripts/gauntlet.sh`: the ASCII-only docs check used `grep -P` and never ran on macOS.
+
 ## [0.7.0] - 2026-10-07
 
 ### Added
