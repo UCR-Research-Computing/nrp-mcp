@@ -336,7 +336,18 @@ into no node / preparing / downloading / slow node with node, minutes and events
 `scripts/gauntlet.sh` used `grep -P`, which macOS grep lacks, so the ASCII-docs check
 silently never ran on Macs; it now uses perl (checked with a planted non-ASCII line).
 
-__LIVE080__
+Live web, Pending diagnosis and avoid_node, 2026-10-15 (`scripts/e2eweb`, a real stdio
+client driving the 0.8.0 binary, RC namespace, a one-file P1 page, public host approved by
+the namespace admin): plan + run put the pod on k8s-haosu-20.sdsc.optiputer.net. `nrp_watch`
+said, in turn, "On k8s-haosu-20..., downloading for 0 min ... Don't redeploy", then
+"preparing (unpacking your code)" for about 2 minutes, then Running with HTTP 200 at 139 s.
+Re-planning with `avoid_node=k8s-haosu-20.sdsc.optiputer.net` (decision line shown, NotIn
+affinity in the manifests) and `nrp_run` reused the same run id, rolled the Deployment in
+place, and the new pod came up on hcc-nrp-shor-c5934.unl.edu with HTTP 200 about 25 s later;
+two-step cleanup left 0 workloads. Found and fixed: an init container still Waiting was
+described as "preparing (unpacking your code)" while its own image (busybox) downloaded for
+about 2 minutes; it is now "downloading <init image>", and "preparing" is only shown while
+the init container is Running.
 
 ## 13. Change log
 

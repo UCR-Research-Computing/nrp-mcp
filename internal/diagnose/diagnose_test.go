@@ -113,9 +113,11 @@ func TestPendingCases(t *testing.T) {
 		{
 			name: "c init waiting",
 			pod: Pod{Name: "p", Phase: "Pending", Node: "n1", Scheduled: ago(1), Now: pendNow,
-				Containers: []Container{{Name: "unpack-code", Init: true, Waiting: "ContainerCreating"}}},
-			state:   "Starting",
-			explain: []string{"On n1, preparing"},
+				Containers: []Container{{Name: "unpack-code", Init: true, Image: "busybox:1.36", Waiting: "PodInitializing"}, {Name: "main", Image: "python:3.12-slim", Waiting: "PodInitializing"}}},
+			// Live 2026-10-15: a waiting init container is still downloading its own image.
+			state:   "Pulling image",
+			explain: []string{"On n1, downloading busybox:1.36 for 1 min."},
+			fix:     "Don't redeploy",
 			ageMin:  1,
 			node:    "n1",
 		},

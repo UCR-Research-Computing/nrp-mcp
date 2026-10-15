@@ -19,6 +19,8 @@ minor versions may change behavior.
   Pending now reads as one of: waiting for a node, preparing on <node>, downloading <image>
   on <node> (with "don't redeploy"), or slow node after 10 minutes (with the `avoid_node`
   fix).
+- While the code-unpacking step is still downloading its own image, `nrp_watch` says
+  "downloading <image>", not "preparing" (found in the live test).
 - `scripts/gauntlet.sh`: the ASCII-only docs check used `grep -P` and never ran on macOS.
 
 ## [0.7.0] - 2026-10-07

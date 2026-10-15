@@ -144,6 +144,15 @@ func pullImage(p Pod) string {
 	return ""
 }
 
+func hasPullingEvent(p Pod) bool {
+	for _, e := range p.Events {
+		if e.Reason == "Pulling" {
+			return true
+		}
+	}
+	return false
+}
+
 // explainPending covers a Pending pod with no known failure.
 func explainPending(p Pod, f Finding) Finding {
 	age := pendingAge(p)
@@ -162,15 +171,25 @@ func explainPending(p Pod, f Finding) Finding {
 		f.Fix = "Re-plan with avoid_node=" + p.Node + " in nrp_plan, then nrp_run (the old pod is replaced)."
 		return f
 	}
+	// An init container that is Running is unpacking code (seconds). One that is still
+	// Waiting has not started: its own image is downloading (live 2026-10-15: busybox
+	// took about 2 min on a node, which "preparing" described wrongly).
+	img := pullImage(p)
 	for _, c := range p.Containers {
-		if c.Init && c.Terminated == "" && (c.Running || c.Waiting != "") {
+		if !c.Init || c.Terminated != "" {
+			continue
+		}
+		if c.Running {
 			f.State = "Starting"
 			f.Explain = fmt.Sprintf("On %s, preparing (unpacking your code) for %d min.", p.Node, n)
 			return f
 		}
+		if c.Waiting != "" && c.Image != "" && !hasPullingEvent(p) {
+			img = c.Image
+		}
+		break
 	}
 	f.State = "Pulling image"
-	img := pullImage(p)
 	if img != "" {
 		img = " " + img
 	}
