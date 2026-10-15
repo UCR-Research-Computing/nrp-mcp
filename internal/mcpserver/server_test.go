@@ -412,3 +412,95 @@ func TestPlanLabelsOwner(t *testing.T) {
 		t.Fatal("owner label holds the raw username")
 	}
 }
+
+func TestWatchPendingOnNode(t *testing.T) {
+	// Own fake: a Pending pod on n1, init container running, a Pulling event.
+	created := time.Now().Add(-3 * time.Minute).UTC().Format(time.RFC3339)
+	pod := `{"metadata":{"name":"pend-abc","creationTimestamp":"` + created + `"},"spec":{"nodeName":"n1"},` +
+		`"status":{"phase":"Pending","conditions":[{"type":"PodScheduled","status":"True","lastTransitionTime":"` + created + `"}],` +
+		`"initContainerStatuses":[{"name":"unpack-code","image":"busybox:1.36","state":{"running":{}}}],` +
+		`"containerStatuses":[{"name":"main","image":"python:3.12-slim","state":{"waiting":{"reason":"PodInitializing"}}}]}}`
+	exec := func(_ context.Context, _ string, args []string, _ []byte) ([]byte, []byte, error) {
+		j := strings.Join(args, " ")
+		switch {
+		case strings.Contains(j, "auth whoami"):
+			return []byte(`{"status":{"userInfo":{"username":"u","groups":["oidcgroup:ucr-test:admin"]}}}`), nil, nil
+		case strings.Contains(j, "get pods -l nrp-mcp/run=pend-1"):
+			return []byte(`{"items":[` + pod + `]}`), nil, nil
+		case strings.Contains(j, "get events"):
+			return []byte(`{"items":[{"type":"Normal","reason":"Scheduled","message":"assigned to n1","involvedObject":{"name":"pend-abc"}},` +
+				`{"type":"Normal","reason":"Pulling","message":"Pulling image \"python:3.12-slim\"","involvedObject":{"name":"pend-abc"}},` +
+				`{"type":"Normal","reason":"Pulling","message":"other pod","involvedObject":{"name":"someone-else"}}]}`), nil, nil
+		case strings.Contains(j, "logs"):
+			return nil, []byte("waiting to start"), fmt.Errorf("exit 1")
+		case strings.Contains(j, " get "):
+			return []byte(`{"items":[]}`), nil, nil
+		}
+		return []byte("{}"), nil, nil
+	}
+	k := kube.New(kube.Config{Context: "nautilus"})
+	k.Exec = exec
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Cfg: config.Config{Context: "nautilus", PodsPerRun: 50, GPUsPerRun: 4, HoursPerRun: 48}, Ops: &ops.Ops{K: k}, Store: st,
+		HTTP: func(string) (int, error) { return 404, nil }, Now: time.Now}
+	ct, stt := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	if _, err := New(s).Connect(ctx, stt, nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	m, isErr, text := call(t, cs, "nrp_watch", map[string]any{"target": "pend-1", "namespace": "ucr-test"})
+	if isErr {
+		t.Fatal(text)
+	}
+	sum := fmt.Sprint(m["summary"])
+	if !strings.Contains(sum, "On n1") {
+		t.Fatalf("summary does not say where the pod is: %q", sum)
+	}
+	pods, _ := m["pods"].([]any)
+	if len(pods) != 1 {
+		t.Fatalf("pods %v", m["pods"])
+	}
+	p, _ := pods[0].(map[string]any)
+	if p["node"] != "n1" {
+		t.Fatalf("node missing: %v", p)
+	}
+	if age, ok := p["age_minutes"].(float64); !ok || age < 2 || age > 4 {
+		t.Fatalf("age_minutes %v", p["age_minutes"])
+	}
+	evs, _ := p["events"].([]any)
+	if len(evs) != 2 {
+		t.Fatalf("events for this pod: %v", p["events"])
+	}
+	b, _ := json.Marshal(p["containers"])
+	if !strings.Contains(string(b), "python:3.12-slim") || !strings.Contains(string(b), `"running"`) {
+		t.Fatalf("containers %s", b)
+	}
+}
+
+func TestPlanAvoidNode(t *testing.T) {
+	cs, _ := setup(t)
+	dir := project(t, map[string]string{"app.py": "import streamlit as st\nst.write('hi')\n", "requirements.txt": "streamlit\n"})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "goal": "web", "avoid_node": "k8s-haosu-20.sdsc.optiputer.net"})
+	if isErr {
+		t.Fatal(text)
+	}
+	b, _ := json.Marshal(m["manifests"])
+	s := string(b)
+	for _, want := range []string{`"nodeAffinity"`, `"kubernetes.io/hostname"`, `"NotIn"`, `"k8s-haosu-20.sdsc.optiputer.net"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("manifests missing %s", want)
+		}
+	}
+	_, isErr, text = call(t, cs, "nrp_plan", map[string]any{"project": dir, "goal": "web", "avoid_node": "bad_node"})
+	if !isErr || !strings.Contains(text, "avoid_node") {
+		t.Fatalf("bad node accepted: %s", text)
+	}
+}

@@ -429,15 +429,29 @@ func toDiagPod(pm map[string]any, events []map[string]any) diagnose.Pod {
 	p.Reason, _ = st["reason"].(string)
 	p.Message, _ = st["message"].(string)
 	p.Node, _ = mapGet(pm, "spec")["nodeName"].(string)
+	p.Now = time.Now()
+	p.Created = created(pm)
+	conds, _ := st["conditions"].([]any)
+	for _, c := range conds {
+		cm, _ := c.(map[string]any)
+		if t, _ := cm["type"].(string); t == "PodScheduled" {
+			if s, _ := cm["lastTransitionTime"].(string); s != "" {
+				p.Scheduled, _ = time.Parse(time.RFC3339, s)
+			}
+		}
+	}
 	cs, _ := st["containerStatuses"].([]any)
 	ics, _ := st["initContainerStatuses"].([]any)
-	for _, c := range append(ics, cs...) {
+	all := append(append([]any{}, ics...), cs...)
+	for i, c := range all {
 		cm, _ := c.(map[string]any)
-		dc := diagnose.Container{}
+		dc := diagnose.Container{Init: i < len(ics)}
 		dc.Name, _ = cm["name"].(string)
+		dc.Image, _ = cm["image"].(string)
 		dc.Ready, _ = cm["ready"].(bool)
 		dc.Restarts = int(num(cm, "restartCount"))
 		state := mapGet(cm, "state")
+		dc.Running = mapGet(state, "running") != nil
 		if w := mapGet(state, "waiting"); w != nil {
 			dc.Waiting, _ = w["reason"].(string)
 			dc.WaitingMsg, _ = w["message"].(string)

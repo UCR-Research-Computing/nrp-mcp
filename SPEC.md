@@ -1,6 +1,6 @@
 # nrp-mcp SPEC
 
-Version 0.7.0 (2026-10-07; code 0.7.0). Owner: UCR Research Computing.
+Version 0.8.0 (2026-10-15; code 0.8.0). Owner: UCR Research Computing.
 Repo: `UCR-Research-Computing/nrp-mcp`. License: MIT.
 
 ## 1. What it is
@@ -95,7 +95,7 @@ useful the `kubectl` equivalent so people learn. Errors are explanations, not st
 | `nrp_plan` | no | - | inspect a project + goal; return summary, manifests, rules applied, warnings, refusals, suggested names (web), `plan_id`, and a `confirm_token` when the plan is runnable |
 | `nrp_build` | no | no | containerize: suggests a Dockerfile and a GitHub Actions workflow (`target=github`, default; image `ghcr.io/<owner>/<repo>` from the git remote) or a `.gitlab-ci.yml` (`target=gitlab`), plus steps and public/private image guidance; writes nothing |
 | `nrp_run` | yes | token (+ `public_ack` for web) | apply an approved plan; label; secrets; TTL; run card |
-| `nrp_watch` | no | - | progress, logs (tail/grep), events, plain-language diagnosis with a suggested fix |
+| `nrp_watch` | no | - | progress, logs (tail/grep), plain-language diagnosis with a suggested fix; per pod: node, minutes waiting (Pending), containers (image and state) and the last 5 events |
 | `nrp_data` | yes for uploads | `data_is_p1` for up | list / up (under 100 MB, kubectl cp through a small labelled helper pod) / down; bigger data is pointed to `nrp_plan goal=pull` or NRP S3. No token in 0.3.0 (TODO: token for uploads) |
 | `nrp_session` | no | - | connect to a session created by `nrp_plan goal=session` + `nrp_run` (which carry the token): readiness, port-forward command, local URL and sign-in token; or point to the hosted JupyterHub |
 | `nrp_cleanup` | yes | token | list and delete the caller's own nrp-mcp runs (objects labelled with their owner id); a namespace admin can pass `everyone=true` for all runs in the namespace |
@@ -113,6 +113,9 @@ useful the `kubectl` equivalent so people learn. Errors are explanations, not st
 Inputs: `project` (path), `goal`, `command` (what to run; inferred if omitted), `gpu` (0..n
 or a type), `cpu`, `memory`, `count`/`parallel` (sweep), `image` (override), `name`,
 `namespace`, `host` (web), `port` (web), `data_volume`, `pull_secret` (private image),
+`avoid_node` (comma list, at most 5: keeps job, sweep, llm-batch, web and session pods off
+those nodes with a required node anti-affinity on `kubernetes.io/hostname`; it is in the
+manifests, so the plan hash and confirm token cover it),
 `llm_secret`, `size`/`urls`/`subdir`/`data_is_p1` (volume, pull), `session`, `opportunistic`.
 
 Image choice order: user `image` (with a Dockerfile or no project: run as built, port from
@@ -175,7 +178,8 @@ admin may pass `everyone=true`.
 
 ## 8. Diagnosis (nrp_watch)
 
-Pattern table on pod status, container states and events:
+Pattern table on pod status, container states and events. Failure signals win over the
+Pending progress rows; a Pending pod is never described as unscheduled once it has a node:
 
 | Signal | Plain-language explanation | Suggested fix |
 |---|---|---|
@@ -185,6 +189,10 @@ Pattern table on pod status, container states and events:
 | `OOMKilled` | ran out of memory at the limit | raise memory 50% and rerun |
 | `ImagePullBackOff` / `ErrImagePull` | image missing or private | check the name and tag; a private ghcr.io/GitLab image needs `pull_secret=` or a public package (live-checked 2026-10-07) |
 | `CrashLoopBackOff` / exit != 0 | the program failed | last 40 log lines |
+| Pending, no node yet | waiting for a node (N min) | nothing under 10 min; then wait or loosen the request |
+| Pending, on a node, init container busy | on <node>, preparing (unpacking your code) for N min | none |
+| Pending, on a node, image pulling / ContainerCreating | on <node>, downloading <image> for N min; a first pull can take 5-10 min | do not redeploy (it restarts the download) |
+| Pending, on a node more than 10 min | on <node> with no progress; the node may be slow or unhealthy | re-plan with `avoid_node=<node>`, then `nrp_run` |
 | `ContainerCreating` long, `FailedMount` | volume can't mount on that node (seen with CephFS) | delete the pod so the Job reschedules |
 | exit 137 without OOM | killed (deadline or preemption) | check activeDeadlineSeconds / opportunistic |
 | Ingress up, HTTPS not 200 | app not ready or wrong port | check readiness probe and Service port |
@@ -222,6 +230,7 @@ Prompts: `first_run`, `port_slurm_script`, `parameter_sweep`, `my_job_failed`,
 | P6b | 0.6.1 | `setup-e2e` CI: `nrp-mcp setup` on Linux, Windows, macOS arm64 and macOS Intel runners (real downloads, sample config, second run idempotent) | done |
 | P6c | 0.6.2-0.6.4 | client compatibility and sweep fixes: single-typed tool schemas (Gemini), Slurm array ids inside scripts, caps count what runs at once | done 2026-10-06; Hermes Agent, Gemini CLI and OpenCode tested live |
 | P5b | 0.7.0 | GitHub image path: GitHub Actions -> ghcr.io (default, built-in token), prebuilt image runs, `pull_secret`, in-place web updates; NRP GitLab as `target=gitlab` | done; live-tested 2026-10-07 (section 12). Not yet live-tested: the `pull_secret` path with a real token, and `target=gitlab` |
+| P6d | 0.8.0 | honest Pending diagnosis (node, pull, age, events) and `avoid_node` | done 2026-10-15; live test in section 12 |
 | P7 | 1.0.0 | pilot with RC and a first lab workshop; browser sign-in on macOS and Windows checked by hand | next |
 
 ## 12. Testing
@@ -317,6 +326,29 @@ plans now reuse the person's run. Also seen: two crash loops from the test app's
 packages (numpy, pandas), each shown with the exact error by `nrp_watch`. Everything was
 removed with `nrp_cleanup` and the repo deleted.
 
+Slow node, 2026-10-15 (0.7.0, found in use): a one-file web page (python:3.12-slim) sat
+about 4 minutes on k8s-haosu-20.sdsc.optiputer.net while the image pulled. `nrp_watch` said
+"Waiting to be scheduled or for the image to download" the whole time, although the pod had
+a node, so the assistant judged it stuck, deleted the pod with kubectl and redeployed, which
+restarted the pull on the same node. Nothing was broken. Fixed in 0.8.0: Pending is split
+into no node / preparing / downloading / slow node with node, minutes and events, and
+`avoid_node` moves a pod off a bad node through the normal plan and token. Also fixed:
+`scripts/gauntlet.sh` used `grep -P`, which macOS grep lacks, so the ASCII-docs check
+silently never ran on Macs; it now uses perl (checked with a planted non-ASCII line).
+
+Live web, Pending diagnosis and avoid_node, 2026-10-15 (`scripts/e2eweb`, a real stdio
+client driving the 0.8.0 binary, RC namespace, a one-file P1 page, public host approved by
+the namespace admin): plan + run put the pod on k8s-haosu-20.sdsc.optiputer.net. `nrp_watch`
+said, in turn, "On k8s-haosu-20..., downloading for 0 min ... Don't redeploy", then
+"preparing (unpacking your code)" for about 2 minutes, then Running with HTTP 200 at 139 s.
+Re-planning with `avoid_node=k8s-haosu-20.sdsc.optiputer.net` (decision line shown, NotIn
+affinity in the manifests) and `nrp_run` reused the same run id, rolled the Deployment in
+place, and the new pod came up on hcc-nrp-shor-c5934.unl.edu with HTTP 200 about 25 s later;
+two-step cleanup left 0 workloads. Found and fixed: an init container still Waiting was
+described as "preparing (unpacking your code)" while its own image (busybox) downloaded for
+about 2 minutes; it is now "downloading <init image>", and "preparing" is only shown while
+the init container is Running.
+
 ## 13. Change log
 
 | Version | Date | Change |
@@ -330,3 +362,4 @@ removed with `nrp_cleanup` and the repo deleted.
 | 0.6.1 | 2026-10-06 | Code 0.6.1: `setup --no-sign-in`; setup-e2e CI on four OS runners |
 | 0.6.4 | 2026-10-06 | Code 0.6.2-0.6.4: single-typed schemas (Gemini), Slurm array ids, caps count concurrent pods, `tasks_per_run`; client tests |
 | 0.7.0 | 2026-10-07 | Code 0.7.0: GitHub image builds by default (D4 revised), prebuilt images with `pull_secret`, in-place web updates, Flask+Dash detection; live test recorded; phase table cleaned (duplicate P5b) |
+| 0.8.0 | 2026-10-15 | Code 0.8.0: `nrp_watch` Pending diagnosis (node, preparing, downloading, slow node; node, age, containers, events in the result); `nrp_plan avoid_node`; gauntlet ASCII check portable; slow-node incident and live test recorded |
