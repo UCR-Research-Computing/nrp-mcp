@@ -14,6 +14,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/config"
+	"github.com/UCR-Research-Computing/nrp-mcp/internal/consent"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/kube"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/ops"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/store"
@@ -89,8 +90,8 @@ func setup(t *testing.T) (*mcp.ClientSession, *fakeKube) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{Cfg: config.Config{Context: "nautilus", PodsPerRun: 50, GPUsPerRun: 4, HoursPerRun: 48}, Ops: &ops.Ops{K: k}, Store: st,
-		HTTP: func(string) (int, error) { return 404, nil }, Now: time.Now}
+	s := &Server{Cfg: config.Config{Context: "nautilus", PodsPerRun: 50, GPUsPerRun: 4, HoursPerRun: 48, Consent: "code"}, Ops: &ops.Ops{K: k}, Store: st,
+		Codes: testCodes(t), HTTP: func(string) (int, error) { return 404, nil }, Now: time.Now}
 	srv := New(s)
 	ct, stt := mcp.NewInMemoryTransports()
 	ctx := context.Background()
@@ -182,7 +183,7 @@ func TestStatus(t *testing.T) {
 
 func TestPlanRunJobFlow(t *testing.T) {
 	cs, fk := setup(t)
-	dir := project(t, map[string]string{"train.py": "import torch\nx=torch.zeros(1).cuda()\n", "requirements.txt": "torch\n"})
+	dir := project(t, map[string]string{"train.py": "import pandas\nprint(1)\n", "requirements.txt": "pandas\n"})
 	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir})
 	if isErr {
 		t.Fatal(text)
@@ -218,43 +219,98 @@ func TestPlanRunJobFlow(t *testing.T) {
 		}
 	}
 	s := string(last)
-	for _, want := range []string{`"ConfigMap"`, `"nvidia.com/gpu"`, `"app.kubernetes.io/managed-by"`, `"unpack-code"`} {
+	for _, want := range []string{`"ConfigMap"`, `"app.kubernetes.io/managed-by"`, `"unpack-code"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("applied manifest missing %s", want)
 		}
 	}
 }
 
-func TestWebNeedsPublicAck(t *testing.T) {
-	cs, fk := setup(t)
+func TestWebNeedsPersonApprovalCode(t *testing.T) {
+	cs, fk, codes := setupWith(t, "code", nil)
 	dir := project(t, map[string]string{"app.py": "import streamlit as st\nst.write('hi')\n", "requirements.txt": "streamlit\n"})
 	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "goal": "web"})
 	if isErr {
 		t.Fatal(text)
 	}
-	sug, _ := m["suggested_names"].([]any)
-	if len(sug) < 2 {
-		t.Fatalf("want suggested names, got %v", m["suggested_names"])
+	if m["needs_person_approval"] != true || m["confirm_token"] != nil {
+		t.Fatalf("web plan must need the person's approval and carry no token: %v", m)
 	}
-	url, _ := m["public_url"].(string)
-	if !strings.HasPrefix(url, "https://") || m["public_ack_required"] != url {
-		t.Fatalf("public url %q ack %v", url, m["public_ack_required"])
+	if strings.Contains(fmt.Sprint(m["next"]), "public_ack") {
+		t.Fatalf("next still tells the model to echo public_ack: %v", m["next"])
 	}
-	_, isErr, text = call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"], "confirm_token": m["confirm_token"]})
-	if !isErr || !strings.Contains(text, "public_ack") || fk.applied() != 0 {
-		t.Fatalf("published without ack: %s", text)
+	// First nrp_run: nothing applied, a code is shown to the person only.
+	out, isErr, text := call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"]})
+	if isErr || out["waiting_for_approval"] != true || out["started"] == true || fk.applied() != 0 {
+		t.Fatalf("first run must wait: %v %s applied=%d", out, text, fk.applied())
 	}
-	_, isErr, text = call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"], "confirm_token": m["confirm_token"], "public_ack": "https://other.nrp-nautilus.io/"})
-	if !isErr || fk.applied() != 0 {
-		t.Fatalf("wrong ack accepted: %s", text)
+	code := codes.lastCode()
+	if code == "" || strings.Contains(text, code) || strings.Contains(fmt.Sprint(out), code) {
+		t.Fatalf("code missing, or leaked to the assistant: %q in %s", code, text)
 	}
-	// The token survived the failed acks (no redeem before the ack check).
-	out, isErr, text := call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"], "confirm_token": m["confirm_token"], "public_ack": url})
-	if isErr {
-		t.Fatal(text)
+	// A guessed code is refused and applies nothing.
+	if _, isErr, _ = call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"], "approval_code": "AAAAAA"}); !isErr || fk.applied() != 0 {
+		t.Fatal("guessed code accepted")
 	}
-	if out["url"] != url || fk.applied() != 1 {
-		t.Fatalf("%v applied=%d", out, fk.applied())
+	// The 0.8 path (confirm_token + public_ack, no code) no longer publishes.
+	if _, isErr, _ = call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"], "confirm_token": "nrp-x", "public_ack": m["public_url"]}); isErr || fk.applied() != 0 {
+		t.Fatalf("token path published without the person (isErr=%v applied=%d)", isErr, fk.applied())
+	}
+	code = codes.lastCode()
+	out, isErr, text = call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"], "approval_code": code})
+	if isErr || out["started"] != true || fk.applied() != 1 {
+		t.Fatalf("typed code must start it: %v %s applied=%d", out, text, fk.applied())
+	}
+	if _, isErr, _ = call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"], "approval_code": code}); !isErr || fk.applied() != 1 {
+		t.Fatal("code reused")
+	}
+}
+
+func TestWebApprovalByQuestion(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		answer  *mcp.ElicitResult
+		applied int
+	}{
+		{"accept", &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true}}, 1},
+		{"accept-unticked", &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": false}}, 0},
+		{"decline", &mcp.ElicitResult{Action: "decline"}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			asked := 0
+			cs, fk, codes := setupWith(t, "ask", func(_ context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+				asked++
+				if !strings.Contains(req.Params.Message, "PUBLIC") && !strings.Contains(req.Params.Message, "public") {
+					t.Errorf("question does not say public: %q", req.Params.Message)
+				}
+				return tc.answer, nil
+			})
+			dir := project(t, map[string]string{"app.py": "import streamlit as st\nst.write('hi')\n"})
+			m, _, _ := call(t, cs, "nrp_plan", map[string]any{"project": dir, "goal": "web"})
+			_, isErr, text := call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"]})
+			if asked != 1 || fk.applied() != tc.applied || (tc.applied == 0) != isErr {
+				t.Fatalf("asked=%d applied=%d isErr=%v %s", asked, fk.applied(), isErr, text)
+			}
+			if codes.lastCode() != "" {
+				t.Fatal("a code was issued although the app could ask")
+			}
+		})
+	}
+}
+
+func TestTokenConsentKeepsOldFlowWithWarning(t *testing.T) {
+	cs, fk, _ := setupWith(t, "token", nil)
+	dir := project(t, map[string]string{"app.py": "import streamlit as st\nst.write('hi')\n"})
+	m, _, _ := call(t, cs, "nrp_plan", map[string]any{"project": dir, "goal": "web"})
+	if m["confirm_token"] == nil {
+		t.Fatalf("token consent must issue a token: %v", m)
+	}
+	if _, isErr, _ := call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"], "confirm_token": m["confirm_token"]}); !isErr || fk.applied() != 0 {
+		t.Fatal("web without public_ack under token consent")
+	}
+	out, isErr, text := call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"], "confirm_token": m["confirm_token"], "public_ack": m["public_url"]})
+	if isErr || fk.applied() != 1 || !strings.Contains(fmt.Sprint(out["warning"]), "token") {
+		t.Fatalf("%v %s", out, text)
 	}
 }
 
@@ -271,15 +327,19 @@ func TestPlanRefusesSpecialGPUWithoutQuota(t *testing.T) {
 }
 
 func TestCleanupTwoStep(t *testing.T) {
-	cs, fk := setup(t)
+	cs, fk, codes := setupWith(t, "code", nil)
 	m, isErr, text := call(t, cs, "nrp_cleanup", map[string]any{"run": "r-1"})
 	if isErr {
 		t.Fatal(text)
 	}
-	if fk.deleted() != 0 || m["confirm_token"] == nil {
-		t.Fatalf("step 1 must only list: %v", m)
+	if fk.deleted() != 0 || m["confirm_token"] != nil || m["needs_person_approval"] != true {
+		t.Fatalf("step 1 must only list, with no token: %v", m)
 	}
-	_, isErr, text = call(t, cs, "nrp_cleanup", map[string]any{"plan_id": m["plan_id"], "confirm_token": m["confirm_token"]})
+	w, isErr, _ := call(t, cs, "nrp_cleanup", map[string]any{"plan_id": m["plan_id"]})
+	if isErr || w["waiting_for_approval"] != true || fk.deleted() != 0 {
+		t.Fatalf("step 2 without a code must wait: %v", w)
+	}
+	_, isErr, text = call(t, cs, "nrp_cleanup", map[string]any{"plan_id": m["plan_id"], "approval_code": codes.lastCode()})
 	if isErr || fk.deleted() != 2 { // pods first, then the rest
 		t.Fatalf("delete: %s (%d)", text, fk.deleted())
 	}
@@ -444,8 +504,8 @@ func TestWatchPendingOnNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{Cfg: config.Config{Context: "nautilus", PodsPerRun: 50, GPUsPerRun: 4, HoursPerRun: 48}, Ops: &ops.Ops{K: k}, Store: st,
-		HTTP: func(string) (int, error) { return 404, nil }, Now: time.Now}
+	s := &Server{Cfg: config.Config{Context: "nautilus", PodsPerRun: 50, GPUsPerRun: 4, HoursPerRun: 48, Consent: "code"}, Ops: &ops.Ops{K: k}, Store: st,
+		Codes: testCodes(t), HTTP: func(string) (int, error) { return 404, nil }, Now: time.Now}
 	ct, stt := mcp.NewInMemoryTransports()
 	ctx := context.Background()
 	if _, err := New(s).Connect(ctx, stt, nil); err != nil {
@@ -502,5 +562,114 @@ func TestPlanAvoidNode(t *testing.T) {
 	_, isErr, text = call(t, cs, "nrp_plan", map[string]any{"project": dir, "goal": "web", "avoid_node": "bad_node"})
 	if !isErr || !strings.Contains(text, "avoid_node") {
 		t.Fatalf("bad node accepted: %s", text)
+	}
+}
+
+// testCodeBook records codes shown to the person (instead of a desktop notification).
+type testCodeBook struct {
+	mu    sync.Mutex
+	codes []string
+}
+
+func (b *testCodeBook) lastCode() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.codes) == 0 {
+		return ""
+	}
+	return b.codes[len(b.codes)-1]
+}
+
+func testCodes(t *testing.T) *consent.Codes {
+	c, _ := testCodesBook(t)
+	return c
+}
+
+func testCodesBook(t *testing.T) (*consent.Codes, *testCodeBook) {
+	t.Helper()
+	c, err := consent.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	book := &testCodeBook{}
+	c.Log = func(string) {}
+	c.Notify = func(title, _ string) {
+		book.mu.Lock()
+		defer book.mu.Unlock()
+		book.codes = append(book.codes, strings.ReplaceAll(strings.TrimPrefix(title, "nrp-mcp approval code "), "-", ""))
+	}
+	return c, book
+}
+
+// setupWith is setup with a consent mode and, if elicit is not nil, a client that can
+// show questions (MCP elicitation) and answers with elicit.
+func setupWith(t *testing.T, consentMode string, elicit func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error)) (*mcp.ClientSession, *fakeKube, *testCodeBook) {
+	t.Helper()
+	fk := &fakeKube{}
+	k := kube.New(kube.Config{Context: "nautilus"})
+	k.Exec = fk.exec
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	codes, book := testCodesBook(t)
+	s := &Server{Cfg: config.Config{Context: "nautilus", PodsPerRun: 50, GPUsPerRun: 4, HoursPerRun: 48, Consent: consentMode}, Ops: &ops.Ops{K: k}, Store: st,
+		Codes: codes, HTTP: func(string) (int, error) { return 404, nil }, Now: time.Now}
+	ct, stt := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	if _, err := New(s).Connect(ctx, stt, nil); err != nil {
+		t.Fatal(err)
+	}
+	var opts *mcp.ClientOptions
+	if elicit != nil {
+		opts = &mcp.ClientOptions{ElicitationHandler: elicit}
+	}
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, opts).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cs.Close() })
+	return cs, fk, book
+}
+
+func TestGPUJobNeedsPersonApproval(t *testing.T) {
+	cs, fk, codes := setupWith(t, "code", nil)
+	dir := project(t, map[string]string{"train.py": "import torch\nx=torch.zeros(1).cuda()\n", "requirements.txt": "torch\n"})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir})
+	if isErr || m["needs_person_approval"] != true || m["confirm_token"] != nil {
+		t.Fatalf("GPU plan must need approval: %v %s", m, text)
+	}
+	out, _, _ := call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"]})
+	if out["waiting_for_approval"] != true || fk.applied() != 0 {
+		t.Fatalf("GPU run started without the person: %v", out)
+	}
+	out, isErr, text = call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"], "approval_code": codes.lastCode()})
+	if isErr || out["started"] != true || fk.applied() != 1 {
+		t.Fatalf("%v %s", out, text)
+	}
+}
+
+func TestDataUpNeedsPersonApproval(t *testing.T) {
+	cs, fk, _ := setupWith(t, "code", nil)
+	dir := project(t, map[string]string{"small.txt": "hello\n"})
+	out, isErr, text := call(t, cs, "nrp_data", map[string]any{"action": "up", "volume": "vol1", "local": dir, "data_is_p1": true})
+	if isErr || out["waiting_for_approval"] != true {
+		t.Fatalf("upload must wait for the person: %v %s", out, text)
+	}
+	for _, c := range fk.calls {
+		if strings.Contains(strings.Join(c, " "), " cp ") || strings.Contains(strings.Join(c, " "), "apply") {
+			t.Fatalf("upload touched the cluster before approval: %v", c)
+		}
+	}
+}
+
+func TestSetupFixNeedsPersonApproval(t *testing.T) {
+	cs, _, codes := setupWith(t, "code", nil)
+	out, isErr, text := call(t, cs, "nrp_setup", map[string]any{"fix": true})
+	if isErr || !strings.Contains(fmt.Sprint(out["next"]), "NOT STARTED") || codes.lastCode() == "" {
+		t.Fatalf("setup fix must wait for the person: %v %s", out, text)
+	}
+	if out["actions"] != nil {
+		t.Fatalf("setup acted before approval: %v", out["actions"])
 	}
 }

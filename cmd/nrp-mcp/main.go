@@ -19,6 +19,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/config"
+	"github.com/UCR-Research-Computing/nrp-mcp/internal/consent"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/kube"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/mcpserver"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/ops"
@@ -36,6 +37,7 @@ Usage:
                      --yes to skip the question, --no-sign-in to stop before the browser)
   nrp-mcp doctor     check kubectl, the NRP config and sign-in, and print your namespaces
   nrp-mcp init       write an example ~/.config/nrp-mcp/config.yaml (never overwrites)
+  nrp-mcp approve    show the newest approval code (for when no notification appeared)
   nrp-mcp version
 
 Flags (serve, doctor, setup): --config PATH  --kubeconfig PATH  --context NAME  --namespace NS
@@ -55,6 +57,8 @@ func main() {
 		fmt.Println("nrp-mcp", version.Version)
 	case "init":
 		os.Exit(runInit())
+	case "approve":
+		os.Exit(runApprove())
 	case "serve", "doctor", "setup":
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 		cfgPath := fs.String("config", config.DefaultPath(), "config file")
@@ -94,8 +98,12 @@ func newServer(cfg config.Config) (*mcpserver.Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	codes, err := consent.New(store.DefaultDir())
+	if err != nil {
+		return nil, err
+	}
 	k := kube.New(kube.Config{Kubectl: cfg.Kubectl, Kubeconfig: cfg.Kubeconfig, Context: cfg.Context})
-	return &mcpserver.Server{Cfg: cfg, Ops: &ops.Ops{K: k}, Store: st, HTTP: mcpserver.HTTPCheck, Now: time.Now}, nil
+	return &mcpserver.Server{Cfg: cfg, Ops: &ops.Ops{K: k}, Store: st, Codes: codes, HTTP: mcpserver.HTTPCheck, Now: time.Now}, nil
 }
 
 func runServe(cfg config.Config) int {
@@ -169,6 +177,21 @@ func runDoctor(cfg config.Config) int {
 	}
 	fmt.Println("\nReady. Add nrp-mcp to your MCP client with args [\"serve\"].")
 	return 0
+}
+
+// runApprove prints the newest approval code for the person (never for the assistant).
+func runApprove() int {
+	c, err := consent.New(store.DefaultDir())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if t := c.Latest(); t != "" {
+		fmt.Print(t)
+		return 0
+	}
+	fmt.Println("No approval code yet. Codes appear when your AI assistant asks to run something that needs your OK.")
+	return 1
 }
 
 func runInit() int {
