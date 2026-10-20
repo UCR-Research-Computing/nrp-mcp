@@ -19,8 +19,15 @@ We aim to acknowledge reports within three working days.
 - Secrets your jobs need (S3 keys, an LLM token) belong in Kubernetes Secrets. The rules
   engine refuses plans that put a secret-looking value directly in a spec, because job specs
   can be visible to other cluster users.
-- Changes need a single-use confirm token bound to the exact plan (10 minutes). Publishing
-  to the internet also needs the exact public URL typed back.
+- Risky steps (public web apps, GPU work, deleting, uploading, installing) need your own
+  approval: a question from your AI app, or a one-time code that only you see (desktop
+  notification, `nrp-mcp approve`). Other changes need a single-use confirm token bound to
+  the exact plan (10 minutes). Known limit: an AI assistant that can run shell commands on
+  your computer could read the code file (`~/.local/state/nrp-mcp/approve.txt`). Codes stop
+  an assistant that only has nrp-mcp's tools, and prompt injection through job output;
+  they do not protect a compromised computer.
+- S3 keys for saving results stay on your computer (`~/.config/nrp-mcp/s3.env`, 0600).
+  Pods get only a signed upload permission for one run's folder.
 - `nrp_setup` downloads only from dl.k8s.io and the kubelogin GitHub releases, verifies the
   published SHA256 before installing, installs into your user folder, and keeps any old copy.
 - Every change is written to a local audit log (`~/.local/state/nrp-mcp/audit.log`).

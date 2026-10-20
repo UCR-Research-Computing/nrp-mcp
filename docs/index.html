@@ -140,7 +140,7 @@
       <div>
         <div class="kicker">The tools</div>
         <h2>Nine tools</h2>
-        <p class="sub">Five are read-only. The rest change things only as listed: with a flag, a confirm token, or a second confirm.</p>
+        <p class="sub">Five are read-only. The rest change things only as listed: with a flag, your approval, or a confirm token.</p>
       </div>
     </div>
     <div class="table-wrap">
@@ -151,12 +151,12 @@
         <tbody>
           <tr><td><code>nrp_setup</code></td><td><span class="pill warn">only with fix=true</span></td><td>Laptop readiness: kubectl (version vs the cluster), kubelogin, NRP config, sign-in; installs or updates them with your yes</td></tr>
           <tr><td><code>nrp_status</code></td><td><span class="pill no">no</span></td><td>Identity, namespaces, GPU quotas, workloads and what they ask for, volumes, public URLs, warnings</td></tr>
-          <tr><td><code>nrp_plan</code></td><td><span class="pill no">no</span></td><td>Inspects a project and a goal (<code>job</code>, <code>sweep</code>, <code>web</code>, <code>session</code>, <code>llm-batch</code>, <code>volume</code>, <code>pull</code>), applies every rule, returns a summary, decisions, refusals, manifests and a confirm token</td></tr>
-          <tr><td><code>nrp_run</code></td><td><span class="pill yes">yes, with a token</span></td><td>Runs an approved plan; web plans also need <code>public_ack</code>; writes a run card to <code>&lt;project&gt;/.nrp/runs/</code></td></tr>
+          <tr><td><code>nrp_plan</code></td><td><span class="pill no">no</span></td><td>Inspects a project and a goal (<code>job</code>, <code>sweep</code>, <code>web</code>, <code>session</code>, <code>llm-batch</code>, <code>volume</code>, <code>pull</code>), applies every rule, returns a summary, decisions, refusals, the files it will copy and skip, and either a confirm token or <code>needs_person_approval</code></td></tr>
+          <tr><td><code>nrp_run</code></td><td><span class="pill yes">yes, after you approve</span></td><td>Runs an approved plan: risky plans (web, GPU) after the person approves (question or code), low-risk plans with a token; writes a private run card to <code>&lt;project&gt;/.nrp/runs/</code></td></tr>
           <tr><td><code>nrp_watch</code></td><td><span class="pill no">no</span></td><td>Progress, logs (tail/grep), diagnosis with a fix, public URL check</td></tr>
           <tr><td><code>nrp_cleanup</code></td><td><span class="pill yes">yes, two steps</span></td><td>Lists your runs, then deletes one after a second confirm</td></tr>
           <tr><td><code>nrp_session</code></td><td><span class="pill no">no</span></td><td>Readiness, port-forward command and local link for a notebook or VS Code session</td></tr>
-          <tr><td><code>nrp_data</code></td><td><span class="pill warn">uploads only</span></td><td>List, upload small non-sensitive files, download results from a volume</td></tr>
+          <tr><td><code>nrp_data</code></td><td><span class="pill warn">uploads only</span></td><td>List, upload small non-sensitive files, download results from a volume, or a job's saved results with <code>down run=&lt;id&gt;</code></td></tr>
           <tr><td><code>nrp_build</code></td><td><span class="pill no">no</span></td><td>Suggests a Dockerfile and a GitHub Actions workflow that builds it into ghcr.io (or, with <code>target=gitlab</code>, an NRP GitLab kaniko file); explains public vs private images</td></tr>
         </tbody>
       </table>
@@ -213,7 +213,7 @@
     </div>
     <div class="safety">
       <div class="s-item"><i class="fa-solid fa-user-lock" aria-hidden="true"></i><div><h3>Runs as you, on your computer</h3><p>Uses your kubeconfig and the NRP's sign-in. Never reads or stores your token.</p></div></div>
-      <div class="s-item"><i class="fa-solid fa-key" aria-hidden="true"></i><div><h3>Single-use confirm tokens</h3><p>Run and cleanup need a token bound to the exact plan, valid for 10 minutes.</p></div></div>
+      <div class="s-item"><i class="fa-solid fa-key" aria-hidden="true"></i><div><h3>Your approval, not the AI's</h3><p>Public web, GPUs, deleting and uploading wait for you: a question from your AI app, or a one-time code only you see. Other runs need a single-use token bound to the exact plan.</p></div></div>
       <div class="s-item"><i class="fa-solid fa-globe" aria-hidden="true"></i><div><h3>Nothing goes public by accident</h3><p>A web plan publishes only when you type its exact URL back.</p></div></div>
       <div class="s-item"><i class="fa-solid fa-users" aria-hidden="true"></i><div><h3>Shared namespaces are safe</h3><p>Every object is labelled with its owner; cleanup sees only your runs unless a namespace admin asks for everyone's.</p></div></div>
       <div class="s-item"><i class="fa-solid fa-gauge" aria-hidden="true"></i><div><h3>Caps</h3><p>On pods and GPUs running at once, tasks per sweep, and hours per run.</p></div></div>
