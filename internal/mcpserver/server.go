@@ -471,6 +471,15 @@ func approvalSummary(p *plan.Plan) string {
 	return "Start in " + p.Namespace + ": " + p.Summary
 }
 
+// objectNames lists kind/name for each object (run cards keep no contents).
+func objectNames(objs []k8s.Object) []string {
+	var n []string
+	for _, o := range objs {
+		n = append(n, o.Kind+"/"+o.Metadata.Name)
+	}
+	return n
+}
+
 // redactForOutput copies objs for showing to the assistant: ConfigMap file contents and
 // Secret values become a short note, so the plan stays small and leaks nothing.
 func redactForOutput(objs []k8s.Object) []k8s.Object {
@@ -591,7 +600,7 @@ func (s *Server) runTool(ctx context.Context, req *mcp.CallToolRequest, in runIn
 			return nil, nil, err
 		}
 	}
-	applied, err := s.Ops.Apply(ctx, p.Namespace, p.Objects)
+	applied, err := s.Ops.Apply(ctx, p.Namespace, plan.FillSessionToken(p.Objects))
 	s.Store.Audit(map[string]any{"tool": "nrp_run", "plan_id": p.ID, "run_id": p.Run, "namespace": p.Namespace, "goal": p.Goal, "ok": err == nil, "public_url": p.PublicURL})
 	if err != nil {
 		return nil, nil, err
@@ -600,7 +609,7 @@ func (s *Server) runTool(ctx context.Context, req *mcp.CallToolRequest, in runIn
 	project, _ := p.Extra["project"].(string)
 	card := map[string]any{"run_id": p.Run, "plan_id": p.ID, "goal": p.Goal, "namespace": p.Namespace, "image": p.Image, "summary": p.Summary,
 		"decisions": p.Decisions, "public_url": p.PublicURL, "git_commit": p.Extra["git_commit"], "git_remote": p.Extra["git_remote"],
-		"started": time.Now().UTC().Format(time.RFC3339), "nrp_mcp": version.Version, "objects": p.Objects}
+		"started": time.Now().UTC().Format(time.RFC3339), "nrp_mcp": version.Version, "objects": objectNames(p.Objects)}
 	if path, err := store.RunCard(project, card); err == nil {
 		out.RunCard = path
 	}

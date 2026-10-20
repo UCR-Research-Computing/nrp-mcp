@@ -3,11 +3,12 @@
 package plan
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"regexp"
 	"strconv"
 	"strings"
@@ -149,7 +150,7 @@ func SuggestNames(f *inspect.Facts, goal string) []string {
 		}
 	}
 	if len(cands) == 0 {
-		add(goal + "-" + strconv.Itoa(1000+rand.Intn(9000)))
+		add(goal + "-" + strconv.Itoa(1000+randInt(9000)))
 	}
 	if len(cands) > 3 {
 		cands = cands[:3]
@@ -157,10 +158,20 @@ func SuggestNames(f *inspect.Facts, goal string) []string {
 	return cands
 }
 
+// randInt is a uniform random int in [0, n) from crypto/rand.
+func randInt(n int) int {
+	v, err := rand.Int(rand.Reader, big.NewInt(int64(n)))
+	if err != nil {
+		panic(err) // crypto/rand does not fail on supported systems
+	}
+	return int(v.Int64())
+}
+
+// newID is prefix + time + 6 random letters (31^6, about 887 million).
 func newID(prefix string) string {
-	b := make([]byte, 4)
+	b := make([]byte, 6)
 	for i := range b {
-		b[i] = "abcdefghjkmnpqrstuvwxyz23456789"[rand.Intn(31)]
+		b[i] = "abcdefghjkmnpqrstuvwxyz23456789"[randInt(31)]
 	}
 	return prefix + time.Now().UTC().Format("0102-1504") + "-" + string(b)
 }
@@ -718,7 +729,6 @@ func buildSession(r Request, p *Plan) error {
 			mem = strconv.Itoa(16*gpu) + "Gi"
 		}
 	}
-	tok := randHex(16)
 	port := 8888
 	var cmd []string
 	if r.Session == "vscode" {
@@ -744,7 +754,9 @@ func buildSession(r Request, p *Plan) error {
 	applyAvoid(&spec, r.AvoidNodes)
 	labels := copyLabels(p.Labels)
 	labels["nrp-mcp/session"] = "true"
-	sec := k8s.Object{APIVersion: "v1", Kind: "Secret", Metadata: k8s.Meta{Name: p.Name + "-session", Namespace: r.Namespace, Labels: copyLabels(labels)}, StringData: map[string]string{"token": tok}}
+	// The token value is made by nrp_run at run time (FillSessionToken), so it is never in
+	// the plan, the plan file or the plan output.
+	sec := k8s.Object{APIVersion: "v1", Kind: "Secret", Metadata: k8s.Meta{Name: p.Name + "-session", Namespace: r.Namespace, Labels: copyLabels(labels)}, StringData: map[string]string{"token": SessionTokenPlaceholder}}
 	dep := k8s.Object{APIVersion: "apps/v1", Kind: "Deployment", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: labels, Annotations: owner(r)},
 		DeploymentSpec: &k8s.DeploymentSpec{Replicas: 1, Selector: k8s.LabelSelector{MatchLabels: map[string]string{"nrp-mcp/name": p.Name, "nrp-mcp/run": p.Run}},
 			Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: labels}, Spec: spec}}}
@@ -769,13 +781,13 @@ func buildSession(r Request, p *Plan) error {
 	return nil
 }
 
-func randHex(n int) string {
-	const h = "0123456789abcdef"
-	b := make([]byte, n*2)
-	for i := range b {
-		b[i] = h[rand.Intn(16)]
+// RandHex is n random bytes from crypto/rand as hex (sign-in tokens).
+func RandHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
 	}
-	return string(b)
+	return hex.EncodeToString(b)
 }
 
 var sbatchLine = regexp.MustCompile(`^#SBATCH\s+(--?[A-Za-z-]+)(?:[= ]\s*(\S+))?`)
@@ -1093,6 +1105,27 @@ func buildPull(r Request, p *Plan) error {
 	p.Summary = fmt.Sprintf("A download Job pulling %d file(s) into %s:%s.", len(r.URLs), r.DataPVC, strings.TrimPrefix(dir, "/data"))
 	p.Kubectl = []string{fmt.Sprintf("kubectl -n %s logs -f job/%s", r.Namespace, p.Name)}
 	return nil
+}
+
+// SessionTokenPlaceholder stands in for the session sign-in token until nrp_run.
+const SessionTokenPlaceholder = "<made by nrp_run>"
+
+// FillSessionToken returns a copy of objs where the session Secret placeholder is replaced
+// by a fresh random token. The plan itself (and its hash) never holds the token.
+func FillSessionToken(objs []k8s.Object) []k8s.Object {
+	out := make([]k8s.Object, len(objs))
+	for i, o := range objs {
+		if o.Kind == "Secret" && o.StringData["token"] == SessionTokenPlaceholder {
+			sd := map[string]string{}
+			for k, v := range o.StringData {
+				sd[k] = v
+			}
+			sd["token"] = RandHex(16)
+			o.StringData = sd
+		}
+		out[i] = o
+	}
+	return out
 }
 
 // Cleanup makes a cleanup plan for a run (or "all" nrp-mcp objects).

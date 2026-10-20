@@ -2,6 +2,9 @@ package store
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,5 +72,21 @@ func TestBadPlanID(t *testing.T) {
 	s, _ := New(t.TempDir())
 	if _, err := s.LoadPlan("../../etc/passwd"); err == nil {
 		t.Fatal("path traversal accepted")
+	}
+}
+
+func TestRunCardPrivate(t *testing.T) {
+	dir := t.TempDir()
+	p, err := RunCard(dir, map[string]any{"run_id": "r1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _ := os.Stat(p)
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("run card mode %v", st.Mode().Perm())
+	}
+	b, err := os.ReadFile(filepath.Join(dir, ".nrp", ".gitignore"))
+	if err != nil || !strings.Contains(string(b), "*") {
+		t.Fatalf(".nrp/.gitignore: %v %q", err, b)
 	}
 }

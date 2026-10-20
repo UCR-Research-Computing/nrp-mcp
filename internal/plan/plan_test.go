@@ -427,3 +427,32 @@ func TestAvoidNodesRefusesBadInput(t *testing.T) {
 		t.Fatalf("5 nodes refused: %v", err)
 	}
 }
+
+func TestSessionTokenNotInPlan(t *testing.T) {
+	p, err := Build(nil, Request{Namespace: "ucr-example", Goal: GoalSession})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Objects[0].Kind != "Secret" || p.Objects[0].StringData["token"] != SessionTokenPlaceholder {
+		t.Fatalf("session Secret must hold only the placeholder: %+v", p.Objects[0].StringData)
+	}
+	f1, f2 := FillSessionToken(p.Objects), FillSessionToken(p.Objects)
+	t1, t2 := f1[0].StringData["token"], f2[0].StringData["token"]
+	if len(t1) != 32 || t1 == t2 || t1 == SessionTokenPlaceholder {
+		t.Fatalf("tokens %q %q", t1, t2)
+	}
+	if p.Objects[0].StringData["token"] != SessionTokenPlaceholder {
+		t.Fatal("FillSessionToken changed the plan itself")
+	}
+}
+
+func TestIDsAreLongerAndRandom(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 200; i++ {
+		id := newID("r")
+		if len(id) != len("r1018-2037-")+6 || seen[id] {
+			t.Fatalf("id %q", id)
+		}
+		seen[id] = true
+	}
+}

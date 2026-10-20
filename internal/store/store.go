@@ -191,8 +191,13 @@ func RunCard(project string, card map[string]any) (string, error) {
 		return "", nil
 	}
 	dir := filepath.Join(project, ".nrp", "runs")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
+	}
+	// Keep run cards out of git: .nrp/.gitignore ignores everything in .nrp.
+	gi := filepath.Join(project, ".nrp", ".gitignore")
+	if _, err := os.Stat(gi); os.IsNotExist(err) {
+		_ = os.WriteFile(gi, []byte("# made by nrp-mcp: run cards stay on this computer\n*\n"), 0o600)
 	}
 	run, _ := card["run_id"].(string)
 	if run == "" {
@@ -200,5 +205,5 @@ func RunCard(project string, card map[string]any) (string, error) {
 	}
 	p := filepath.Join(dir, run+".json")
 	b, _ := json.MarshalIndent(card, "", "  ")
-	return p, os.WriteFile(p, b, 0o644)
+	return p, os.WriteFile(p, b, 0o600)
 }
