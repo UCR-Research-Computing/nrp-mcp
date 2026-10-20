@@ -3,6 +3,33 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before 1.0
 minor versions may change behavior.
 
+## [0.9.1] - 2026-10-20
+
+### Fixed
+
+- A failed kubectl call (expired sign-in, not allowed, no answer) is reported as an error
+  with the next step; nrp_status, nrp_watch and nrp_cleanup never say "0 workloads",
+  "nothing called" or "nothing left" after a failed call.
+- nrp_run checks the plan with Nautilus (dry run) before it asks the person or uses a
+  token, writes the run card before creating anything, and a half-finished run names its
+  run id and `nrp_cleanup run=<id>`.
+- No plan is made when Nautilus cannot confirm who you are; A100/H100/H200/GH200 plans are
+  refused (R6Q) when the quota cannot be read.
+- Sign-in may take 5 minutes (browser); `kubectl wait`, apply and copy get their own limits.
+- Tokens and approval codes are safe with two AI apps open at once (file lock, atomic
+  writes); plans older than 7 days are removed.
+- nrp_watch reads the Job or Deployment (time limit, retries used, quota or policy
+  refusal), looks only at the run's own events, and explains evicted pods, disk limits,
+  Docker Hub download limits, containers that cannot be created, apps that never answer
+  (listen on 0.0.0.0), and policy refusals. Slow-node advice for Jobs says clean up and plan
+  again.
+- Memory without a unit, bad cpu values and unknown GPU types get a clear message. Slurm
+  `--mem=16GB`, `--time=1-12:00` (was read as 25 h, now 36 h) and scripts with loops
+  translate correctly.
+- A cleanup approval covers exactly what is deleted and whose. Code folders named data/ or
+  results/ below the top of a project are copied. Result downloads resume after an
+  interruption and never leave partial files.
+
 ## [0.9.0] - 2026-10-20
 
 ### Changed (breaking for scripts)
