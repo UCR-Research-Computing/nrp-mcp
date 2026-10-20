@@ -21,6 +21,19 @@ type Config struct {
 	TasksPerRun int
 	UploadGB    int
 	Path        string
+	// Consent says how risky steps are approved: "ask" (default) asks the person in the
+	// AI app when it can show a question, else falls back to "code"; "code" always shows a
+	// 6-character approval code to the person only; "token" is the old 0.8 behavior with no
+	// human check, for scripts and CI.
+	Consent string
+	// WebDays is how long a public web app stays up before nrp_status calls it expired.
+	WebDays int
+	// S3 results storage (all optional; see SPEC section 5.4).
+	S3Endpoint   string // outside endpoint, default https://s3-west.nrp-nautilus.io
+	S3Internal   string // inside endpoint pods use, default http://rook-ceph-rgw-nautiluss3.rook
+	S3Bucket     string // default: nrp-results-<first 10 hex of your owner id>
+	S3KeysFile   string // default ~/.config/nrp-mcp/s3.env
+	S3SecretName string // Kubernetes Secret with your S3 keys, default nrp-s3-<owner short>
 }
 
 // DefaultPath is ~/.config/nrp-mcp/config.yaml (or $XDG_CONFIG_HOME).
@@ -34,7 +47,9 @@ func DefaultPath() string {
 
 // Load reads the file (missing is fine) then applies env overrides.
 func Load(path string) Config {
-	c := Config{Context: "nautilus", Kubectl: "kubectl", PodsPerRun: 50, GPUsPerRun: 4, HoursPerRun: 48, TasksPerRun: 10000, UploadGB: 50, Path: path}
+	c := Config{Context: "nautilus", Kubectl: "kubectl", PodsPerRun: 50, GPUsPerRun: 4, HoursPerRun: 48, TasksPerRun: 10000, UploadGB: 50, Path: path,
+		Consent: "ask", WebDays: 14, S3Endpoint: "https://s3-west.nrp-nautilus.io", S3Internal: "http://rook-ceph-rgw-nautiluss3.rook"}
+	c.S3KeysFile = filepath.Join(filepath.Dir(path), "s3.env")
 	if f, err := os.Open(path); err == nil {
 		defer f.Close()
 		sc := bufio.NewScanner(f)
@@ -68,6 +83,20 @@ func Load(path string) Config {
 				c.TasksPerRun = n
 			case "upload_gb_per_run":
 				c.UploadGB = n
+			case "consent":
+				c.Consent = strings.ToLower(v)
+			case "web_days":
+				c.WebDays = n
+			case "s3_endpoint":
+				c.S3Endpoint = v
+			case "s3_internal_endpoint":
+				c.S3Internal = v
+			case "s3_bucket":
+				c.S3Bucket = v
+			case "s3_keys_file":
+				c.S3KeysFile = expand(v)
+			case "s3_secret":
+				c.S3SecretName = v
 			}
 		}
 	}
@@ -82,6 +111,15 @@ func Load(path string) Config {
 	}
 	if v := os.Getenv("NRP_KUBECTL"); v != "" {
 		c.Kubectl = expand(v)
+	}
+	if v := os.Getenv("NRP_CONSENT"); v != "" {
+		c.Consent = strings.ToLower(v)
+	}
+	if c.Consent != "code" && c.Consent != "token" {
+		c.Consent = "ask"
+	}
+	if c.WebDays <= 0 || c.WebDays > 14 {
+		c.WebDays = 14
 	}
 	return c
 }
@@ -106,4 +144,14 @@ gpus_per_run: 4               # GPUs in use at the same time
 tasks_per_run: 10000          # total tasks in one sweep
 hours_per_run: 48
 upload_gb_per_run: 50
+# how risky steps (public web, GPUs, deleting, uploads, installs) are approved:
+#   ask   = your AI app asks you directly if it can; otherwise a code (default)
+#   code  = a 6-character code is shown to you only; type it into the chat
+#   token = no human check (0.8 behavior); only for scripts and CI
+consent: ask
+web_days: 14                  # public web apps expire after this many days (max 14)
+# results storage (NRP S3). Keys: https://nrp.ai/s3 -> put them in s3_keys_file
+# s3_endpoint: https://s3-west.nrp-nautilus.io
+# s3_bucket: nrp-results-<your id>
+# s3_keys_file: ~/.config/nrp-mcp/s3.env
 `
