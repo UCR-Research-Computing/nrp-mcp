@@ -97,9 +97,49 @@ func (r *Runner) base(ns string) []string {
 	return a
 }
 
-// Run runs kubectl with args in namespace ns (empty: none) and optional stdin.
+// Run runs kubectl with args in namespace ns (empty: none) and optional stdin, with a
+// time limit that fits the command (see LimitFor).
 func (r *Runner) Run(ctx context.Context, ns string, stdin []byte, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
+	return r.RunTimeout(ctx, r.LimitFor(args), ns, stdin, args...)
+}
+
+// LimitFor is the time limit for a kubectl command: sign-in may open a browser and wait
+// for the person (5 min), `wait --timeout=X` gets X + 30 s, apply and cp get 2 and 5 min,
+// everything else the Runner's default (60 s).
+func (r *Runner) LimitFor(args []string) time.Duration {
+	d := r.Timeout
+	if d <= 0 {
+		d = 60 * time.Second
+	}
+	scale := func(x time.Duration) time.Duration {
+		return time.Duration(float64(x) * float64(d) / float64(60*time.Second))
+	}
+	if len(args) >= 2 && args[0] == "auth" && args[1] == "whoami" {
+		return scale(5 * time.Minute)
+	}
+	if len(args) > 0 {
+		switch args[0] {
+		case "wait":
+			for _, a := range args {
+				if v, ok := strings.CutPrefix(a, "--timeout="); ok {
+					if w, err := time.ParseDuration(v); err == nil {
+						return scale(w + 30*time.Second)
+					}
+				}
+			}
+			return scale(150 * time.Second)
+		case "apply":
+			return scale(2 * time.Minute)
+		case "cp":
+			return scale(5 * time.Minute)
+		}
+	}
+	return d
+}
+
+// RunTimeout is Run with an explicit time limit.
+func (r *Runner) RunTimeout(ctx context.Context, limit time.Duration, ns string, stdin []byte, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	full := append(r.base(ns), args...)
 	ex := r.Exec
@@ -107,6 +147,9 @@ func (r *Runner) Run(ctx context.Context, ns string, stdin []byte, args ...strin
 		ex = osExec
 	}
 	out, errb, err := ex(ctx, r.Cfg.Kubectl, full, stdin)
+	if err != nil && ctx.Err() != nil {
+		return out, fmt.Errorf("kubectl %s: no answer within %s: %w", strings.Join(args, " "), limit.Round(time.Second), context.DeadlineExceeded)
+	}
 	if err != nil && authRetryable(string(errb)) {
 		// The OIDC token was refreshed mid-call (seen on Nautilus); one retry is enough.
 		out, errb, err = ex(ctx, r.Cfg.Kubectl, full, stdin)
@@ -208,6 +251,9 @@ func IsNotFound(err error) bool {
 
 func osExec(ctx context.Context, name string, args []string, stdin []byte) ([]byte, []byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	// If kubectl leaves a child (the sign-in plugin) holding its output, stop waiting
+	// shortly after the time limit instead of hanging.
+	cmd.WaitDelay = 5 * time.Second
 	var so, se bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &so, &se
 	if stdin != nil {
