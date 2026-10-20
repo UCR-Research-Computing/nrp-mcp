@@ -25,7 +25,9 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 	cl := mcp.NewClient(&mcp.Implementation{Name: "e2e", Version: "0"}, nil)
-	cs, err := cl.Connect(ctx, &mcp.CommandTransport{Command: exec.Command(*bin, "serve", "--namespace", *ns)}, nil)
+	cmd := exec.Command(*bin, "serve", "--namespace", *ns)
+	cmd.Env = append(os.Environ(), "NRP_CONSENT=token")
+	cs, err := cl.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	must(err)
 	defer cs.Close()
 
@@ -85,7 +87,7 @@ print("hello from", platform.node(), "run", os.environ.get("NRP_RUN"), "sum", to
 			break
 		}
 	}
-	fmt.Println("LOGS:\n" + fmt.Sprint(w["logs"]))
+	fmt.Println("LOGS:\n" + fmt.Sprint(w["untrusted_logs"]))
 
 	c1 := call("nrp_cleanup", map[string]any{"run": run})
 	fmt.Println("CLEANUP 1:", c1["summary"])

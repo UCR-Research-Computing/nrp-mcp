@@ -29,7 +29,9 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Minute)
 	defer cancel()
 	cl := mcp.NewClient(&mcp.Implementation{Name: "e2eweb", Version: "0"}, nil)
-	cs, err := cl.Connect(ctx, &mcp.CommandTransport{Command: exec.Command(*bin, "serve", "--namespace", *ns)}, nil)
+	cmd := exec.Command(*bin, "serve", "--namespace", *ns)
+	cmd.Env = append(os.Environ(), "NRP_CONSENT=token")
+	cs, err := cl.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	must(err)
 	defer cs.Close()
 
