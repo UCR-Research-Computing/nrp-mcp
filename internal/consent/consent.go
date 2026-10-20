@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/UCR-Research-Computing/nrp-mcp/internal/filelock"
 )
 
 // TTL is how long an approval code is valid.
@@ -125,6 +127,11 @@ func (c *Codes) save(r []rec) error {
 func (c *Codes) Issue(planID, planHash, action, summary string) (string, time.Time, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	l, err := filelock.Acquire(filepath.Join(c.Dir, "approvals.lock"))
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	defer l.Unlock()
 	code, err := newCode()
 	if err != nil {
 		return "", time.Time{}, err
@@ -158,6 +165,11 @@ func (c *Codes) Issue(planID, planHash, action, summary string) (string, time.Ti
 func (c *Codes) Check(code, planID, planHash, action string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	l, err := filelock.Acquire(filepath.Join(c.Dir, "approvals.lock"))
+	if err != nil {
+		return err
+	}
+	defer l.Unlock()
 	if Normalize(code) == "" {
 		return ErrWrong
 	}

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/UCR-Research-Computing/nrp-mcp/internal/filelock"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/plan"
 )
 
@@ -28,12 +29,32 @@ type Store struct {
 	mu  sync.Mutex
 }
 
-// New creates the directory tree (0700).
+// PlanKeep is how long saved plans are kept.
+const PlanKeep = 7 * 24 * time.Hour
+
+// New creates the directory tree (0700) and removes plans older than PlanKeep.
 func New(dir string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Join(dir, "plans"), 0o700); err != nil {
 		return nil, err
 	}
-	return &Store{Dir: dir, Now: time.Now}, nil
+	s := &Store{Dir: dir, Now: time.Now}
+	s.prunePlans()
+	return s, nil
+}
+
+func (s *Store) prunePlans() {
+	old := s.Now().Add(-PlanKeep)
+	m, _ := filepath.Glob(filepath.Join(s.Dir, "plans", "*.json"))
+	for _, f := range m {
+		if fi, err := os.Stat(f); err == nil && fi.ModTime().Before(old) {
+			_ = os.Remove(f)
+		}
+	}
+}
+
+// lockTokens holds the cross-process token lock (two AI apps may run nrp-mcp at once).
+func (s *Store) lockTokens() (*filelock.Lock, error) {
+	return filelock.Acquire(filepath.Join(s.Dir, "tokens.lock"))
 }
 
 // DefaultDir is ~/.local/state/nrp-mcp (or $XDG_STATE_HOME/nrp-mcp).
@@ -51,7 +72,11 @@ func (s *Store) SavePlan(p *plan.Plan) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.Dir, "plans", p.ID+".json"), b, 0o600)
+	f := filepath.Join(s.Dir, "plans", p.ID+".json")
+	if err := os.WriteFile(f+".tmp", b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(f+".tmp", f)
 }
 
 // LoadPlan reads a plan by id.
@@ -111,7 +136,11 @@ func (s *Store) saveTokens(t []tokenRec) error {
 		}
 	}
 	b, _ := json.MarshalIndent(keep, "", "  ")
-	return os.WriteFile(s.tokPath(), b, 0o600)
+	tmp := s.tokPath() + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.tokPath())
 }
 
 func sum(tok string) string {
@@ -123,6 +152,11 @@ func sum(tok string) string {
 func (s *Store) Issue(p *plan.Plan, action string) (string, time.Time, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	l, err := s.lockTokens()
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	defer l.Unlock()
 	raw := make([]byte, 24)
 	if _, err := rand.Read(raw); err != nil {
 		return "", time.Time{}, err
@@ -146,6 +180,11 @@ var (
 func (s *Store) Redeem(tok string, p *plan.Plan, action string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	l, err := s.lockTokens()
+	if err != nil {
+		return err
+	}
+	defer l.Unlock()
 	t := s.loadTokens()
 	h := sum(tok)
 	for i := range t {
