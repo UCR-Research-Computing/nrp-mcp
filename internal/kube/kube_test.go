@@ -60,3 +60,22 @@ func TestRetryOnceOnAuthRefresh(t *testing.T) {
 		t.Fatalf("forbidden must not retry: calls=%d", n)
 	}
 }
+
+func TestKind(t *testing.T) {
+	for _, tc := range []struct{ msg, want string }{
+		{"error: You must be logged in to the server (Unauthorized)", KindSignedOut},
+		{"error: the server has asked for the client to provide credentials", KindSignedOut},
+		{"error: get-token: oidc: token has expired", KindSignedOut},
+		{`Error from server (Forbidden): jobs.batch is forbidden: User cannot list`, KindForbidden},
+		{"Unable to connect to the server: dial tcp 1.2.3.4:443: i/o timeout", KindTimeout},
+		{`Error from server (NotFound): jobs.batch "x" not found`, KindNotFound},
+		{"error: something odd", KindOther},
+	} {
+		if got := Kind(&Error{Args: []string{"get"}, Msg: tc.msg}); got != tc.want {
+			t.Errorf("%q: got %s, want %s", tc.msg, got, tc.want)
+		}
+	}
+	if Kind(context.DeadlineExceeded) != KindTimeout || Kind(nil) != "" {
+		t.Fatal("deadline or nil")
+	}
+}

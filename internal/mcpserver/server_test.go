@@ -30,14 +30,22 @@ type fakeKube struct {
 	mu     sync.Mutex
 	calls  [][]string
 	stdins [][]byte
+	// fail maps a substring of the kubectl command line to the stderr it fails with.
+	fail map[string]string
 }
 
 func (f *fakeKube) exec(_ context.Context, _ string, args []string, stdin []byte) ([]byte, []byte, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, args)
 	f.stdins = append(f.stdins, stdin)
+	fail := f.fail
 	f.mu.Unlock()
 	j := strings.Join(args, " ")
+	for k, msg := range fail {
+		if strings.Contains(j, k) {
+			return nil, []byte(msg), errors.New("exit status 1")
+		}
+	}
 	switch {
 	case strings.Contains(j, "auth whoami"):
 		return []byte(`{"status":{"userInfo":{"username":"https://cilogon.org/serverE/users/1","groups":["oidcgroup:ucr-test:admin","system:authenticated"]}}}`), nil, nil
@@ -918,5 +926,36 @@ func TestSessionRefusedWhenIdentityUnknown(t *testing.T) {
 	_, out, err := s.sessionTool(context.Background(), nil, sessionIn{Run: "run-1"})
 	if err == nil || (out != nil && out.Token != "") {
 		t.Fatalf("an unconfirmed identity must not get a session sign-in: out=%+v err=%v", out, err)
+	}
+}
+
+func TestKubectlFailuresAreNotEmpty(t *testing.T) {
+	cs, fk := setup(t)
+	fk.mu.Lock()
+	fk.fail = map[string]string{"get jobs": "error: You must be logged in to the server (Unauthorized)"}
+	fk.mu.Unlock()
+	_, isErr, text := call(t, cs, "nrp_status", nil)
+	if !isErr || !strings.Contains(text, "sign") || strings.Contains(text, "0 workloads") {
+		t.Fatalf("expired sign-in must be an error that says sign in, not 0 workloads: %s", text)
+	}
+	fk.mu.Lock()
+	fk.fail = map[string]string{"get pods": `Error from server (Forbidden): pods is forbidden: User "x" cannot list resource "pods"`}
+	fk.mu.Unlock()
+	_, isErr, text = call(t, cs, "nrp_watch", map[string]any{"target": "r-1"})
+	if !isErr || strings.Contains(text, "nothing called") || !strings.Contains(text, "not allowed") {
+		t.Fatalf("forbidden must not read as nothing there: %s", text)
+	}
+	fk.mu.Lock()
+	fk.fail = map[string]string{"get job -l": "Unable to connect to the server: dial tcp: i/o timeout"}
+	fk.mu.Unlock()
+	_, isErr, text = call(t, cs, "nrp_cleanup", map[string]any{"run": "r-1"})
+	if !isErr || strings.Contains(text, "Nothing from run") || !strings.Contains(text, "did not answer") {
+		t.Fatalf("timeout must not read as nothing left: %s", text)
+	}
+	fk.mu.Lock()
+	fk.fail = map[string]string{"get pods": `Error from server (NotFound): the server could not find the requested resource`}
+	fk.mu.Unlock()
+	if _, isErr, text = call(t, cs, "nrp_status", nil); isErr {
+		t.Fatalf("not-found must still read as empty: %s", text)
 	}
 }

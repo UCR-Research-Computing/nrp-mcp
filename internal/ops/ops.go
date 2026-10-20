@@ -124,11 +124,14 @@ func (o *Ops) StatusOf(ctx context.Context, ns string) (*Status, error) {
 	var jobs, deps, pods, ings, pvcs struct {
 		Items []map[string]any `json:"items"`
 	}
-	_ = o.K.JSON(ctx, ns, &jobs, "get", "jobs")
-	_ = o.K.JSON(ctx, ns, &deps, "get", "deployments")
-	_ = o.K.JSON(ctx, ns, &pods, "get", "pods")
-	_ = o.K.JSON(ctx, ns, &ings, "get", "ingress")
-	_ = o.K.JSON(ctx, ns, &pvcs, "get", "pvc")
+	for _, g := range []struct {
+		kind string
+		into any
+	}{{"jobs", &jobs}, {"deployments", &deps}, {"pods", &pods}, {"ingress", &ings}, {"pvc", &pvcs}} {
+		if err := o.K.JSON(ctx, ns, g.into, "get", g.kind); err != nil && kube.Kind(err) != kube.KindNotFound {
+			return nil, kube.Explain(g.kind+" in "+ns, err)
+		}
+	}
 	owned := map[string]bool{}
 	for _, j := range jobs.Items {
 		wl := wlFrom("Job", j)
@@ -317,15 +320,23 @@ func (o *Ops) Watch(ctx context.Context, ns, target string, tail int, grep strin
 		{"get", "pods", "-l", "nrp-mcp/name=" + target},
 	}
 	for _, t := range tries {
-		if err := o.K.JSON(ctx, ns, &podsJSON, t...); err == nil && len(podsJSON.Items) > 0 {
+		err := o.K.JSON(ctx, ns, &podsJSON, t...)
+		if err != nil && kube.Kind(err) != kube.KindNotFound {
+			return nil, kube.Explain("pods in "+ns, err)
+		}
+		if err == nil && len(podsJSON.Items) > 0 {
 			selector = t[3]
 			break
 		}
 	}
 	if selector == "" {
 		var one map[string]any
-		if err := o.K.JSON(ctx, ns, &one, "get", "pod", target); err == nil {
+		err := o.K.JSON(ctx, ns, &one, "get", "pod", target)
+		switch {
+		case err == nil:
 			podsJSON.Items = []map[string]any{one}
+		case kube.Kind(err) != kube.KindNotFound:
+			return nil, kube.Explain("pod "+target+" in "+ns, err)
 		}
 	}
 	if owner != "" {
@@ -338,9 +349,13 @@ func (o *Ops) Watch(ctx context.Context, ns, target string, tail int, grep strin
 	}
 	if len(podsJSON.Items) == 0 {
 		var j map[string]any
-		if err := o.K.JSON(ctx, ns, &j, "get", "job", target); err == nil {
+		err := o.K.JSON(ctx, ns, &j, "get", "job", target)
+		if err == nil {
 			res.Summary = "The Job exists but has no pods yet (or they were cleaned up after finishing)."
 			return res, nil
+		}
+		if kube.Kind(err) != kube.KindNotFound {
+			return nil, kube.Explain("job "+target+" in "+ns, err)
 		}
 		return nil, fmt.Errorf("nothing called %q in %s (give a run id from nrp_run, a Job or Deployment name, or a pod name; nrp_status lists them)", target, ns)
 	}
@@ -581,7 +596,10 @@ func (o *Ops) CleanupList(ctx context.Context, ns, run string, sc Scope) ([]Work
 			Items []map[string]any `json:"items"`
 		}
 		if err := o.K.JSON(ctx, ns, &l, "get", kind, "-l", sel); err != nil {
-			continue
+			if kube.Kind(err) == kube.KindNotFound {
+				continue
+			}
+			return nil, kube.Explain(kind+" objects in "+ns, err)
 		}
 		for _, it := range l.Items {
 			if kind == "pod" {
@@ -607,8 +625,14 @@ func (o *Ops) Delete(ctx context.Context, ns, run string, sc Scope) (string, err
 	}
 	sel := sc.selector("nrp-mcp/run=" + run + ",app.kubernetes.io/managed-by=" + plan.ManagedBy)
 	// Pods first (data helpers hold volumes), then everything else.
-	out1, _ := o.K.Run(ctx, ns, nil, "delete", "pod", "-l", sel, "--wait=false")
+	out1, err := o.K.Run(ctx, ns, nil, "delete", "pod", "-l", sel, "--wait=false")
+	if err != nil && kube.Kind(err) != kube.KindNotFound {
+		return strings.TrimSpace(string(out1)), fmt.Errorf("could not delete run %s (nothing may have been removed): %w", run, kube.Explain("pods of run "+run, err))
+	}
 	out, err := o.K.Run(ctx, ns, nil, "delete", "job,deployment,service,ingress,configmap,secret,pvc", "-l", sel, "--wait=false")
 	out = append(out1, out...)
-	return strings.TrimSpace(string(out)), err
+	if err != nil && kube.Kind(err) != kube.KindNotFound {
+		return strings.TrimSpace(string(out)), fmt.Errorf("could not finish deleting run %s; check with nrp_cleanup run=%s: %w", run, run, err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }

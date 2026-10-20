@@ -142,6 +142,58 @@ type Error struct {
 
 func (e *Error) Error() string { return "kubectl " + strings.Join(e.Args, " ") + ": " + e.Msg }
 
+// Kinds of kubectl failure, from Kind.
+const (
+	KindSignedOut = "signed-out"
+	KindForbidden = "forbidden"
+	KindTimeout   = "timeout"
+	KindNotFound  = "not-found"
+	KindOther     = "other"
+)
+
+// Kind sorts a kubectl failure so callers can tell "nothing there" (not-found) from a
+// failure that must be reported (signed out, forbidden, timeout, anything else).
+func Kind(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return KindTimeout
+	}
+	msg := err.Error()
+	var ke *Error
+	if errors.As(err, &ke) {
+		msg = ke.Msg
+	}
+	low := strings.ToLower(msg)
+	switch {
+	case strings.Contains(msg, "Unauthorized") || strings.Contains(low, "provide credentials") || strings.Contains(low, "oidc") ||
+		strings.Contains(low, "token has expired") || strings.Contains(low, "refresh token"):
+		return KindSignedOut
+	case strings.Contains(low, "forbidden"):
+		return KindForbidden
+	case strings.Contains(low, "deadline exceeded") || strings.Contains(low, "i/o timeout") || strings.Contains(low, "signal: killed") ||
+		strings.Contains(low, "timed out") || strings.Contains(low, "timeout"):
+		return KindTimeout
+	case strings.Contains(msg, "NotFound") || strings.Contains(low, "not found") || strings.Contains(low, "the server doesn't have a resource type"):
+		return KindNotFound
+	}
+	return KindOther
+}
+
+// Explain turns a kubectl failure into one plain sentence with what to do.
+func Explain(what string, err error) error {
+	switch Kind(err) {
+	case KindSignedOut:
+		return fmt.Errorf("could not read %s: your Nautilus sign-in has expired or is missing. Run `kubectl auth whoami` in a terminal to sign in again, then retry (nothing was changed): %w", what, err)
+	case KindForbidden:
+		return fmt.Errorf("could not read %s: Nautilus says you are not allowed to (check the namespace, or ask its admin to add you): %w", what, err)
+	case KindTimeout:
+		return fmt.Errorf("could not read %s: Nautilus did not answer in time. Retry in a minute (nothing was changed): %w", what, err)
+	}
+	return fmt.Errorf("could not read %s: %w", what, err)
+}
+
 // IsForbidden reports an RBAC refusal.
 func IsForbidden(err error) bool {
 	var ke *Error
