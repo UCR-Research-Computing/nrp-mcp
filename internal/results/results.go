@@ -239,17 +239,22 @@ up() {
   cd /work/results 2>/dev/null || { echo "nrp-results: no /work/results folder, nothing to save"; exit 0; }
   sub=""
   if [ -n "${JOB_COMPLETION_INDEX:-}" ]; then sub="task-${JOB_COMPLETION_INDEX}/"; fi
-  n=0; bad=0
+  fails=/work/.nrp-results-failed
+  rm -f "$fails"
   find . -type f | while IFS= read -r f; do
     k="${S3_PREFIX}${sub}${f#./}"
-    if curl -sS --retry 3 -o /dev/null -w "%{http_code}" -X POST "$S3_URL" \
-      -F "key=${k}" -F "policy=${S3_POLICY}" -F "x-amz-algorithm=${S3_ALG}" -F "x-amz-credential=${S3_CRED}" \
-      -F "x-amz-date=${S3_DATE}" -F "x-amz-signature=${S3_SIG}" -F "file=@${f}" | grep -q '^20'; then
-      echo "nrp-results: saved ${k}"
-    else
-      echo "nrp-results: FAILED ${k}"
-    fi
+    # --form-string sends values as is (no ';' or ',' parsing); the file comes from stdin so
+    # any file name works.
+    code=$(curl -sS --retry 3 -o /dev/null -w "%{http_code}" -X POST "$S3_URL" \
+      --form-string "key=${k}" --form-string "policy=${S3_POLICY}" --form-string "x-amz-algorithm=${S3_ALG}" \
+      --form-string "x-amz-credential=${S3_CRED}" --form-string "x-amz-date=${S3_DATE}" \
+      --form-string "x-amz-signature=${S3_SIG}" -F "file=@-" < "$f")
+    case "$code" in
+      20*) echo "nrp-results: saved ${k}" ;;
+      *) echo "nrp-results: FAILED ${k} (HTTP ${code:-none})"; echo "$k" >> "$fails" ;;
+    esac
   done
+  if [ -s "$fails" ]; then echo "nrp-results: $(wc -l < "$fails" | tr -d ' ') file(s) FAILED to save"; exit 1; fi
   exit 0
 }
 trap up TERM INT
@@ -271,18 +276,43 @@ func AttachUploader(ps *k8s.PodSpec, secretName string) {
 	env = append(env, k8s.EnvVar{Name: "JOB_COMPLETION_INDEX", ValueFrom: &k8s.EnvVarSource{FieldRef: &k8s.FieldRef{FieldPath: "metadata.annotations['batch.kubernetes.io/job-completion-index']"}}})
 	always := "Always"
 	ps.InitContainers = append(ps.InitContainers, k8s.Container{Name: "save-results", Image: UploaderImage, RestartPolicy: always,
-		Command:      []string{"sh", "-c", uploaderScript},
-		Env:          env,
-		Resources:    k8s.Resources{Requests: map[string]string{"cpu": "100m", "memory": "64Mi"}, Limits: map[string]string{"cpu": "100m", "memory": "64Mi"}},
+		Command: []string{"sh", "-c", uploaderScript},
+		Env:     env,
+		Resources: k8s.Resources{Requests: map[string]string{"cpu": fmt.Sprintf("%dm", uploaderMilliCPU), "memory": fmt.Sprintf("%dMi", uploaderBytes>>20)},
+			Limits: map[string]string{"cpu": fmt.Sprintf("%dm", uploaderMilliCPU), "memory": fmt.Sprintf("%dMi", uploaderBytes>>20)}},
 		VolumeMounts: []k8s.Mount{{Name: "code", MountPath: "/work"}}})
 	if ps.TerminationGracePeriodSeconds == nil {
 		g := 300
 		ps.TerminationGracePeriodSeconds = &g
 	}
 	for i := range ps.Containers {
+		carve(&ps.Containers[i].Resources)
 		ps.Containers[i].Env = append(ps.Containers[i].Env, k8s.EnvVar{Name: "RESULTS_DIR", Value: "/work/results"})
 		if len(ps.Containers[i].Command) == 3 && ps.Containers[i].Command[0] == "bash" {
 			ps.Containers[i].Command[2] = "mkdir -p /work/results; " + ps.Containers[i].Command[2]
+		}
+	}
+}
+
+// Uploader's share of the pod (requests = limits).
+const (
+	uploaderMilliCPU = 100
+	uploaderBytes    = 64 << 20
+)
+
+// carve takes the uploader's share out of the main container, so the pod as a whole asks
+// for what the plan said (for example 1 CPU / 2 GiB stays inside the NRP usage-check
+// exemption). Containers too small to share keep their size.
+func carve(r *k8s.Resources) {
+	for _, m := range []map[string]string{r.Requests, r.Limits} {
+		if m == nil {
+			continue
+		}
+		if c, err := k8s.ParseCPU(m["cpu"]); err == nil && c > 2*uploaderMilliCPU {
+			m["cpu"] = fmt.Sprintf("%dm", c-uploaderMilliCPU)
+		}
+		if b, err := k8s.ParseBytes(m["memory"]); err == nil && b > 4*uploaderBytes && b%(1<<20) == 0 {
+			m["memory"] = fmt.Sprintf("%dMi", (b-uploaderBytes)>>20)
 		}
 	}
 }

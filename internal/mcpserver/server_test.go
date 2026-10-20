@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -188,7 +189,7 @@ func TestStatus(t *testing.T) {
 func TestPlanRunJobFlow(t *testing.T) {
 	cs, fk := setup(t)
 	dir := project(t, map[string]string{"train.py": "import pandas\nprint(1)\n", "requirements.txt": "pandas\n"})
-	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"discard_results": true, "project": dir})
 	if isErr {
 		t.Fatal(text)
 	}
@@ -639,7 +640,7 @@ func setupWith(t *testing.T, consentMode string, elicit func(context.Context, *m
 func TestGPUJobNeedsPersonApproval(t *testing.T) {
 	cs, fk, codes := setupWith(t, "code", nil)
 	dir := project(t, map[string]string{"train.py": "import torch\nx=torch.zeros(1).cuda()\n", "requirements.txt": "torch\n"})
-	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"discard_results": true, "project": dir})
 	if isErr || m["needs_person_approval"] != true || m["confirm_token"] != nil {
 		t.Fatalf("GPU plan must need approval: %v %s", m, text)
 	}
@@ -704,7 +705,7 @@ func TestPlanDataNeedsP1(t *testing.T) {
 	if m["runnable"] == true || !strings.Contains(fmt.Sprint(m["refusals"]), "R19") {
 		t.Fatalf("data without data_is_p1 must be refused: %v", m["refusals"])
 	}
-	m, _, _ = call(t, cs, "nrp_plan", map[string]any{"project": dir, "data_is_p1": true})
+	m, _, _ = call(t, cs, "nrp_plan", map[string]any{"discard_results": true, "project": dir, "data_is_p1": true})
 	if m["runnable"] != true || !strings.Contains(fmt.Sprint(m["code_files"]), "patients.csv") {
 		t.Fatalf("data with data_is_p1: %v %v", m["refusals"], m["code_files"])
 	}
@@ -845,5 +846,77 @@ func TestJobResultsWithKeys(t *testing.T) {
 	}
 	if !strings.Contains(applied, "-results") || !strings.Contains(applied, "x-amz-signature") || strings.Contains(applied, "VERYSECRET") {
 		t.Fatalf("applied objects must carry the signed form Secret and never the S3 secret key")
+	}
+}
+
+func TestJobWithoutResultsNeedsDiscardYes(t *testing.T) {
+	cs, fk := setup(t)
+	dir := project(t, map[string]string{"run.py": "print(1)\n"})
+	m, _, _ := call(t, cs, "nrp_plan", map[string]any{"project": dir})
+	if m["runnable"] == true || m["confirm_token"] != nil || !strings.Contains(fmt.Sprint(m["refusals"]), "R23") ||
+		!strings.Contains(fmt.Sprint(m["refusals"]), "discard results") {
+		t.Fatalf("a job without results storage must be refused until the person says yes, discard results: %v", m["refusals"])
+	}
+	m, _, _ = call(t, cs, "nrp_plan", map[string]any{"project": dir, "discard_results": true})
+	if m["runnable"] != true || !strings.Contains(fmt.Sprint(m["decisions"]), "yes, discard results") {
+		t.Fatalf("with discard_results=true the plan must run and say results are discarded: %v %v", m["refusals"], m["decisions"])
+	}
+	if fk.applied() != 0 {
+		t.Fatal("planning must not apply anything")
+	}
+}
+
+func TestWaitingNoteDoesNotNameTheCodeFile(t *testing.T) {
+	if n := waitingNote(); strings.Contains(n, "approve.txt") || strings.Contains(n, "/") {
+		t.Fatalf("the waiting note must not point the assistant at a file: %q", n)
+	}
+}
+
+func TestGateRefusesAnswersToQuestionsNotAsked(t *testing.T) {
+	s := &Server{Cfg: config.Config{Consent: "ask"}, Codes: testCodes(t)}
+	a := approval{PlanID: "p1", PlanHash: "h1", Action: "run"}
+	yes := mcp.InputResponseMap{approveKey: &mcp.ElicitResult{Action: "accept", Content: map[string]any{approveKey: true}}}
+	// An answer with no request state, or a made-up one, is refused.
+	for _, st := range []string{"", "made-up"} {
+		req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{InputResponses: yes, RequestState: st}}
+		if ok, _, _, err := s.gate(req, a, ""); ok || err == nil {
+			t.Fatalf("state %q: an answer nrp-mcp never asked for was accepted", st)
+		}
+	}
+	// A real question's state works once, for its own plan only.
+	st := asked.issue(a)
+	other := approval{PlanID: "p2", PlanHash: "h1", Action: "run"}
+	if ok, _, _, _ := s.gate(&mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{InputResponses: yes, RequestState: st}}, other, ""); ok {
+		t.Fatal("a question's answer approved a different plan")
+	}
+	st = asked.issue(a)
+	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{InputResponses: yes, RequestState: st}}
+	if ok, _, _, err := s.gate(req, a, ""); !ok || err != nil {
+		t.Fatalf("a real answer was refused: %v", err)
+	}
+	if ok, _, _, _ := s.gate(req, a, ""); ok {
+		t.Fatal("the same answer was accepted twice")
+	}
+}
+
+func TestSessionRefusedWhenIdentityUnknown(t *testing.T) {
+	exec := func(_ context.Context, _ string, args []string, _ []byte) ([]byte, []byte, error) {
+		j := strings.Join(args, " ")
+		switch {
+		case strings.Contains(j, "auth whoami"):
+			return nil, []byte("i/o timeout"), errors.New("timeout")
+		case strings.Contains(j, "get deployment"):
+			return []byte(`{"items":[{"metadata":{"name":"s1","labels":{"app.kubernetes.io/managed-by":"nrp-mcp","nrp-mcp/session":"true","nrp-mcp/owner-id":"someone-else","nrp-mcp/run":"run-1"}}}]}`), nil, nil
+		case strings.Contains(j, "get secret"):
+			return []byte(`{"data":{"token":"c2VjcmV0"}}`), nil, nil
+		}
+		return []byte("{}"), nil, nil
+	}
+	k := kube.New(kube.Config{Context: "nautilus"})
+	k.Exec = exec
+	s := &Server{Cfg: config.Config{Context: "nautilus", Namespace: "shared"}, Ops: &ops.Ops{K: k}}
+	_, out, err := s.sessionTool(context.Background(), nil, sessionIn{Run: "run-1"})
+	if err == nil || (out != nil && out.Token != "") {
+		t.Fatalf("an unconfirmed identity must not get a session sign-in: out=%+v err=%v", out, err)
 	}
 }

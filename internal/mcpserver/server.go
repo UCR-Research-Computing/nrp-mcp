@@ -111,6 +111,7 @@ type planIn struct {
 	LLMSecret   string   `json:"llm_secret,omitempty" jsonschema:"llm-batch: name of the Secret holding the LLM token (key token)"`
 	PullSecret  string   `json:"pull_secret,omitempty" jsonschema:"name of a docker-registry Secret in the namespace for a private image (nrp_build explains how to make one)"`
 	AvoidNode   string   `json:"avoid_node,omitempty" jsonschema:"node(s) to keep the pod off, comma separated, e.g. a slow node named by nrp_watch"`
+	Discard     bool     `json:"discard_results,omitempty" jsonschema:"job/sweep without S3 results set up: true only after the person said yes, discard results"`
 }
 
 type planOut struct {
@@ -389,9 +390,15 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 			}
 		}
 	}
-	var hostFinding *rules.Finding
+	var hostFinding, discardFinding *rules.Finding
 	if (p.Goal == plan.GoalJob || p.Goal == plan.GoalSweep || p.Goal == plan.GoalLLMBatch) && !p.Prebuilt && !p.NeedsBuild {
-		s.planResults(p)
+		if !s.planResults(p) && !in.Discard {
+			discardFinding = &rules.Finding{ID: "R23", Severity: rules.Refuse, Source: "nrp-mcp results",
+				Message: "Results storage is not set up, so everything this job writes is lost when it ends.",
+				Fix:     "Either the person runs `nrp-mcp s3 setup` once in their own terminal (NRP S3 keys from https://nrp.ai/s3token/) and you plan again, or ask them plainly: 'Results will not be saved. Discard them?' Only if they answer yes, discard results, plan again with discard_results=true."}
+		} else if in.Discard && p.Extra["results_secret"] == nil {
+			p.Decisions = append(p.Decisions, "The person said yes, discard results: nothing this job writes is kept after it ends.")
+		}
 	}
 	if p.Goal == plan.GoalWeb && s.Ops != nil {
 		p.Suggested = s.availableHosts(ctx, p.Suggested)
@@ -412,6 +419,9 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 	findings := rules.Check(p.Objects, s.ruleCtx(ctx, ns, p))
 	if hostFinding != nil {
 		findings = append(findings, *hostFinding)
+	}
+	if discardFinding != nil {
+		findings = append(findings, *discardFinding)
 	}
 	if len(needsP1) > 0 {
 		findings = append(findings, rules.Finding{ID: "R19", Severity: rules.Refuse, Source: "NRP Acceptable Use Policy",
@@ -500,10 +510,11 @@ func (s *Server) resultsForm(ctx context.Context, p *plan.Plan) (*results.PostFo
 
 // planResults adds the results uploader to a job plan when S3 keys are set up, and says
 // plainly where output goes (or that it will be lost).
-func (s *Server) planResults(p *plan.Plan) {
+// It reports whether results will be saved.
+func (s *Server) planResults(p *plan.Plan) bool {
 	if _, err := results.LoadKeys(s.Cfg.S3KeysFile); err != nil {
-		p.Decisions = append(p.Decisions, "Results are NOT saved: files the job writes disappear when it ends. To keep them, the person runs `nrp-mcp s3 setup` once (NRP S3 keys from https://nrp.ai/s3token/), then you plan again. ("+err.Error()+")")
-		return
+		p.Decisions = append(p.Decisions, "Results are NOT saved: files the job writes disappear when it ends. To keep them, the person runs `nrp-mcp s3 setup` once (NRP S3 keys from https://nrp.ai/s3token/), then you plan again.")
+		return false
 	}
 	for i := range p.Objects {
 		if p.Objects[i].Kind != "Job" {
@@ -513,7 +524,8 @@ func (s *Server) planResults(p *plan.Plan) {
 		p.Extra["results_secret"] = results.SecretName(p.Objects[i].Metadata.Name)
 	}
 	p.Extra["results_prefix"] = "runs/" + p.Run + "/"
-	p.Decisions = append(p.Decisions, "Saves results: anything the code writes to results/ (the folder $RESULTS_DIR) is uploaded to your NRP S3 bucket under runs/"+p.Run+"/ when the job ends. Get it with nrp_data action=down run="+p.Run+". The pod never sees your S3 keys: it gets a one-run upload permission that ends at the job's time limit.")
+	p.Decisions = append(p.Decisions, "Saves results: anything the code writes to results/ (the folder $RESULTS_DIR) is uploaded to your NRP S3 bucket under runs/"+p.Run+"/ when the job ends. Get it with nrp_data action=down run="+p.Run+". The pod never sees your S3 keys: it gets a one-run upload permission that ends at the job's time limit. The uploader's small share (0.1 CPU, 64 MiB) comes out of the job's, so the pod's total stays as planned.")
+	return true
 }
 
 // needsPersonOK reports whether running p needs the person's own approval: anything
@@ -672,7 +684,7 @@ func (s *Server) runTool(ctx context.Context, req *mcp.CallToolRequest, in runIn
 			return ask, nil, nil
 		}
 		if waiting {
-			return nil, &runOut{Summary: waitingNote(s.Codes.File()), Waiting: true, RunID: p.Run, Next: "Wait for the person to type the code, then call nrp_run again with plan_id and approval_code."}, nil
+			return nil, &runOut{Summary: waitingNote(), Waiting: true, RunID: p.Run, Next: "Wait for the person to type the code, then call nrp_run again with plan_id and approval_code."}, nil
 		}
 		if !ok {
 			return nil, nil, errors.New("not approved")
@@ -743,7 +755,7 @@ func (s *Server) setupTool(ctx context.Context, req *mcp.CallToolRequest, in set
 		}
 		if waiting {
 			r := e.Inspect(ctx, false)
-			r.Next = waitingNote(s.Codes.File())
+			r.Next = waitingNote()
 			return nil, r, nil
 		}
 		if !ok {
@@ -811,7 +823,7 @@ func (s *Server) cleanupTool(ctx context.Context, req *mcp.CallToolRequest, in c
 				return ask, nil, nil
 			}
 			if waiting {
-				return nil, &cleanupOut{Summary: waitingNote(s.Codes.File()), Objects: []ops.Workload{}, PlanID: p.ID, Waiting: true,
+				return nil, &cleanupOut{Summary: waitingNote(), Objects: []ops.Workload{}, PlanID: p.ID, Waiting: true,
 					Next: "Wait for the person to type the code, then call nrp_cleanup with plan_id and approval_code."}, nil
 			}
 			if !ok {
@@ -922,8 +934,12 @@ func (s *Server) sessionTool(ctx context.Context, _ *mcp.CallToolRequest, in ses
 		return nil, nil, fmt.Errorf("no session for run %s in %s (start one with nrp_plan goal=session, then nrp_run)", in.Run, ns)
 	}
 	d := dl.Items[0]
-	if w, err := s.Ops.K.WhoAmI(ctx); err == nil {
-		if who := d.Metadata.Labels[plan.OwnerLabel]; who != "" && who != plan.OwnerID(w.Username) {
+	if who := d.Metadata.Labels[plan.OwnerLabel]; who != "" {
+		w, err := s.Ops.K.WhoAmI(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("could not confirm who you are, so the session sign-in was not shown (nothing changed); try again: %w", err)
+		}
+		if who != plan.OwnerID(w.Username) {
 			return nil, nil, fmt.Errorf("session %s in %s belongs to someone else; you can open only your own sessions", in.Run, ns)
 		}
 	}
@@ -1026,7 +1042,7 @@ func (s *Server) dataTool(ctx context.Context, req *mcp.CallToolRequest, in data
 				return ask, nil, nil
 			}
 			if waiting {
-				return nil, &dataOut{Summary: waitingNote(s.Codes.File()), Waiting: true}, nil
+				return nil, &dataOut{Summary: waitingNote(), Waiting: true}, nil
 			}
 			if !ok {
 				return nil, nil, errors.New("not approved")

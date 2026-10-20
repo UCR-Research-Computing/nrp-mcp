@@ -1,9 +1,13 @@
 package mcpserver
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -35,7 +39,12 @@ func (s *Server) gate(req *mcp.CallToolRequest, a approval, code string) (approv
 	if s.Cfg.Consent == "token" {
 		return true, nil, false, nil
 	}
-	if req != nil && req.Params != nil {
+	if req != nil && req.Params != nil && len(req.Params.InputResponses) > 0 {
+		// Only an answer to a question this server asked counts: the request state must
+		// match one we issued for exactly this plan and action (single use, 10 minutes).
+		if !asked.take(req.Params.RequestState, a) {
+			return false, nil, false, errors.New("that approval answer does not match a question nrp-mcp asked for this plan, so nothing was done. Call the tool again without it so nrp-mcp can ask the person")
+		}
 		if r, ok := req.Params.InputResponses[approveKey]; ok {
 			if er, _ := r.(*mcp.ElicitResult); er != nil && er.Action == "accept" {
 				if yes, _ := er.Content[approveKey].(bool); yes {
@@ -52,7 +61,7 @@ func (s *Server) gate(req *mcp.CallToolRequest, a approval, code string) (approv
 		return true, nil, false, nil
 	}
 	if s.Cfg.Consent != "code" && req != nil && canAsk(req.Session) {
-		return false, askResult(a), false, nil
+		return false, askResult(a, asked.issue(a)), false, nil
 	}
 	if _, _, err := s.Codes.Issue(a.PlanID, a.PlanHash, a.Action, a.Summary); err != nil {
 		return false, nil, false, fmt.Errorf("could not make an approval code: %w", err)
@@ -70,7 +79,7 @@ func canAsk(ss *mcp.ServerSession) bool {
 }
 
 // askResult is the tool result that asks the person one yes/no question.
-func askResult(a approval) *mcp.CallToolResult {
+func askResult(a approval, state string) *mcp.CallToolResult {
 	msg := "nrp-mcp asks for your approval.\n\n" + a.Summary
 	if a.Details != "" {
 		msg += "\n\n" + a.Details
@@ -83,14 +92,61 @@ func askResult(a approval) *mcp.CallToolResult {
 		},
 		"required": []string{approveKey},
 	}
-	return &mcp.CallToolResult{InputRequests: mcp.InputRequestMap{approveKey: &mcp.ElicitParams{Message: msg, RequestedSchema: schema}}}
+	return &mcp.CallToolResult{InputRequests: mcp.InputRequestMap{approveKey: &mcp.ElicitParams{Message: msg, RequestedSchema: schema}}, RequestState: state}
 }
 
 // waitingNote is the summary a tool returns when it showed a code and is waiting.
-func waitingNote(file string) string {
+func waitingNote() string {
 	return "NOT STARTED: waiting for the person's approval. An approval code was shown to the person only " +
-		"(a desktop notification; also `nrp-mcp approve` in a terminal, or the file " + file + "). " +
+		"(a desktop notification, or `nrp-mcp approve` in their own terminal). " +
 		"Tell the person in plain words what this will do, and ask them to type the code here if they agree. " +
 		"Then call this tool again with the same arguments plus approval_code=<what they typed>. " +
-		"Never guess a code and never read that file yourself."
+		"Never guess a code and never look for it yourself: it must come from the person."
+}
+
+// questions remembers the approval questions this server asked, so an answer is only
+// accepted for a question nrp-mcp really put to the person (not one a client invents).
+type questions struct {
+	mu sync.Mutex
+	m  map[string]askedQ
+}
+
+type askedQ struct {
+	key     string
+	expires time.Time
+}
+
+var asked = &questions{m: map[string]askedQ{}}
+
+func askKey(a approval) string { return a.PlanID + "|" + a.PlanHash + "|" + a.Action }
+
+// issue returns a fresh random request state bound to a's plan and action.
+func (q *questions) issue(a approval) string {
+	b := make([]byte, 18)
+	if _, err := rand.Read(b); err != nil {
+		panic(err) // crypto/rand does not fail on supported systems
+	}
+	st := hex.EncodeToString(b)
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	now := time.Now()
+	for k, v := range q.m {
+		if now.After(v.expires) {
+			delete(q.m, k)
+		}
+	}
+	q.m[st] = askedQ{key: askKey(a), expires: now.Add(10 * time.Minute)}
+	return st
+}
+
+// take reports whether st was issued for a and is still valid, and uses it up.
+func (q *questions) take(st string, a approval) bool {
+	if st == "" {
+		return false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	v, ok := q.m[st]
+	delete(q.m, st)
+	return ok && v.key == askKey(a) && time.Now().Before(v.expires)
 }

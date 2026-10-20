@@ -3,11 +3,14 @@ package results
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/k8s"
@@ -95,5 +98,80 @@ func TestAttachUploader(t *testing.T) {
 func TestBucketName(t *testing.T) {
 	if BucketName("0123456789abcdef") != "nrp-results-0123456789ab" {
 		t.Fatal(BucketName("0123456789abcdef"))
+	}
+}
+
+func TestUploaderShareComesOutOfMain(t *testing.T) {
+	ps := &k8s.PodSpec{Containers: []k8s.Container{{Name: "main", Command: []string{"bash", "-c", "python run.py"},
+		Resources: k8s.Resources{Requests: map[string]string{"cpu": "1", "memory": "2Gi"}, Limits: map[string]string{"cpu": "1", "memory": "2Gi"}}}}}
+	AttachUploader(ps, "job-results")
+	var cpu, mem int64
+	for _, c := range append(append([]k8s.Container{}, ps.Containers...), ps.InitContainers...) {
+		if c.RestartPolicy != "Always" && c.Name != "main" {
+			continue
+		}
+		x, _ := k8s.ParseCPU(c.Resources.Requests["cpu"])
+		y, _ := k8s.ParseBytes(c.Resources.Requests["memory"])
+		cpu, mem = cpu+x, mem+y
+	}
+	if cpu != 1000 || mem != 2<<30 {
+		t.Fatalf("pod total = %dm CPU, %d bytes; want 1000m and 2Gi (inside the NRP exemption)", cpu, mem)
+	}
+}
+
+func TestUploaderScriptHandlesOddNamesAndFailures(t *testing.T) {
+	for _, tool := range []string{"sh", "curl"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skip(tool + " not installed")
+		}
+	}
+	var mu sync.Mutex
+	got := map[string]string{}
+	fail := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			w.WriteHeader(400)
+			return
+		}
+		f, _, err := r.FormFile("file")
+		if err != nil {
+			w.WriteHeader(400)
+			return
+		}
+		b, _ := io.ReadAll(f)
+		mu.Lock()
+		defer mu.Unlock()
+		if fail {
+			w.WriteHeader(403)
+			return
+		}
+		got[r.FormValue("key")] = string(b)
+		w.WriteHeader(204)
+	}))
+	defer srv.Close()
+	run := func() (string, error) {
+		work := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(work, "results", "sub dir"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		_ = os.WriteFile(filepath.Join(work, "results", "data;filter=1,x.csv"), []byte("a,b\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(work, "results", "sub dir", "plot.png"), []byte("png"), 0o644)
+		script := strings.ReplaceAll(uploaderScript, "/work", work)
+		script = strings.Replace(script, "trap up TERM INT", "up", 1)
+		cmd := exec.Command("sh", "-c", script)
+		cmd.Env = append(os.Environ(), "S3_URL="+srv.URL, "S3_PREFIX=runs/r1/", "S3_POLICY=p", "S3_ALG=a", "S3_CRED=c;x", "S3_DATE=d", "S3_SIG=s")
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	out, err := run()
+	if err != nil || got["runs/r1/data;filter=1,x.csv"] != "a,b\n" || got["runs/r1/sub dir/plot.png"] != "png" {
+		t.Fatalf("upload with odd names failed: err=%v got=%v out=%s", err, got, out)
+	}
+	mu.Lock()
+	fail = true
+	mu.Unlock()
+	out, err = run()
+	if err == nil || !strings.Contains(out, "FAILED") {
+		t.Fatalf("a refused upload must be reported and exit non-zero: err=%v out=%s", err, out)
 	}
 }
