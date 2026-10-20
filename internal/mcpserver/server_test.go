@@ -32,15 +32,22 @@ type fakeKube struct {
 	stdins [][]byte
 	// fail maps a substring of the kubectl command line to the stderr it fails with.
 	fail map[string]string
+	// out maps a substring of the kubectl command line to canned stdout.
+	out map[string]string
 }
 
 func (f *fakeKube) exec(_ context.Context, _ string, args []string, stdin []byte) ([]byte, []byte, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, args)
 	f.stdins = append(f.stdins, stdin)
-	fail := f.fail
+	fail, canned := f.fail, f.out
 	f.mu.Unlock()
 	j := strings.Join(args, " ")
+	for k, out := range canned {
+		if strings.Contains(j, k) {
+			return []byte(out), nil, nil
+		}
+	}
 	for k, msg := range fail {
 		if k == "real-apply" {
 			if strings.Contains(j, "apply") && !strings.Contains(j, "--dry-run") {
@@ -1030,5 +1037,27 @@ func TestSpecialGPURefusedWhenQuotaUnreadable(t *testing.T) {
 	m, _, _ = call(t, cs, "nrp_plan", map[string]any{"project": dir, "gpu": 1, "discard_results": true})
 	if strings.Contains(fmt.Sprint(m["refusals"]), "R6Q") {
 		t.Fatalf("a standard GPU plan must not need the special-GPU quota: %v", m["refusals"])
+	}
+}
+
+func TestWatchReadsJobAndScopedEvents(t *testing.T) {
+	cs, fk := setup(t)
+	fk.mu.Lock()
+	fk.out = map[string]string{
+		"get pods -l nrp-mcp/run=r-dl": `{"items":[{"metadata":{"name":"train-x-abc","creationTimestamp":"2026-10-20T10:00:00Z","ownerReferences":[{"kind":"Job","name":"train-x"}],"labels":{"nrp-mcp/run":"r-dl"}},"spec":{"nodeName":"n1"},"status":{"phase":"Failed","reason":"DeadlineExceeded"}}]}`,
+		"get job -l nrp-mcp/run=r-dl":  `{"items":[{"metadata":{"name":"train-x"},"status":{"conditions":[{"type":"Failed","status":"True","reason":"DeadlineExceeded","message":"Job was active longer than specified deadline"}]}}]}`,
+	}
+	fk.mu.Unlock()
+	m, isErr, text := call(t, cs, "nrp_watch", map[string]any{"target": "r-dl"})
+	if isErr || !strings.Contains(fmt.Sprint(m["summary"]), "time limit") {
+		t.Fatalf("watch must explain the Job's deadline: %s", text)
+	}
+	fk.mu.Lock()
+	defer fk.mu.Unlock()
+	for _, c := range fk.calls {
+		j := strings.Join(c, " ")
+		if strings.Contains(j, "get events") && !strings.Contains(j, "--field-selector involvedObject.name=") {
+			t.Fatalf("events must be scoped to the run's objects: %s", j)
+		}
 	}
 }

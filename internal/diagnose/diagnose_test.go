@@ -87,7 +87,7 @@ func TestPendingCases(t *testing.T) {
 				Events:     []Event{{Type: "Normal", Reason: "Pulling", Message: `Pulling image "python:3.12-slim"`}}},
 			state:   "Slow node",
 			explain: []string{"On k8s-haosu-20 for 14 min with no progress; this node may be slow or unhealthy."},
-			fix:     "Re-plan with avoid_node=k8s-haosu-20 in nrp_plan, then nrp_run (the old pod is replaced).",
+			fix:     "Re-plan with avoid_node=k8s-haosu-20 in nrp_plan, then nrp_run: the web app or session moves in place",
 			ageMin:  14,
 			node:    "k8s-haosu-20",
 		},
@@ -226,5 +226,68 @@ func TestFindingDetails(t *testing.T) {
 	r := Explain(Pod{Name: "p", Phase: "Running", Node: "n1", Containers: []Container{{Name: "main", Image: "img", Running: true, Ready: true}}})
 	if r.Node != "n1" || len(r.Containers) != 1 || r.Containers[0].State != "running" {
 		t.Fatalf("running details %+v", r)
+	}
+}
+
+func TestNewDiagnoses(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name      string
+		pod       Pod
+		state     string
+		explain   string
+		fix       string
+		notInText string
+	}{
+		{"evicted disk", Pod{Name: "p", Phase: "Failed", Reason: "Evicted", Message: "Pod ephemeral local storage usage exceeds the total limit of containers 10Gi."},
+			"Evicted", "local disk", "volume", ""},
+		{"evicted memory", Pod{Name: "p", Phase: "Failed", Reason: "Evicted", Message: "The node was low on resource: memory."},
+			"Evicted", "removed the pod", "retries", ""},
+		{"docker hub 429", Pod{Name: "p", Phase: "Pending", Node: "n1", Containers: []Container{{Name: "main", Waiting: "ErrImagePull",
+			WaitingMsg: "failed to pull image \"python:3.12-slim\": 429 Too Many Requests - Server message: toomanyrequests: You have reached your pull rate limit."}}},
+			"Image download limit", "rate limit", "ghcr.io", ""},
+		{"create container error", Pod{Name: "p", Phase: "Pending", Node: "n1", Containers: []Container{{Name: "main", Image: "img", Waiting: "CreateContainerError",
+			WaitingMsg: `failed to create containerd task: exec: "pyhton": executable file not found in $PATH`}}},
+			"CreateContainerError", "could not be created", "command", "downloading"},
+		{"never ready", Pod{Name: "p", Phase: "Running", Node: "n1", Started: now.Add(-6 * time.Minute), Now: now,
+			Containers: []Container{{Name: "web", Running: true, Ready: false}},
+			Events:     []Event{{Type: "Warning", Reason: "Unhealthy", Message: "Readiness probe failed: Get \"http://10.1.2.3:8080/\": dial tcp 10.1.2.3:8080: connect: connection refused"}}},
+			"Not ready", "does not answer", "0.0.0.0", ""},
+		{"admission denied", Pod{Name: "p", Phase: "Pending", Events: []Event{{Type: "Warning", Reason: "FailedCreate",
+			Message: `admission webhook "validate.kyverno.svc" denied the request: limits must be within 20% of requests`}}},
+			"Refused by Nautilus", "policy check", "plan again", ""},
+		{"slow node job", Pod{Name: "p", Phase: "Pending", Node: "n9", Owner: "Job", Created: now.Add(-20 * time.Minute), Scheduled: now.Add(-15 * time.Minute), Now: now},
+			"Slow node", "n9", "nrp_cleanup", "moves in place"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := Explain(tc.pod)
+			if f.State != tc.state || !strings.Contains(f.Explain, tc.explain) || !strings.Contains(f.Fix, tc.fix) ||
+				(tc.notInText != "" && strings.Contains(f.Explain+f.Fix, tc.notInText)) {
+				t.Fatalf("%+v", f)
+			}
+		})
+	}
+}
+
+func TestExplainWorkload(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		w    Workload
+		want string
+	}{
+		{"deadline", Workload{Kind: "Job", Name: "j", Conditions: []Condition{{Type: "Failed", Status: "True", Reason: "DeadlineExceeded", Message: "Job was active longer than specified deadline"}}}, "hours="},
+		{"backoff", Workload{Kind: "Job", Name: "j", Conditions: []Condition{{Type: "Failed", Status: "True", Reason: "BackoffLimitExceeded", Message: "Job has reached the specified backoff limit"}}}, "logs"},
+		{"quota on job", Workload{Kind: "Job", Name: "j", Events: []Event{{Type: "Warning", Reason: "FailedCreate", Message: `Error creating: pods "j-x" is forbidden: exceeded quota: gpu, requested: requests.nvidia.com/a100=1, used: 0, limited: 0`}}}, "quota"},
+		{"admission on replicaset", Workload{Kind: "Deployment", Name: "d", Conditions: []Condition{{Type: "ReplicaFailure", Status: "True", Reason: "FailedCreate", Message: `admission webhook "x" denied the request: banned priorityClassName`}}}, "policy check"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, ok := ExplainWorkload(tc.w)
+			if !ok || !strings.Contains(f.Fix, tc.want) {
+				t.Fatalf("%v %+v", ok, f)
+			}
+		})
+	}
+	if _, ok := ExplainWorkload(Workload{Kind: "Job", Name: "fine"}); ok {
+		t.Fatal("a healthy Job needs no extra finding")
 	}
 }
