@@ -30,6 +30,8 @@ type Config struct {
 	WebDays int
 	// GPUSessionHours is the default time limit for a GPU session (a Job; default 6, max 12).
 	GPUSessionHours int
+	// NamespaceGPUs is the per-namespace cap on GPUs in running pods (default 8).
+	NamespaceGPUs int
 	// S3 results storage (all optional; see SPEC section 5.4).
 	S3Endpoint   string // outside endpoint, default https://s3-west.nrp-nautilus.io
 	S3Internal   string // inside endpoint pods use, default http://rook-ceph-rgw-nautiluss3.rook
@@ -50,7 +52,7 @@ func DefaultPath() string {
 // Load reads the file (missing is fine) then applies env overrides.
 func Load(path string) Config {
 	c := Config{Context: "nautilus", Kubectl: "kubectl", PodsPerRun: 50, GPUsPerRun: 4, HoursPerRun: 48, TasksPerRun: 10000, UploadGB: 50, Path: path,
-		Consent: "ask", WebDays: 14, GPUSessionHours: 6, S3Endpoint: "https://s3-west.nrp-nautilus.io", S3Internal: "http://rook-ceph-rgw-nautiluss3.rook"}
+		Consent: "ask", WebDays: 14, GPUSessionHours: 6, NamespaceGPUs: 8, S3Endpoint: "https://s3-west.nrp-nautilus.io", S3Internal: "http://rook-ceph-rgw-nautiluss3.rook"}
 	c.S3KeysFile = filepath.Join(filepath.Dir(path), "s3.env") // missing file = results not set up
 	if f, err := os.Open(path); err == nil {
 		defer f.Close()
@@ -91,6 +93,8 @@ func Load(path string) Config {
 				c.WebDays = n
 			case "gpu_session_hours":
 				c.GPUSessionHours = n
+			case "namespace_gpus":
+				c.NamespaceGPUs = n
 			case "s3_endpoint":
 				c.S3Endpoint = v
 			case "s3_internal_endpoint":
@@ -131,6 +135,9 @@ func Load(path string) Config {
 	if c.GPUSessionHours > 12 {
 		c.GPUSessionHours = 12
 	}
+	if c.NamespaceGPUs <= 0 {
+		c.NamespaceGPUs = 8
+	}
 	return c
 }
 
@@ -151,6 +158,7 @@ kubectl: kubectl              # full path if kubectl is not on PATH
 # caps: plans over these are refused
 pods_per_run: 50              # pods running at the same time (a sweep's parallel)
 gpus_per_run: 4               # GPUs in use at the same time
+namespace_gpus: 8             # max GPUs in running pods across the namespace
 tasks_per_run: 10000          # total tasks in one sweep
 hours_per_run: 48
 upload_gb_per_run: 50

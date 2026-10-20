@@ -53,6 +53,8 @@ type Request struct {
 	LLMSecret       string // Secret holding the LLM token (key "token")
 	Opportun        bool
 	Size            string   // volume size, e.g. 50Gi
+	Region          string   // compute/storage region, e.g. us-west, us-central, us-east
+	Scratch         string   // ephemeral-storage request/limit per container (default 10Gi)
 	URLs            []string // pull: files to download
 	Subdir          string   // pull: folder inside the volume
 	DataIsP1        bool     // pull/volume: user confirmed the data is P1 (non-sensitive)
@@ -284,15 +286,78 @@ func cleanAvoid(in []string) ([]string, error) {
 	return out, nil
 }
 
+// addNodeRequirement appends req to ps's required node affinity, creating it if needed.
+func addNodeRequirement(ps *k8s.PodSpec, req k8s.NodeSelectorRequirement) {
+	if ps.Affinity == nil {
+		ps.Affinity = &k8s.Affinity{}
+	}
+	if ps.Affinity.NodeAffinity == nil {
+		ps.Affinity.NodeAffinity = &k8s.NodeAffinity{}
+	}
+	if ps.Affinity.NodeAffinity.Required == nil || len(ps.Affinity.NodeAffinity.Required.NodeSelectorTerms) == 0 {
+		ps.Affinity.NodeAffinity.Required = &k8s.NodeSelector{NodeSelectorTerms: []k8s.NodeSelectorTerm{{MatchExpressions: []k8s.NodeSelectorRequirement{req}}}}
+		return
+	}
+	for i := range ps.Affinity.NodeAffinity.Required.NodeSelectorTerms {
+		ps.Affinity.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions = append(ps.Affinity.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions, req)
+	}
+}
+
 // applyAvoid keeps the pod off the named nodes with a required node anti-affinity.
 // With no nodes it leaves the spec untouched, so other plans do not change.
 func applyAvoid(ps *k8s.PodSpec, nodes []string) {
 	if len(nodes) == 0 {
 		return
 	}
-	ps.Affinity = &k8s.Affinity{NodeAffinity: &k8s.NodeAffinity{Required: &k8s.NodeSelector{NodeSelectorTerms: []k8s.NodeSelectorTerm{{
-		MatchExpressions: []k8s.NodeSelectorRequirement{{Key: "kubernetes.io/hostname", Operator: "NotIn", Values: append([]string(nil), nodes...)}},
-	}}}}}
+	addNodeRequirement(ps, k8s.NodeSelectorRequirement{Key: "kubernetes.io/hostname", Operator: "NotIn", Values: append([]string(nil), nodes...)})
+}
+
+func applyRegion(ps *k8s.PodSpec, region string, p *Plan) {
+	reg, label := normalizeRegion(region)
+	if reg == "" {
+		return
+	}
+	addNodeRequirement(ps, k8s.NodeSelectorRequirement{Key: "topology.kubernetes.io/region", Operator: "In", Values: []string{reg}})
+	p.Decisions = append(p.Decisions, fmt.Sprintf("Schedules in the %s (%s) compute region (topology.kubernetes.io/region=%s).", label, reg, reg))
+}
+
+func normalizeRegion(r string) (reg, label string) {
+	switch strings.ToLower(strings.TrimSpace(r)) {
+	case "":
+		return "", ""
+	case "us-west", "west":
+		return "us-west", "west"
+	case "us-central", "central":
+		return "us-central", "central"
+	case "us-east", "east":
+		return "us-east", "east"
+	default:
+		return strings.ToLower(strings.TrimSpace(r)), strings.ToLower(strings.TrimSpace(r))
+	}
+}
+
+func volumeStorageClass(region string) (class, label string) {
+	reg, lbl := normalizeRegion(region)
+	switch reg {
+	case "us-west":
+		return "rook-cephfs-west", lbl
+	case "us-east":
+		return "rook-cephfs-east", lbl
+	case "us-central", "":
+		return "rook-cephfs-central", "central"
+	default:
+		return "rook-cephfs-" + strings.TrimPrefix(reg, "us-"), lbl
+	}
+}
+
+// defaultEphemeralStorage is the default per-container scratch request and limit.
+const defaultEphemeralStorage = "10Gi"
+
+func scratchSize(r Request) string {
+	if strings.TrimSpace(r.Scratch) != "" {
+		return strings.TrimSpace(r.Scratch)
+	}
+	return defaultEphemeralStorage
 }
 
 // Hash is the sha256 of what would be applied (objects + goal + public URL).
@@ -385,6 +450,24 @@ func validateInputs(r *Request) error {
 	if r.CPU != "" {
 		if c, err := k8s.ParseCPU(r.CPU); err != nil || c <= 0 {
 			return fmt.Errorf("cpu %q is not a number of cores; use e.g. 4, 0.5 or 500m", r.CPU)
+		}
+	}
+	if r.Scratch != "" {
+		b, err := k8s.ParseBytes(r.Scratch)
+		switch {
+		case err != nil:
+			return fmt.Errorf("scratch %q is not a size; use a number with a unit, e.g. 10Gi or 50Gi", r.Scratch)
+		case strings.Trim(r.Scratch, "0123456789.") == "":
+			return fmt.Errorf("scratch %q has no unit; add one, e.g. %sGi", r.Scratch, r.Scratch)
+		case b < 1<<30 || b > 50<<30:
+			return fmt.Errorf("scratch %q must be between 1Gi and 50Gi (NRP evicts pods above 50Gi of local scratch)", r.Scratch)
+		}
+	}
+	if r.Region != "" {
+		switch reg, _ := normalizeRegion(r.Region); reg {
+		case "us-west", "us-central", "us-east":
+		default:
+			return fmt.Errorf("region %q is not a Nautilus region; use us-west, us-central or us-east", r.Region)
 		}
 	}
 	if t := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(r.GPUType)), "nvidia.com/"); t != "" && t != "any" && t != "gpu" {
@@ -493,8 +576,12 @@ func buildJob(f *inspect.Facts, r Request, p *Plan) error {
 		p.Decisions = append(p.Decisions, "1 GPU because the code uses one ("+f.GPUReason+"). Pass gpu=0 to run on CPU only.")
 	}
 	cpu, mem, swhy := sizing(r, f, gpu)
-	p.Decisions = append(p.Decisions, "Size: "+swhy+"; limits equal requests (the NRP asks for limits within 20%).")
-	res := k8s.Resources{Requests: map[string]string{"cpu": cpu, "memory": mem}, Limits: map[string]string{"cpu": cpu, "memory": mem}}
+	scratch := scratchSize(r)
+	p.Decisions = append(p.Decisions, "Size: "+swhy+"; "+scratch+" ephemeral-storage; limits equal requests (the NRP asks for limits within 20%).")
+	res := k8s.Resources{
+		Requests: map[string]string{"cpu": cpu, "memory": mem, "ephemeral-storage": scratch},
+		Limits:   map[string]string{"cpu": cpu, "memory": mem, "ephemeral-storage": scratch},
+	}
 	if gpu > 0 {
 		g := gpuResource(r)
 		res.Requests[g], res.Limits[g] = strconv.Itoa(gpu), strconv.Itoa(gpu)
@@ -549,6 +636,15 @@ func buildJob(f *inspect.Facts, r Request, p *Plan) error {
 	}
 	pod := k8s.PodSpec{RestartPolicy: "Never", Containers: []k8s.Container{ctr}, Volumes: vols, ImagePullSecrets: pullSecrets(r, p), AutomountServiceAccountToken: k8s.BoolPtr(false)}
 	applyAvoid(&pod, r.AvoidNodes)
+	applyRegion(&pod, r.Region, p)
+	if r.Goal == GoalSweep && gpu == 0 {
+		addNodeRequirement(&pod, k8s.NodeSelectorRequirement{Key: "nvidia.com/gpu.present", Operator: "NotIn", Values: []string{"true"}})
+		if !r.Opportun {
+			p.Decisions = append(p.Decisions, "CPU-only sweep: keeps pods off GPU nodes (nvidia.com/gpu.present NotIn true) so GPUs stay free. You can also pass opportunistic=true to run on idle capacity across the cluster (checkpoint your tasks in case a pod is preempted).")
+		} else {
+			p.Decisions = append(p.Decisions, "CPU-only sweep: keeps pods off GPU nodes (nvidia.com/gpu.present NotIn true).")
+		}
+	}
 	if r.Opportun || (gpu > 0 && isSpecial(gpuResource(r)) && r.Opportun) {
 		pod.PriorityClassName = "opportunistic"
 		p.Decisions = append(p.Decisions, "priorityClassName opportunistic: bypasses the special-GPU quota, but the pod can be preempted at any time. Checkpoint your work.")
@@ -723,9 +819,10 @@ func buildWeb(f *inspect.Facts, r Request, p *Plan) error {
 	}
 	labels := copyLabels(p.Labels)
 	sel := map[string]string{"nrp-mcp/name": p.Name, "nrp-mcp/run": p.Run}
+	scratch := scratchSize(r)
 	ctr := k8s.Container{Name: "web", Image: p.Image, Command: []string{"bash", "-c", "set -e; cd /work; " + install + cmd}, WorkingDir: "/work",
 		Ports:          []k8s.Port{{ContainerPort: port, Name: "http"}},
-		Resources:      k8s.Resources{Requests: map[string]string{"cpu": cpu, "memory": mem}, Limits: map[string]string{"cpu": cpu, "memory": mem}},
+		Resources:      k8s.Resources{Requests: map[string]string{"cpu": cpu, "memory": mem, "ephemeral-storage": scratch}, Limits: map[string]string{"cpu": cpu, "memory": mem, "ephemeral-storage": scratch}},
 		VolumeMounts:   []k8s.Mount{{Name: "code", MountPath: "/work"}},
 		ReadinessProbe: &k8s.Probe{HTTPGet: &k8s.HTTPGet{Path: "/", Port: port}, InitialDelaySeconds: 10, PeriodSeconds: 10}}
 	if app == "static" {
@@ -747,6 +844,7 @@ func buildWeb(f *inspect.Facts, r Request, p *Plan) error {
 	ctr.Env = append(ctr.Env, k8s.EnvVar{Name: "NRP_RUN", Value: p.Run})
 	webPod := k8s.PodSpec{Containers: []k8s.Container{ctr}, Volumes: vols, ImagePullSecrets: pullSecrets(r, p), AutomountServiceAccountToken: k8s.BoolPtr(false)}
 	applyAvoid(&webPod, r.AvoidNodes)
+	applyRegion(&webPod, r.Region, p)
 	days := r.WebDays
 	if days <= 0 || days > 14 {
 		days = 14
@@ -813,7 +911,8 @@ func buildSession(r Request, p *Plan) error {
 	} else {
 		cmd = []string{"start-notebook.py", "--IdentityProvider.token=$(NRP_SESSION_TOKEN)"}
 	}
-	res := k8s.Resources{Requests: map[string]string{"cpu": cpu, "memory": mem}, Limits: map[string]string{"cpu": cpu, "memory": mem}}
+	scratch := scratchSize(r)
+	res := k8s.Resources{Requests: map[string]string{"cpu": cpu, "memory": mem, "ephemeral-storage": scratch}, Limits: map[string]string{"cpu": cpu, "memory": mem, "ephemeral-storage": scratch}}
 	if gpu > 0 {
 		g := gpuResource(r)
 		res.Requests[g], res.Limits[g] = strconv.Itoa(gpu), strconv.Itoa(gpu)
@@ -829,6 +928,7 @@ func buildSession(r Request, p *Plan) error {
 		spec.Volumes = []k8s.Volume{{Name: "data", PersistentVolumeClaim: &k8s.PVCSource{ClaimName: r.DataPVC}}}
 	}
 	applyAvoid(&spec, r.AvoidNodes)
+	applyRegion(&spec, r.Region, p)
 	labels := copyLabels(p.Labels)
 	labels["nrp-mcp/session"] = "true"
 	sel := map[string]string{"nrp-mcp/name": p.Name, "nrp-mcp/run": p.Run}
@@ -1182,15 +1282,16 @@ func buildVolume(r Request, p *Plan) error {
 		p.Name = "data-" + shortRun(p.Run)
 	}
 	p.Labels["nrp-mcp/name"] = p.Name
+	sc, regLabel := volumeStorageClass(r.Region)
 	p.Objects = []k8s.Object{{APIVersion: "v1", Kind: "PersistentVolumeClaim", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: copyLabels(p.Labels), Annotations: owner(r)},
-		PVCSpec: &k8s.PVCSpec{AccessModes: []string{"ReadWriteMany"}, StorageClassName: "rook-cephfs-central", Resources: k8s.Resources{Requests: map[string]string{"storage": size}}}}}
+		PVCSpec: &k8s.PVCSpec{AccessModes: []string{"ReadWriteMany"}, StorageClassName: sc, Resources: k8s.Resources{Requests: map[string]string{"storage": size}}}}}
 	p.Image, p.ImageWhy = "", ""
 	p.Decisions = append(p.Decisions,
-		"A shared CephFS volume (rook-cephfs-central, ReadWriteMany) so Jobs, sweeps and sessions can all mount it at once (about 86 MiB/s per writer in a UCR test).",
+		fmt.Sprintf("A shared CephFS volume (%s, ReadWriteMany, %s region) so Jobs, sweeps and sessions can all mount it at once (about 86 MiB/s per writer in a UCR test).", sc, regLabel),
 		"Not for pip/conda installs or tens of thousands of small files (CephFS metadata is slow); pack small files into archives.",
 		"Volumes not accessed for 6 months can be purged without notice; keep the master copy elsewhere (CephRDS, HPCC storage).",
 		"Use it with data_volume="+p.Name+" in nrp_plan.")
-	p.Summary = fmt.Sprintf("A %s shared volume %q in %s (CephFS, central region).", size, p.Name, r.Namespace)
+	p.Summary = fmt.Sprintf("A %s shared volume %q in %s (CephFS, %s region).", size, p.Name, r.Namespace, regLabel)
 	p.Kubectl = []string{fmt.Sprintf("kubectl -n %s apply -f plan.json", r.Namespace), fmt.Sprintf("kubectl -n %s get pvc %s", r.Namespace, p.Name)}
 	return nil
 }
@@ -1227,16 +1328,19 @@ func buildPull(r Request, p *Plan) error {
 		p.Name = "pull-" + shortRun(p.Run)
 	}
 	p.Labels["nrp-mcp/name"] = p.Name
+	scratch := scratchSize(r)
 	ctr := k8s.Container{Name: "pull", Image: "quay.io/curl/curl:8.23.0", Command: []string{"sh", "-c", b.String()},
-		Resources:    k8s.Resources{Requests: map[string]string{"cpu": "1", "memory": "2Gi"}, Limits: map[string]string{"cpu": "1", "memory": "2Gi"}},
+		Resources:    k8s.Resources{Requests: map[string]string{"cpu": "1", "memory": "2Gi", "ephemeral-storage": scratch}, Limits: map[string]string{"cpu": "1", "memory": "2Gi", "ephemeral-storage": scratch}},
 		VolumeMounts: []k8s.Mount{{Name: "data", MountPath: "/data"}}}
 	hours := r.Hours
 	if hours == 0 {
 		hours = 12
 	}
+	pullPod := k8s.PodSpec{RestartPolicy: "Never", Containers: []k8s.Container{ctr},
+		Volumes: []k8s.Volume{{Name: "data", PersistentVolumeClaim: &k8s.PVCSource{ClaimName: r.DataPVC}}}, AutomountServiceAccountToken: k8s.BoolPtr(false)}
+	applyRegion(&pullPod, r.Region, p)
 	js := &k8s.JobSpec{BackoffLimit: k8s.IntPtr(2), TTLSecondsAfterFinished: k8s.IntPtr(86400), ActiveDeadlineSeconds: k8s.IntPtr(hours * 3600),
-		Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: copyLabels(p.Labels)}, Spec: k8s.PodSpec{RestartPolicy: "Never", Containers: []k8s.Container{ctr},
-			Volumes: []k8s.Volume{{Name: "data", PersistentVolumeClaim: &k8s.PVCSource{ClaimName: r.DataPVC}}}, AutomountServiceAccountToken: k8s.BoolPtr(false)}}}
+		Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: copyLabels(p.Labels)}, Spec: pullPod}}
 	p.Objects = []k8s.Object{{APIVersion: "batch/v1", Kind: "Job", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: copyLabels(p.Labels), Annotations: owner(r)}, JobSpec: js}}
 	p.Image, p.ImageWhy = "quay.io/curl/curl:8.23.0", "small image with curl"
 	p.Decisions = append(p.Decisions,

@@ -342,14 +342,16 @@ func hostnameNotIn(t *testing.T, ps *k8s.PodSpec) []string {
 		t.Fatalf("no required node affinity: %+v", ps.Affinity)
 	}
 	terms := ps.Affinity.NodeAffinity.Required.NodeSelectorTerms
-	if len(terms) != 1 || len(terms[0].MatchExpressions) != 1 {
+	if len(terms) != 1 || len(terms[0].MatchExpressions) < 1 {
 		t.Fatalf("terms %+v", terms)
 	}
-	e := terms[0].MatchExpressions[0]
-	if e.Key != "kubernetes.io/hostname" || e.Operator != "NotIn" {
-		t.Fatalf("expression %+v", e)
+	for _, e := range terms[0].MatchExpressions {
+		if e.Key == "kubernetes.io/hostname" && e.Operator == "NotIn" {
+			return e.Values
+		}
 	}
-	return e.Values
+	t.Fatalf("no hostname NotIn expression in %+v", terms)
+	return nil
 }
 
 func TestAvoidNodesWeb(t *testing.T) {
@@ -401,8 +403,9 @@ func TestAvoidNodesJobAndSession(t *testing.T) {
 
 // goldenWebDigest is the masked manifest digest of the web plan below (fixed clock).
 // Plans without avoid_node must not change. 0.10.0 re-pinned it on purpose: default
-// images are now pinned to tags (python:3.12-slim-bookworm).
-const goldenWebDigest = "a9e26f53c9d95a3190653f4cb4e753c4f1762bdb02ed01d56f47c1d9d72d8d26"
+// images are now pinned to tags (python:3.12-slim-bookworm) and containers set
+// ephemeral-storage (10Gi).
+const goldenWebDigest = "fd413240aa899051e8376ab6838781089dd8624eb02a16c520452d5dc36b6604"
 
 func TestNoAvoidNodesManifestsUnchanged(t *testing.T) {
 	f := avoidFacts(t)
@@ -648,5 +651,113 @@ func TestNoLatestTagsInDefaultImages(t *testing.T) {
 		if p.Image != tc.want || strings.HasSuffix(p.Image, ":latest") || !strings.Contains(p.Image, ":") {
 			t.Fatalf("got image %q, want %q", p.Image, tc.want)
 		}
+	}
+}
+
+func TestEphemeralStorageDefaultOnEveryContainer(t *testing.T) {
+	f := proj(t, map[string]string{"app.py": "import streamlit as st\nst.title('hi')\n"})
+	for _, r := range []Request{
+		{Namespace: "ucr-example", Goal: GoalJob, Command: "python app.py"},
+		{Namespace: "ucr-example", Goal: GoalSweep, Count: 4, Command: "python app.py"},
+		{Namespace: "ucr-example", Goal: GoalWeb},
+		{Namespace: "ucr-example", Goal: GoalSession, GPU: 0},
+		{Namespace: "ucr-example", Goal: GoalSession, GPU: 1},
+		{Namespace: "ucr-example", Goal: GoalPull, DataIsP1: true, DataPVC: "v", URLs: []string{"https://example.com/a.txt"}},
+	} {
+		p, err := Build(f, r)
+		if err != nil {
+			t.Fatalf("%s: %v", r.Goal, err)
+		}
+		for _, o := range p.Objects {
+			ps := o.PodSpecOf()
+			if ps == nil {
+				continue
+			}
+			for _, c := range append(append([]k8s.Container{}, ps.InitContainers...), ps.Containers...) {
+				if c.Resources.Requests["ephemeral-storage"] != "10Gi" || c.Resources.Limits["ephemeral-storage"] != "10Gi" {
+					t.Fatalf("%s %s: ephemeral-storage = %+v", r.Goal, c.Name, c.Resources)
+				}
+			}
+		}
+		cx := ctx()
+		cx.Session = r.Goal == GoalSession
+		if fs := rules.Check(p.Objects, cx); rules.Blocking(fs) {
+			t.Fatalf("%s refused: %+v", r.Goal, fs)
+		}
+	}
+	// Custom scratch= size.
+	p, err := Build(f, Request{Namespace: "ucr-example", Goal: GoalJob, Command: "python app.py", Scratch: "25Gi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := p.Objects[0].PodSpecOf().Containers[0]
+	if c.Resources.Requests["ephemeral-storage"] != "25Gi" || c.Resources.Limits["ephemeral-storage"] != "25Gi" {
+		t.Fatalf("custom scratch %+v", c.Resources)
+	}
+}
+
+func TestCPUSweepAvoidsGPUNodesAndOffersOpportunistic(t *testing.T) {
+	f := proj(t, map[string]string{"run.py": "print(1)\n"})
+	p, err := Build(f, Request{Namespace: "ucr-example", Goal: GoalSweep, Count: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := p.Objects[0].PodSpecOf()
+	if ps.Affinity == nil || ps.Affinity.NodeAffinity == nil || ps.Affinity.NodeAffinity.Required == nil {
+		t.Fatalf("missing nodeAffinity on CPU sweep: %+v", ps.Affinity)
+	}
+	foundAntiGPU := false
+	for _, term := range ps.Affinity.NodeAffinity.Required.NodeSelectorTerms {
+		for _, e := range term.MatchExpressions {
+			if e.Key == "nvidia.com/gpu.present" && e.Operator == "NotIn" && len(e.Values) == 1 && e.Values[0] == "true" {
+				foundAntiGPU = true
+			}
+		}
+	}
+	if !foundAntiGPU {
+		t.Fatalf("CPU sweep missing nvidia.com/gpu.present NotIn true: %+v", ps.Affinity.NodeAffinity.Required)
+	}
+	if !strings.Contains(strings.Join(p.Decisions, " "), "opportunistic") {
+		t.Fatalf("CPU sweep decisions must offer opportunistic: %v", p.Decisions)
+	}
+	// GPU sweeps must NOT get the anti-GPU affinity.
+	gp, err := Build(f, Request{Namespace: "ucr-example", Goal: GoalSweep, Count: 4, GPU: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gps := gp.Objects[0].PodSpecOf(); gps.Affinity != nil {
+		t.Fatalf("GPU sweep must not have anti-GPU affinity: %+v", gps.Affinity)
+	}
+}
+
+func TestVolumeStorageClassFollowsRegion(t *testing.T) {
+	for _, tc := range []struct {
+		region string
+		wantSC string
+	}{
+		{"", "rook-cephfs-central"},
+		{"us-central", "rook-cephfs-central"},
+		{"central", "rook-cephfs-central"},
+		{"us-west", "rook-cephfs-west"},
+		{"west", "rook-cephfs-west"},
+		{"us-east", "rook-cephfs-east"},
+		{"east", "rook-cephfs-east"},
+	} {
+		p, err := Build(nil, Request{Namespace: "ucr-example", Goal: GoalVolume, DataIsP1: true, Region: tc.region})
+		if err != nil {
+			t.Fatalf("region %q: %v", tc.region, err)
+		}
+		if got := p.Objects[0].PVCSpec.StorageClassName; got != tc.wantSC {
+			t.Fatalf("region %q: storageClassName=%q, want %q", tc.region, got, tc.wantSC)
+		}
+	}
+	// Compute workload with region= gets topology.kubernetes.io/region affinity.
+	jp, err := Build(nil, Request{Namespace: "ucr-example", Goal: GoalJob, Command: "echo hi", Region: "us-west"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terms := jp.Objects[0].PodSpecOf().Affinity.NodeAffinity.Required.NodeSelectorTerms
+	if len(terms) != 1 || terms[0].MatchExpressions[0].Key != "topology.kubernetes.io/region" || terms[0].MatchExpressions[0].Values[0] != "us-west" {
+		t.Fatalf("region affinity %+v", terms)
 	}
 }

@@ -403,8 +403,8 @@ func AttachUploader(ps *k8s.PodSpec, secretName string) {
 	ps.InitContainers = append(ps.InitContainers, k8s.Container{Name: "save-results", Image: UploaderImage, RestartPolicy: always,
 		Command: []string{"sh", "-c", uploaderScript},
 		Env:     env,
-		Resources: k8s.Resources{Requests: map[string]string{"cpu": fmt.Sprintf("%dm", uploaderMilliCPU), "memory": fmt.Sprintf("%dMi", uploaderBytes>>20)},
-			Limits: map[string]string{"cpu": fmt.Sprintf("%dm", uploaderMilliCPU), "memory": fmt.Sprintf("%dMi", uploaderBytes>>20)}},
+		Resources: k8s.Resources{Requests: map[string]string{"cpu": fmt.Sprintf("%dm", uploaderMilliCPU), "memory": fmt.Sprintf("%dMi", uploaderBytes>>20), "ephemeral-storage": "1Gi"},
+			Limits: map[string]string{"cpu": fmt.Sprintf("%dm", uploaderMilliCPU), "memory": fmt.Sprintf("%dMi", uploaderBytes>>20), "ephemeral-storage": "1Gi"}},
 		VolumeMounts: []k8s.Mount{{Name: "code", MountPath: "/work"}}})
 	for i := range ps.Containers {
 		carve(&ps.Containers[i].Resources)

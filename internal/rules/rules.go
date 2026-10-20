@@ -46,6 +46,10 @@ type Context struct {
 	SweepCount int
 	// Session is true for nrp_session plans.
 	Session bool
+	// RunningGPUs is the number of GPUs requested by Running pods in the namespace right now,
+	// and NamespaceGPUs is the config cap (namespace_gpus, default 8).
+	RunningGPUs   int
+	NamespaceGPUs int
 	// QuotaUnknown is true when the namespace quota could not be read: special GPUs are
 	// then refused (R6Q) instead of assumed free.
 	QuotaUnknown bool
@@ -150,10 +154,12 @@ func Check(objs []k8s.Object, c Context) []Finding {
 					continue
 				}
 				q, limited := c.GPUQuota[sg]
-				if limited && q == 0 && !strings.HasPrefix(ps.PriorityClassName, "opportunistic") {
-					add(Finding{ID: "R6", Severity: Refuse, Object: cref, Source: srcGPU,
-						Message: fmt.Sprintf("%s is quota-gated and your namespace's quota is 0.", sg),
-						Fix:     "Use nvidia.com/gpu (any standard GPU), or set priorityClassName: opportunistic (can be preempted at any time; checkpoint), or ask NRP for A100 access (H100/H200/GH200 are not requestable)."})
+				if (!limited && sg != "nvidia.com/a100") || (limited && q == 0) {
+					if !strings.HasPrefix(ps.PriorityClassName, "opportunistic") {
+						add(Finding{ID: "R6", Severity: Refuse, Object: cref, Source: srcGPU,
+							Message: fmt.Sprintf("%s is quota-gated and your namespace's quota is 0.", sg),
+							Fix:     "Use nvidia.com/gpu (any standard GPU), or set priorityClassName: opportunistic (can be preempted at any time; checkpoint), or ask NRP for A100 access (H100/H200/GH200 are not requestable)."})
+					}
 				}
 			}
 			if o.JobSpec != nil {
@@ -214,6 +220,11 @@ func Check(objs []k8s.Object, c Context) []Finding {
 		add(Finding{ID: "R14", Severity: Refuse, Source: srcConfig,
 			Message: fmt.Sprintf("%d GPUs at the same time is over your cap of %d.", totalGPU, c.GPUsPerRun),
 			Fix:     "Run fewer GPU tasks at once (lower a sweep's parallel) or use fewer GPUs per task; the total count can stay. Or raise gpus_per_run in your nrp-mcp config."})
+	}
+	if c.NamespaceGPUs > 0 && totalGPU > 0 && c.RunningGPUs+totalGPU > c.NamespaceGPUs {
+		add(Finding{ID: "R14", Severity: Refuse, Source: srcConfig,
+			Message: fmt.Sprintf("%d GPU(s) are already running in this namespace and this plan asks for %d more (%d total, over namespace_gpus=%d).", c.RunningGPUs, totalGPU, c.RunningGPUs+totalGPU, c.NamespaceGPUs),
+			Fix:     "Wait for running GPU pods to finish, stop an old run with nrp_cleanup, ask for fewer GPUs, or raise namespace_gpus in your nrp-mcp config."})
 	}
 	if c.TasksPerRun > 0 && totalTasks > c.TasksPerRun {
 		add(Finding{ID: "R14", Severity: Refuse, Source: srcConfig,
@@ -280,7 +291,7 @@ func isSleep(c k8s.Container) bool {
 func checkResources(ctr k8s.Container, ref string, c Context, pods int) []Finding {
 	var fs []Finding
 	r := ctr.Resources
-	for _, k := range []string{"cpu", "memory"} {
+	for _, k := range []string{"cpu", "memory", "ephemeral-storage"} {
 		if r.Requests[k] == "" || r.Limits[k] == "" {
 			fs = append(fs, Finding{ID: "R2", Severity: Refuse, Object: ref, Source: srcPolicies,
 				Message: fmt.Sprintf("%s request and limit must both be set (missing on %s).", k, ctr.Name),

@@ -1094,3 +1094,59 @@ func TestSessionToolFindsJobPods(t *testing.T) {
 		t.Fatalf("session output: %v", m)
 	}
 }
+
+func TestNamespaceRunningGPUsCheckBeforeApproval(t *testing.T) {
+	cs, fk, codes := setupWith(t, "code", nil)
+	dir := project(t, map[string]string{"train.py": "import torch\nx=torch.zeros(1).cuda()\n"})
+	// 8 GPUs already Running in the namespace (2 pods x 4 GPUs, plus 1 Succeeded pod that does not count).
+	podsJSON := `{"items":[` +
+		`{"status":{"phase":"Running"},"spec":{"containers":[{"resources":{"requests":{"nvidia.com/gpu":"4"},"limits":{"nvidia.com/gpu":"4"}}}]}},` +
+		`{"status":{"phase":"Running"},"spec":{"containers":[{"resources":{"requests":{"nvidia.com/a40":"4"},"limits":{"nvidia.com/a40":"4"}}}]}},` +
+		`{"status":{"phase":"Succeeded"},"spec":{"containers":[{"resources":{"requests":{"nvidia.com/gpu":"4"},"limits":{"nvidia.com/gpu":"4"}}}]}}` +
+		`]}`
+	fk.mu.Lock()
+	fk.out = map[string]string{"get pods": podsJSON}
+	fk.mu.Unlock()
+	// At plan time: refused over namespace_gpus=8, no approval requested.
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "gpu": 1, "discard_results": true})
+	if isErr {
+		t.Fatal(text)
+	}
+	if m["runnable"] == true || !strings.Contains(fmt.Sprint(m["refusals"]), "namespace_gpus=8") {
+		t.Fatalf("plan over namespace_gpus must be refused: %v", m)
+	}
+	// Plan when only 7 GPUs are running (passes), then a 2nd GPU starts before nrp_run so 8 are running -> refused before approval code is issued.
+	fk.mu.Lock()
+	fk.out = map[string]string{"get pods": `{"items":[{"status":{"phase":"Running"},"spec":{"containers":[{"resources":{"requests":{"nvidia.com/gpu":"7"},"limits":{"nvidia.com/gpu":"7"}}}]}}]}`}
+	fk.mu.Unlock()
+	m, isErr, text = call(t, cs, "nrp_plan", map[string]any{"project": dir, "gpu": 1, "discard_results": true})
+	if isErr || m["runnable"] != true {
+		t.Fatalf("7 running + 1 new = 8 must be runnable: %v %s", m, text)
+	}
+	fk.mu.Lock()
+	fk.out = map[string]string{"get pods": podsJSON} // now 8 running
+	fk.mu.Unlock()
+	_, isErr, text = call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"]})
+	if !isErr || !strings.Contains(text, "namespace_gpus=8") || codes.lastCode() != "" || fk.applied() != 0 {
+		t.Fatalf("nrp_run over namespace_gpus must refuse before approval: isErr=%v text=%s code=%q applied=%d", isErr, text, codes.lastCode(), fk.applied())
+	}
+}
+
+func TestMissingQuotaRefusesH100H200GH200(t *testing.T) {
+	cs, _ := setup(t)
+	// fakeKube only has requests.nvidia.com/a100 in ResourceQuota; h100/h200/gh200 keys are missing.
+	dir := project(t, map[string]string{"train.py": "import torch\n"})
+	for _, gt := range []string{"h100", "h200", "gh200"} {
+		m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "gpu": 1, "gpu_type": gt, "discard_results": true})
+		if isErr {
+			t.Fatal(text)
+		}
+		if m["runnable"] == true || !strings.Contains(fmt.Sprint(m["refusals"]), "R6") {
+			t.Fatalf("%s with missing quota entry must be refused by R6: %v", gt, m["refusals"])
+		}
+		m, isErr, text = call(t, cs, "nrp_plan", map[string]any{"project": dir, "gpu": 1, "gpu_type": gt, "opportunistic": true, "discard_results": true})
+		if isErr || m["runnable"] != true {
+			t.Fatalf("opportunistic %s must be allowed: %v %s", gt, m["refusals"], text)
+		}
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/k8s"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/kube"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/plan"
+	"github.com/UCR-Research-Computing/nrp-mcp/internal/rules"
 )
 
 // Ops wraps a kubectl runner.
@@ -652,6 +653,40 @@ func AttachCode(objs []k8s.Object, cmName string) {
 			}
 		}
 	}
+}
+
+// RunningGPUs counts GPUs requested by Running pods in ns via the kubectl runner.
+func (o *Ops) RunningGPUs(ctx context.Context, ns string) (int, error) {
+	var pods struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := o.K.JSON(ctx, ns, &pods, "get", "pods"); err != nil {
+		if kube.Kind(err) == kube.KindNotFound {
+			return 0, nil
+		}
+		return 0, kube.Explain("pods in "+ns, err)
+	}
+	total := 0
+	for _, p := range pods.Items {
+		if phase, _ := mapGet(p, "status")["phase"].(string); phase != "Running" {
+			continue
+		}
+		sp := mapGet(p, "spec")
+		cs, _ := sp["containers"].([]any)
+		ics, _ := sp["initContainers"].([]any)
+		for _, c := range append(append([]any{}, ics...), cs...) {
+			cm, _ := c.(map[string]any)
+			res := mapGet(cm, "resources")
+			req := mapGet(res, "requests")
+			lim := mapGet(res, "limits")
+			for _, g := range rules.GPUResources {
+				rq := k8s.ParseCount(fmt.Sprint(req[g]))
+				lm := k8s.ParseCount(fmt.Sprint(lim[g]))
+				total += max(rq, lm)
+			}
+		}
+	}
+	return total, nil
 }
 
 // DryRun asks Nautilus to validate objects without creating anything.

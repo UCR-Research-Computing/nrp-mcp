@@ -105,6 +105,8 @@ type planIn struct {
 	Session     string   `json:"session,omitempty" jsonschema:"session: jupyter (default) or vscode"`
 	Opportunist bool     `json:"opportunistic,omitempty" jsonschema:"use priorityClassName opportunistic (special GPUs without quota; can be preempted)"`
 	Size        string   `json:"size,omitempty" jsonschema:"volume: size, e.g. 50Gi"`
+	Region      string   `json:"region,omitempty" jsonschema:"compute/storage region: us-west, us-central or us-east (volume storage class follows this region when set)"`
+	Scratch     string   `json:"scratch,omitempty" jsonschema:"ephemeral-storage per container, e.g. 10Gi or 30Gi (default 10Gi, max 50Gi)"`
 	URLs        []string `json:"urls,omitempty" jsonschema:"pull: http(s) links to download"`
 	Subdir      string   `json:"subdir,omitempty" jsonschema:"pull: folder inside the volume"`
 	DataIsP1    bool     `json:"data_is_p1,omitempty" jsonschema:"volume/pull: the user confirms the data is non-sensitive (P1)"`
@@ -259,8 +261,12 @@ func (s *Server) nsCtx(ctx context.Context, in string) string {
 	return ""
 }
 
-func (s *Server) ruleCtx(ctx context.Context, ns string, p *plan.Plan) rules.Context {
-	rc := rules.Context{PodsPerRun: s.Cfg.PodsPerRun, GPUsPerRun: s.Cfg.GPUsPerRun, HoursPerRun: s.Cfg.HoursPerRun, TasksPerRun: s.Cfg.TasksPerRun, Session: p.Goal == plan.GoalSession}
+func (s *Server) ruleCtx(ctx context.Context, ns string, p *plan.Plan) (rules.Context, error) {
+	nsGPUs := s.Cfg.NamespaceGPUs
+	if nsGPUs <= 0 {
+		nsGPUs = 8
+	}
+	rc := rules.Context{PodsPerRun: s.Cfg.PodsPerRun, GPUsPerRun: s.Cfg.GPUsPerRun, HoursPerRun: s.Cfg.HoursPerRun, TasksPerRun: s.Cfg.TasksPerRun, NamespaceGPUs: nsGPUs, Session: p.Goal == plan.GoalSession}
 	if p.Goal == plan.GoalSweep {
 		if v, ok := p.Request["Count"].(float64); ok {
 			rc.SweepCount = int(v)
@@ -271,7 +277,31 @@ func (s *Server) ruleCtx(ctx context.Context, ns string, p *plan.Plan) rules.Con
 	} else if kube.Kind(err) != kube.KindNotFound {
 		rc.QuotaUnknown = true
 	}
-	return rc
+	if planRequestsGPU(p) && s.Ops != nil {
+		n, err := s.Ops.RunningGPUs(ctx, ns)
+		if err != nil {
+			return rc, err
+		}
+		rc.RunningGPUs = n
+	}
+	return rc, nil
+}
+
+func planRequestsGPU(p *plan.Plan) bool {
+	for i := range p.Objects {
+		ps := p.Objects[i].PodSpecOf()
+		if ps == nil {
+			continue
+		}
+		for _, c := range append(append([]k8s.Container{}, ps.InitContainers...), ps.Containers...) {
+			for _, g := range rules.GPUResources {
+				if k8s.ParseCount(c.Resources.Requests[g]) > 0 || k8s.ParseCount(c.Resources.Limits[g]) > 0 {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // New builds the MCP server.
@@ -356,7 +386,7 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 	req := plan.Request{Goal: in.Goal, Namespace: ns, Name: in.Name, Command: in.Command, Image: in.Image, GPU: in.GPU, GPUType: in.GPUType,
 		CPU: in.CPU, Memory: in.Memory, Hours: in.Hours, Count: in.Count, Parallel: in.Parallel, Host: in.Host, Port: in.Port,
 		DataPVC: in.DataVolume, Owner: owner, Session: in.Session, LLMSecret: in.LLMSecret, Opportun: in.Opportunist,
-		Size: in.Size, URLs: in.URLs, Subdir: in.Subdir, DataIsP1: in.DataIsP1, PullSecret: in.PullSecret,
+		Size: in.Size, Region: in.Region, Scratch: in.Scratch, URLs: in.URLs, Subdir: in.Subdir, DataIsP1: in.DataIsP1, PullSecret: in.PullSecret,
 		AvoidNodes: splitNodes(in.AvoidNode), WebDays: s.Cfg.WebDays, GPUSessionHours: s.Cfg.GPUSessionHours}
 	p, err := plan.Build(facts, req)
 	if err != nil {
@@ -421,7 +451,11 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 		}
 	}
 	p.Hash = plan.Hash(p)
-	findings := rules.Check(p.Objects, s.ruleCtx(ctx, ns, p))
+	rc, err := s.ruleCtx(ctx, ns, p)
+	if err != nil {
+		return nil, nil, err
+	}
+	findings := rules.Check(p.Objects, rc)
 	if hostFinding != nil {
 		findings = append(findings, *hostFinding)
 	}
@@ -665,8 +699,16 @@ func (s *Server) runTool(ctx context.Context, req *mcp.CallToolRequest, in runIn
 	if plan.Hash(p) != p.Hash {
 		return nil, nil, store.ErrChanged
 	}
-	if fs := rules.Check(p.Objects, s.ruleCtx(ctx, p.Namespace, p)); rules.Blocking(fs) {
-		return nil, nil, fmt.Errorf("the plan no longer passes the NRP rules (%s: %s); plan again", fs[0].ID, fs[0].Message)
+	rc, err := s.ruleCtx(ctx, p.Namespace, p)
+	if err != nil {
+		return nil, nil, err
+	}
+	if fs := rules.Check(p.Objects, rc); rules.Blocking(fs) {
+		for _, f := range fs {
+			if f.Severity == rules.Refuse {
+				return nil, nil, fmt.Errorf("the plan no longer passes the NRP rules (%s: %s); plan again", f.ID, f.Message)
+			}
+		}
 	}
 	// Validate with a server dry run before asking the person or using a token, so a plan
 	// Nautilus would refuse never spends an approval.
@@ -1259,7 +1301,7 @@ func (s *Server) helperPod(ctx context.Context, ns, pvc string) (string, error) 
 		Labels: map[string]string{"app.kubernetes.io/managed-by": plan.ManagedBy, "nrp-mcp/run": run, "nrp-mcp/name": name, plan.OwnerLabel: helperOwner}},
 		PodSpec: &k8s.PodSpec{RestartPolicy: "Never", Containers: []k8s.Container{{Name: "data", Image: "busybox:1.36",
 			Command:      []string{"sh", "-c", "sleep 3600"},
-			Resources:    k8s.Resources{Requests: map[string]string{"cpu": "100m", "memory": "128Mi"}, Limits: map[string]string{"cpu": "100m", "memory": "128Mi"}},
+			Resources:    k8s.Resources{Requests: map[string]string{"cpu": "100m", "memory": "128Mi", "ephemeral-storage": "1Gi"}, Limits: map[string]string{"cpu": "100m", "memory": "128Mi", "ephemeral-storage": "1Gi"}},
 			VolumeMounts: []k8s.Mount{{Name: "data", MountPath: "/data"}}}},
 			Volumes: []k8s.Volume{{Name: "data", PersistentVolumeClaim: &k8s.PVCSource{ClaimName: pvc}}}, AutomountServiceAccountToken: k8s.BoolPtr(false)}}
 	b, _ := k8s.List([]k8s.Object{obj})
