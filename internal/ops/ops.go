@@ -282,13 +282,16 @@ type WatchResult struct {
 	Target   string             `json:"target"`
 	Progress string             `json:"progress,omitempty"`
 	Pods     []diagnose.Finding `json:"pods"`
-	Logs     string             `json:"logs,omitempty"`
+	Logs     string             `json:"untrusted_logs,omitempty"`
+	Note     string             `json:"untrusted_note,omitempty"`
 	URLCheck string             `json:"url_check,omitempty"`
 	Kubectl  []string           `json:"kubectl_equivalent"`
 }
 
-// Watch reports on a run id, a Job/Deployment name, or a pod name.
-func (o *Ops) Watch(ctx context.Context, ns, target string, tail int, grep string, httpGet func(string) (int, error)) (*WatchResult, error) {
+// Watch reports on a run id, a Job/Deployment name, or a pod name. owner is the caller's
+// owner id ("" = anyone, for namespace admins who asked for everyone): pods that nrp-mcp
+// made for someone else are refused, so in a shared namespace people see only their own.
+func (o *Ops) Watch(ctx context.Context, ns, target string, tail int, grep string, owner string, httpGet func(string) (int, error)) (*WatchResult, error) {
 	if tail <= 0 {
 		tail = 40
 	}
@@ -313,6 +316,14 @@ func (o *Ops) Watch(ctx context.Context, ns, target string, tail int, grep strin
 		var one map[string]any
 		if err := o.K.JSON(ctx, ns, &one, "get", "pod", target); err == nil {
 			podsJSON.Items = []map[string]any{one}
+		}
+	}
+	if owner != "" {
+		for _, pm := range podsJSON.Items {
+			l, _ := mapGet(pm, "metadata")["labels"].(map[string]any)
+			if who, _ := l[plan.OwnerLabel].(string); who != "" && who != owner {
+				return nil, fmt.Errorf("%q in %s was started by someone else with nrp-mcp; you can watch only your own runs (a namespace admin can pass everyone=true)", target, ns)
+			}
 		}
 	}
 	if len(podsJSON.Items) == 0 {
@@ -358,7 +369,8 @@ func (o *Ops) Watch(ctx context.Context, ns, target string, tail int, grep strin
 			}
 			lines = keep
 		}
-		res.Logs = "[" + logPod + "]\n" + strings.Join(lines, "\n")
+		res.Logs = Clean("["+logPod+"]\n"+strings.Join(lines, "\n"), 8*1024)
+		res.Note = UntrustedNote
 	}
 	var parts []string
 	keys := make([]string, 0, len(counts))
@@ -474,6 +486,7 @@ func toDiagPod(pm map[string]any, events []map[string]any) diagnose.Pod {
 		ev.Type, _ = e["type"].(string)
 		ev.Reason, _ = e["reason"].(string)
 		ev.Message, _ = e["message"].(string)
+		ev.Message = Clean(ev.Message, 300)
 		p.Events = append(p.Events, ev)
 	}
 	return p
