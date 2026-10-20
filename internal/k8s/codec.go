@@ -7,6 +7,9 @@ import (
 	"strings"
 )
 
+// BoolPtr returns a pointer to b.
+func BoolPtr(b bool) *bool { return &b }
+
 // MarshalJSON writes the object with its spec under the right key.
 func (o Object) MarshalJSON() ([]byte, error) {
 	m := map[string]any{"apiVersion": o.APIVersion, "kind": o.Kind, "metadata": o.Metadata}

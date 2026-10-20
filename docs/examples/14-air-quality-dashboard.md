@@ -50,7 +50,7 @@ None of these groups use nrp-mcp today; this is an illustration.
 
 **Researcher:** RC approved it for the partner workshop. https://ie-air-viewer.nrp-nautilus.io/
 
-**Assistant:** [nrp_run public_ack=https://ie-air-viewer.nrp-nautilus.io/] Applied. [nrp_watch target=<run>] Ingress up, HTTPS not 200 yet: the pod is still installing requirements. A minute later: HTTPS 200, app ready. The PurpleAir attribution line is in the page footer, as the Data License requires. After the workshop, [nrp_cleanup] removes the jobs and the web app; the volume stays until you delete it.
+**Assistant:** [nrp_run plan_id=...] You approve publishing https://ie-air-viewer.nrp-nautilus.io/ (a question in your AI app, or the code nrp-mcp shows you). Applied. [nrp_watch target=<run>] Ingress up, HTTPS not 200 yet: the pod is still installing requirements. A minute later: HTTPS 200, app ready. The PurpleAir attribution line is in the page footer, as the Data License requires. After the workshop, [nrp_cleanup] removes the jobs and the web app; the volume stays until you delete it.
 
 ## What nrp builds
 
@@ -77,7 +77,7 @@ Assumptions: 300 sensors and 24 collocated sites, one year hourly (about 2.6 mil
 ## Limits and honest caveats
 
 - **Two-week web limit:** Nautilus web apps are for demos, workshops and short reviews. A dashboard partners rely on for months needs an NRP exception (ask Nautilus Support) or a long-lived host; ask RC about options.
-- **Publishing needs approval:** at UCR, Research Computing's OK comes before `public_ack`. Serve only outdoor P1 data.
+- **Publishing needs approval:** at UCR, Research Computing's OK comes before you approve publishing. Public apps expire after 14 days by default. Serve only outdoor P1 data.
 - **Licensing:** follow PurpleAir's attribution and redistribution terms. Do not expose raw PurpleAir data as a downloadable dataset or API.
 - **API keys:** nrp-mcp can inject only the NRP LLM token as a Secret, so scheduled in-cluster PurpleAir pulls would need a Secret created by hand with kubectl. The workflow above keeps the key on the laptop.
 - **No volume in web apps:** the dashboard carries its own data (text files under 200 KB each, about 900 KB total, not in a `data/` folder) or uses an nrp_build image. If you bake data into an image, keep the registry project private and add a pull secret, since PurpleAir data may not be republished.

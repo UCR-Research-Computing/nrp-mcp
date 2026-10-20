@@ -28,7 +28,9 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	cl := mcp.NewClient(&mcp.Implementation{Name: "e2earray", Version: "0"}, nil)
-	cs, err := cl.Connect(ctx, &mcp.CommandTransport{Command: exec.Command(*bin, "serve", "--namespace", *ns)}, nil)
+	cmd := exec.Command(*bin, "serve", "--namespace", *ns)
+	cmd.Env = append(os.Environ(), "NRP_CONSENT=token")
+	cs, err := cl.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	must(err)
 	defer cs.Close()
 	call := func(name string, args map[string]any) map[string]any {
@@ -49,7 +51,7 @@ func main() {
 		return m
 	}
 
-	p := call("nrp_plan", map[string]any{"project": *dir, "name": "array-check"})
+	p := call("nrp_plan", map[string]any{"project": *dir, "name": "array-check", "discard_results": true})
 	fmt.Println("PLAN:", p["summary"])
 	for _, m := range p["slurm_mapping"].([]any) {
 		mm := m.(map[string]any)

@@ -59,7 +59,7 @@ Outputs are a few MB per calculation; delete wavefunctions after use.
 
 **Researcher:** Clean up.
 
-**Assistant:** [nrp_cleanup] lists five runs: the pilot, the main sweep, the rerun, the continuum sweep and the volume. I will clean up the four job runs one by one with `run=` and leave the volume. Confirm? **Researcher:** Yes. [nrp_cleanup run=... plan_id=... confirm_token=...] (x4) Done; the moire volume remains.
+**Assistant:** [nrp_cleanup] lists five runs: the pilot, the main sweep, the rerun, the continuum sweep and the volume. I will clean up the four job runs one by one with `run=` and leave the volume. Confirm? **Researcher:** Yes. [nrp_cleanup run=..., then plan_id=...] (x4, each approved by you with a question or a code) Done; the moire volume remains.
 
 ## What nrp builds
 

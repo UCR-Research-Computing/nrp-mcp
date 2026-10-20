@@ -3,6 +3,58 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before 1.0
 minor versions may change behavior.
 
+## [0.9.0] - 2026-10-20
+
+### Changed (breaking for scripts)
+
+- Public web apps, GPU work, cleanup step 2, `nrp_data up` and `nrp_setup fix=true` need
+  the person's own approval. The AI app asks them directly (MCP elicitation) or nrp-mcp
+  shows them a 6-character approval code (desktop notification, `nrp-mcp approve`,
+  approve.txt) that they type into the chat; the assistant passes it as `approval_code`.
+- Web and GPU plans no longer return `confirm_token`; `nrp_run` returns
+  `waiting_for_approval` first. Cleanup step 1 returns no token.
+- `public_ack` is ignored unless `consent: token`.
+- `nrp_watch` field `logs` is renamed `untrusted_logs` and comes with `untrusted_note`.
+- New config `consent: ask|code|token` (default ask). `token` restores 0.8 behavior for
+  scripts and CI, with a warning in each result.
+- Jobs and sweeps without results storage are refused (R23) until the person says
+  "yes, discard results" (`nrp_plan discard_results=true`).
+
+### Added
+
+- Job results: files written to `results/` are saved to the person's NRP S3 bucket
+  (`nrp-results-<id>`, under `runs/<run>/`), downloaded with
+  `nrp_data action=down run=<id>`. One-time setup: `nrp-mcp s3 setup`. Pods never get S3
+  keys (a signed, one-run upload permission instead).
+- `nrp-mcp approve` and `nrp-mcp s3 setup` commands.
+- Plans list `code_files` and `skipped_files` (with reasons).
+- Public web apps expire after `web_days` (default 14, at most 14); `nrp_status` shows the
+  days left.
+- Rules R20 (no public notebooks, IDEs or web shells), R21 (no official-looking host
+  names), R22 (host already in use).
+
+### Fixed (security)
+
+- Project packing no longer copies keys, credentials, kubeconfigs, data folders or files
+  behind symlinks into the cluster, and keeps files like `tokenizer.py`. Data files need
+  `data_is_p1=true` (refusal R19 otherwise).
+- Plans no longer echo file contents or Secret values back to the assistant.
+- Session sign-in tokens are made with crypto/rand at run time and never stored in plans
+  or run cards. Run cards are private (0600) and git-ignored (`.nrp/.gitignore`).
+- Logs, events and file listings are cleaned (no escape codes) and marked untrusted.
+- In a shared namespace, `nrp_watch`, `nrp_session` and `nrp_data up` refuse other
+  people's runs and volumes; `nrp_data down` never overwrites.
+- Pods no longer mount the namespace's API token.
+- An approval answer counts only for a question nrp-mcp actually asked (request state).
+- Tool results no longer name the file that holds the approval code.
+- `nrp_session` refuses to show a sign-in when it cannot confirm who you are.
+- The results uploader's share (0.1 CPU, 64 MiB) comes out of the main container, so a
+  1 CPU / 2 GiB job stays inside NRP's usage-check exemption; uploads work with any file
+  name and failed uploads are reported.
+- `scripts/gauntlet.sh` runs the tests with the race detector, as CI does.
+- Suggested web host names never start with `nrp-` or `nautilus-` (R21 would refuse them).
+- S3 key instructions point to https://nrp.ai/s3token/ (found in the live test).
+
 ## [0.8.0] - 2026-10-15
 
 ### Added

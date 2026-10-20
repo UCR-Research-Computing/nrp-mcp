@@ -25,7 +25,9 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 	cl := mcp.NewClient(&mcp.Implementation{Name: "e2e", Version: "0"}, nil)
-	cs, err := cl.Connect(ctx, &mcp.CommandTransport{Command: exec.Command(*bin, "serve", "--namespace", *ns)}, nil)
+	cmd := exec.Command(*bin, "serve", "--namespace", *ns)
+	cmd.Env = append(os.Environ(), "NRP_CONSENT=token")
+	cs, err := cl.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	must(err)
 	defer cs.Close()
 
@@ -57,7 +59,7 @@ total = sum(i*i for i in range(2_000_000))
 print("hello from", platform.node(), "run", os.environ.get("NRP_RUN"), "sum", total)
 `), 0o644)
 
-	p := call("nrp_plan", map[string]any{"project": dir, "cpu": "1", "memory": "1Gi", "hours": 1, "name": "e2e-hello"})
+	p := call("nrp_plan", map[string]any{"project": dir, "cpu": "1", "memory": "1Gi", "hours": 1, "name": "e2e-hello", "discard_results": true})
 	fmt.Println("PLAN:", p["summary"])
 	fmt.Println("  runnable:", p["runnable"], " image:", p["image"])
 	for _, d := range p["decisions"].([]any) {
@@ -85,7 +87,7 @@ print("hello from", platform.node(), "run", os.environ.get("NRP_RUN"), "sum", to
 			break
 		}
 	}
-	fmt.Println("LOGS:\n" + fmt.Sprint(w["logs"]))
+	fmt.Println("LOGS:\n" + fmt.Sprint(w["untrusted_logs"]))
 
 	c1 := call("nrp_cleanup", map[string]any{"run": run})
 	fmt.Println("CLEANUP 1:", c1["summary"])
@@ -102,7 +104,7 @@ print("hello from", platform.node(), "run", os.environ.get("NRP_RUN"), "sum", to
 	sd, _ := os.MkdirTemp("", "nrp-e2e-sweep-")
 	defer os.RemoveAll(sd)
 	_ = os.WriteFile(filepath.Join(sd, "task.py"), []byte("import os\ni=int(os.environ['JOB_COMPLETION_INDEX'])\nprint('task', i, 'alpha', [0.1,0.5,0.9][i])\n"), 0o644)
-	swp := call("nrp_plan", map[string]any{"project": sd, "goal": "sweep", "count": 3, "parallel": 3, "cpu": "1", "memory": "1Gi", "hours": 1, "name": "e2e-sweep"})
+	swp := call("nrp_plan", map[string]any{"project": sd, "goal": "sweep", "count": 3, "parallel": 3, "cpu": "1", "memory": "1Gi", "hours": 1, "name": "e2e-sweep", "discard_results": true})
 	fmt.Println("SWEEP PLAN:", swp["summary"], "runnable:", swp["runnable"])
 	if swp["runnable"] != true {
 		fail("sweep not runnable: %v", swp["refusals"])

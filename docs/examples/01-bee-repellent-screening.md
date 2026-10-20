@@ -46,7 +46,7 @@ Before the GPU sweep, one note. Your `score.py` reads SMILES directly into the f
 
 **Researcher:** Delete the runs and keep the volume for the next round.
 
-**Assistant:** [nrp_cleanup plan_id=... confirm_token=...] Deleted. The volume stays. It is purged after 6 months without access, so keep the master copy elsewhere.
+**Assistant:** [nrp_cleanup plan_id=...] You approve the deletion (a question in your AI app, or the code nrp-mcp shows you). Deleted. The volume stays. It is purged after 6 months without access, so keep the master copy elsewhere.
 
 ## What nrp builds
 

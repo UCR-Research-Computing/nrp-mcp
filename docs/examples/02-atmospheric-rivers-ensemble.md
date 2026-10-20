@@ -39,7 +39,7 @@ The study comes from the climate dynamics group in Earth and Planetary Sciences 
 
 **Researcher:** Done with the figures. Bring back the ensemble summary and tear down the compute.
 
-**Assistant:** [nrp_data down path=summary/] This copied `ar_freq_change_by_model.nc` (12 MB) and the PNGs into ~/proj/ar-ensemble/summary. [nrp_cleanup] lists the sweep, the rerun Job and the session. [nrp_cleanup plan_id=... confirm_token=...] Deleted. I left the 600 GB of IVT on the volume. If you want to keep it past this paper, copy it to permanent storage, because volumes untouched for 6 months can be purged.
+**Assistant:** [nrp_data down path=summary/] This copied `ar_freq_change_by_model.nc` (12 MB) and the PNGs into ~/proj/ar-ensemble/summary. [nrp_cleanup] lists the sweep, the rerun Job and the session. [nrp_cleanup plan_id=...] You approve the deletion (a question in your AI app, or the code nrp-mcp shows you). Deleted. I left the 600 GB of IVT on the volume. If you want to keep it past this paper, copy it to permanent storage, because volumes untouched for 6 months can be purged.
 
 ## What nrp builds
 

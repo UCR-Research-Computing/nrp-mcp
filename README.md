@@ -135,12 +135,12 @@ learn as you go.
 |---|---|---|
 | `nrp_setup` | only with `fix=true` | Laptop readiness: kubectl (version vs the cluster), kubelogin, NRP config, sign-in; installs or updates them with your yes |
 | `nrp_status` | no | Identity, namespaces, GPU quotas, workloads and what they ask for, volumes, public URLs, warnings |
-| `nrp_plan` | no | Inspects a project and a goal (`job`, `sweep`, `web`, `session`, `llm-batch`, `volume`, `pull`), applies every rule, returns a summary, decisions, refusals, manifests and a confirm token |
-| `nrp_run` | yes, with a token | Runs an approved plan; web plans also need `public_ack`; writes a run card to `<project>/.nrp/runs/` |
+| `nrp_plan` | no | Inspects a project and a goal (`job`, `sweep`, `web`, `session`, `llm-batch`, `volume`, `pull`), applies every rule, returns a summary, decisions, refusals, the files it will copy and skip, and either a confirm token or `needs_person_approval` |
+| `nrp_run` | yes, after the person approves (question or code) or with a token for low-risk plans | Runs an approved plan; risky plans take the person's `approval_code`; writes a private run card to `<project>/.nrp/runs/` |
 | `nrp_watch` | no | Progress, logs (tail/grep), diagnosis with a fix, public URL check |
 | `nrp_cleanup` | yes, two steps | Lists your runs, then deletes one after a second confirm |
 | `nrp_session` | no | Readiness, port-forward command and local link for a notebook or VS Code session |
-| `nrp_data` | uploads only | List, upload small non-sensitive files, download results from a volume |
+| `nrp_data` | uploads only | List, upload small non-sensitive files, download results from a volume, or a job's saved results with `down run=<id>` |
 | `nrp_build` | no | Suggests a Dockerfile and a GitHub Actions workflow that builds it into ghcr.io (or, with `target=gitlab`, an NRP GitLab kaniko file); explains public vs private images |
 
 Also served: resources `nrp://policy`, `nrp://gpus`, `nrp://storage`, `nrp://llm`,
@@ -152,10 +152,11 @@ Also served: resources `nrp://policy`, `nrp://gpus`, `nrp://storage`, `nrp://llm
 - **Runs as you, on your computer.** It uses your kubeconfig and the NRP's own sign-in. It
   never reads or stores your token, and nothing leaves your computer except the Kubernetes
   calls you approve.
-- **Nothing happens without a yes.** Planning creates nothing. Running and cleanup need a
-  single-use token bound to the exact plan, valid for 10 minutes.
-- **Nothing goes public by accident.** A web plan publishes only when you type its exact
-  URL back.
+- **Nothing happens without a yes.** Planning creates nothing. Risky steps need your own
+  approval (see below); other runs need a single-use token bound to the exact plan, valid
+  for 10 minutes.
+- **Nothing goes public by accident.** A web plan publishes only after you approve it, and
+  public apps expire after 14 days.
 - **The NRP rules are built in**, each with a test and a link to its source:
   - non-sensitive data only
   - Jobs instead of sleep loops
@@ -175,6 +176,23 @@ Also served: resources `nrp://policy`, `nrp://gpus`, `nrp://storage`, `nrp://llm
   kubelogin GitHub releases, and only when the published SHA256 matches.
 
 See [SECURITY.md](SECURITY.md) for details and how to report a problem.
+
+### Approving risky steps
+
+Public web apps, GPU work, deleting, uploading and installing need your approval, not the
+AI's. If your AI app can ask you a question, nrp-mcp asks you directly. Otherwise it shows
+you a short code, for example ABC-234, in a desktop notification and in `nrp-mcp approve`
+(run it in your own terminal). Type the code into the chat; the assistant passes it as
+`approval_code`. Codes work once, for that plan only, for 10 minutes. Never share a code
+with anyone, and never paste one you did not ask for.
+
+### Keeping results
+
+Run `nrp-mcp s3 setup` once in your own terminal (it asks for your keys from
+https://nrp.ai/s3token/). Then anything your job writes to `results/` is saved to your own NRP
+S3 bucket when the job ends. Ask for it back with `nrp_data action=down run=<id>`; it lands
+in `<project>/results/<run>/`. Without this setup, nrp-mcp will not start a job until you
+say "yes, discard results".
 
 ## Configuration
 
@@ -202,6 +220,8 @@ Command-line flags for `serve`, `setup` and `doctor`: `--kubeconfig`, `--context
 | `nrp-mcp setup` | Check and ready this computer (asks first; `--yes` to skip the question, `--no-sign-in` to stop before the browser) |
 | `nrp-mcp doctor` | Check kubectl, sign-in, namespaces and quotas |
 | `nrp-mcp init` | Write an example config (never overwrites) |
+| `nrp-mcp approve` | Show the current approval code (run it in your own terminal) |
+| `nrp-mcp s3 setup` | Save your NRP S3 keys for job results (hidden input, file 0600) |
 | `nrp-mcp version` | Print the version |
 
 ## How it works

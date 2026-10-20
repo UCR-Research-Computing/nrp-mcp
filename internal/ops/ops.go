@@ -6,13 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/diagnose"
+	"github.com/UCR-Research-Computing/nrp-mcp/internal/inspect"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/k8s"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/kube"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/plan"
@@ -150,7 +149,17 @@ func (o *Ops) StatusOf(ctx context.Context, ns string) (*Status, error) {
 		wl := wlFrom("Deployment", d)
 		st := mapGet(d, "status")
 		wl.Status = fmt.Sprintf("%d/%d ready", int(num(st, "readyReplicas")), int(num(mapGet(d, "spec"), "replicas")))
-		if t := created(d); !t.IsZero() {
+		if exp, _ := mapGet(mapGet(d, "metadata"), "annotations")[plan.ExpiresAnnotation].(string); exp != "" {
+			if t, err := time.Parse("2006-01-02", exp); err == nil {
+				days := int(time.Until(t.Add(24*time.Hour)).Hours() / 24)
+				if days < 0 {
+					wl.Warning = "public web app expired on " + exp + ": remove it with nrp_cleanup run=" + wl.Run + " (or plan it again to renew for up to 14 days)"
+				} else {
+					wl.Warning = fmt.Sprintf("public web app expires on %s (%d day(s) left)", exp, days)
+				}
+				s.Warnings = append(s.Warnings, "Deployment "+wl.Name+": "+wl.Warning)
+			}
+		} else if t := created(d); !t.IsZero() {
 			left := 14*24*time.Hour - time.Since(t)
 			if left < 3*24*time.Hour {
 				wl.Warning = fmt.Sprintf("the NRP removes Deployments after 2 weeks: about %d days left unless your namespace has an exception", int(left.Hours()/24))
@@ -283,13 +292,16 @@ type WatchResult struct {
 	Target   string             `json:"target"`
 	Progress string             `json:"progress,omitempty"`
 	Pods     []diagnose.Finding `json:"pods"`
-	Logs     string             `json:"logs,omitempty"`
+	Logs     string             `json:"untrusted_logs,omitempty"`
+	Note     string             `json:"untrusted_note,omitempty"`
 	URLCheck string             `json:"url_check,omitempty"`
 	Kubectl  []string           `json:"kubectl_equivalent"`
 }
 
-// Watch reports on a run id, a Job/Deployment name, or a pod name.
-func (o *Ops) Watch(ctx context.Context, ns, target string, tail int, grep string, httpGet func(string) (int, error)) (*WatchResult, error) {
+// Watch reports on a run id, a Job/Deployment name, or a pod name. owner is the caller's
+// owner id ("" = anyone, for namespace admins who asked for everyone): pods that nrp-mcp
+// made for someone else are refused, so in a shared namespace people see only their own.
+func (o *Ops) Watch(ctx context.Context, ns, target string, tail int, grep string, owner string, httpGet func(string) (int, error)) (*WatchResult, error) {
 	if tail <= 0 {
 		tail = 40
 	}
@@ -314,6 +326,14 @@ func (o *Ops) Watch(ctx context.Context, ns, target string, tail int, grep strin
 		var one map[string]any
 		if err := o.K.JSON(ctx, ns, &one, "get", "pod", target); err == nil {
 			podsJSON.Items = []map[string]any{one}
+		}
+	}
+	if owner != "" {
+		for _, pm := range podsJSON.Items {
+			l, _ := mapGet(pm, "metadata")["labels"].(map[string]any)
+			if who, _ := l[plan.OwnerLabel].(string); who != "" && who != owner {
+				return nil, fmt.Errorf("%q in %s was started by someone else with nrp-mcp; you can watch only your own runs (a namespace admin can pass everyone=true)", target, ns)
+			}
 		}
 	}
 	if len(podsJSON.Items) == 0 {
@@ -359,7 +379,8 @@ func (o *Ops) Watch(ctx context.Context, ns, target string, tail int, grep strin
 			}
 			lines = keep
 		}
-		res.Logs = "[" + logPod + "]\n" + strings.Join(lines, "\n")
+		res.Logs = Clean("["+logPod+"]\n"+strings.Join(lines, "\n"), 8*1024)
+		res.Note = UntrustedNote
 	}
 	var parts []string
 	keys := make([]string, 0, len(counts))
@@ -475,65 +496,23 @@ func toDiagPod(pm map[string]any, events []map[string]any) diagnose.Pod {
 		ev.Type, _ = e["type"].(string)
 		ev.Reason, _ = e["reason"].(string)
 		ev.Message, _ = e["message"].(string)
+		ev.Message = Clean(ev.Message, 300)
 		p.Events = append(p.Events, ev)
 	}
 	return p
 }
 
-// CodeConfigMap packs small project text files into a ConfigMap (max ~900 KB) and
-// returns it with the init step that unpacks it into /work.
-func CodeConfigMap(project, name, ns string, labels map[string]string) (*k8s.Object, []string, error) {
-	if project == "" {
-		return nil, nil, nil
+// CodeConfigMap turns a pack (see inspect.PackDir) into a ConfigMap. Keys use
+// "__SLASH__" for "/" because ConfigMap keys cannot hold slashes.
+func CodeConfigMap(pk *inspect.Pack, name, ns string, labels map[string]string) *k8s.Object {
+	if pk == nil || len(pk.Names) == 0 {
+		return nil
 	}
 	data := map[string]string{}
-	var files []string
-	total := 0
-	err := filepath.WalkDir(project, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		rel, _ := filepath.Rel(project, p)
-		if d.IsDir() {
-			if rel != "." && (strings.HasPrefix(d.Name(), ".") || d.Name() == "node_modules" || d.Name() == "__pycache__" || d.Name() == "venv" || d.Name() == "data" || d.Name() == "results") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		low := strings.ToLower(d.Name())
-		if strings.HasPrefix(low, ".env") || strings.Contains(low, "secret") || strings.Contains(low, "token") || strings.HasSuffix(low, ".pem") || strings.HasSuffix(low, ".key") {
-			return nil
-		}
-		ext := strings.ToLower(filepath.Ext(low))
-		okExt := map[string]bool{".py": true, ".r": true, ".jl": true, ".sh": true, ".txt": true, ".toml": true, ".yml": true, ".yaml": true,
-			".json": true, ".js": true, ".ts": true, ".html": true, ".css": true, ".md": true, ".cfg": true, ".ini": true, ".csv": true, "": true, ".lock": true}
-		if !okExt[ext] {
-			return nil
-		}
-		info, e := d.Info()
-		if e != nil || info.Size() > 200*1024 {
-			return nil
-		}
-		b, e := os.ReadFile(p)
-		if e != nil {
-			return nil
-		}
-		total += len(b)
-		if total > 900*1024 {
-			return fmt.Errorf("project text files exceed 900 KB; use nrp_build (an image) or put the code in git")
-		}
-		key := strings.ReplaceAll(rel, string(os.PathSeparator), "__SLASH__")
-		key = strings.ReplaceAll(key, "/", "__SLASH__")
-		data[key] = string(b)
-		files = append(files, rel)
-		return nil
-	})
-	if err != nil {
-		return nil, nil, err
+	for _, rel := range pk.Names {
+		data[strings.ReplaceAll(rel, "/", "__SLASH__")] = pk.Files[rel]
 	}
-	sort.Strings(files)
-	cm := &k8s.Object{APIVersion: "v1", Kind: "ConfigMap", Metadata: k8s.Meta{Name: name, Namespace: ns, Labels: labels}, Data: data}
-	return cm, files, nil
+	return &k8s.Object{APIVersion: "v1", Kind: "ConfigMap", Metadata: k8s.Meta{Name: name, Namespace: ns, Labels: labels}, Data: data}
 }
 
 // unpackScript is the init container script that rebuilds the project tree in /work.

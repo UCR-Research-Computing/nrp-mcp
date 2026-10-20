@@ -3,11 +3,12 @@
 package plan
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"regexp"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/inspect"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/k8s"
+	"github.com/UCR-Research-Computing/nrp-mcp/internal/rules"
 )
 
 // Goals.
@@ -58,6 +60,8 @@ type Request struct {
 	PullSecret string   // docker-registry Secret for a private image
 	Run        string   // reuse a run id (update a running web app in place)
 	AvoidNodes []string // node names the pod must not run on (required node anti-affinity)
+	WebDays    int      // web: days until the app is marked expired (default 14)
+	Now        time.Time
 }
 
 // Plan is the reviewed result.
@@ -122,8 +126,8 @@ func SuggestNames(f *inspect.Facts, goal string) []string {
 	var cands []string
 	add := func(s string) {
 		s = DNSName(s)
-		if s == "" || s == "app" {
-			return
+		if s == "" || s == "app" || rules.ReservedHost(s) {
+			return // R21 would refuse an official-looking name
 		}
 		for _, c := range cands {
 			if c == s {
@@ -149,7 +153,7 @@ func SuggestNames(f *inspect.Facts, goal string) []string {
 		}
 	}
 	if len(cands) == 0 {
-		add(goal + "-" + strconv.Itoa(1000+rand.Intn(9000)))
+		add(goal + "-" + strconv.Itoa(1000+randInt(9000)))
 	}
 	if len(cands) > 3 {
 		cands = cands[:3]
@@ -157,10 +161,25 @@ func SuggestNames(f *inspect.Facts, goal string) []string {
 	return cands
 }
 
+var runRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{3,40}$`)
+
+// ValidRun reports whether s looks like a run id (letters, digits, dashes).
+func ValidRun(s string) bool { return runRe.MatchString(s) }
+
+// randInt is a uniform random int in [0, n) from crypto/rand.
+func randInt(n int) int {
+	v, err := rand.Int(rand.Reader, big.NewInt(int64(n)))
+	if err != nil {
+		panic(err) // crypto/rand does not fail on supported systems
+	}
+	return int(v.Int64())
+}
+
+// newID is prefix + time + 6 random letters (31^6, about 887 million).
 func newID(prefix string) string {
-	b := make([]byte, 4)
+	b := make([]byte, 6)
 	for i := range b {
-		b[i] = "abcdefghjkmnpqrstuvwxyz23456789"[rand.Intn(31)]
+		b[i] = "abcdefghjkmnpqrstuvwxyz23456789"[randInt(31)]
 	}
 	return prefix + time.Now().UTC().Format("0102-1504") + "-" + string(b)
 }
@@ -477,7 +496,7 @@ func buildJob(f *inspect.Facts, r Request, p *Plan) error {
 			p.Decisions = append(p.Decisions, "Sweep with a prebuilt image: read the task number from $JOB_COMPLETION_INDEX.")
 		}
 	}
-	pod := k8s.PodSpec{RestartPolicy: "Never", Containers: []k8s.Container{ctr}, Volumes: vols, ImagePullSecrets: pullSecrets(r, p)}
+	pod := k8s.PodSpec{RestartPolicy: "Never", Containers: []k8s.Container{ctr}, Volumes: vols, ImagePullSecrets: pullSecrets(r, p), AutomountServiceAccountToken: k8s.BoolPtr(false)}
 	applyAvoid(&pod, r.AvoidNodes)
 	if r.Opportun || (gpu > 0 && isSpecial(gpuResource(r)) && r.Opportun) {
 		pod.PriorityClassName = "opportunistic"
@@ -549,6 +568,9 @@ func copyLabels(m map[string]string) map[string]string {
 	}
 	return o
 }
+
+// ExpiresAnnotation holds the date (YYYY-MM-DD, UTC) a public web app expires.
+const ExpiresAnnotation = "nrp-mcp/expires"
 
 // OwnerLabel holds a short hash of the cluster user who made an object, so several
 // people can share a namespace (a workshop) and each cleans up only their own runs.
@@ -672,11 +694,25 @@ func buildWeb(f *inspect.Facts, r Request, p *Plan) error {
 		}
 	}
 	ctr.Env = append(ctr.Env, k8s.EnvVar{Name: "NRP_RUN", Value: p.Run})
-	webPod := k8s.PodSpec{Containers: []k8s.Container{ctr}, Volumes: vols, ImagePullSecrets: pullSecrets(r, p)}
+	webPod := k8s.PodSpec{Containers: []k8s.Container{ctr}, Volumes: vols, ImagePullSecrets: pullSecrets(r, p), AutomountServiceAccountToken: k8s.BoolPtr(false)}
 	applyAvoid(&webPod, r.AvoidNodes)
-	dep := k8s.Object{APIVersion: "apps/v1", Kind: "Deployment", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: labels, Annotations: owner(r)},
+	days := r.WebDays
+	if days <= 0 || days > 14 {
+		days = 14
+	}
+	now := r.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	ann := owner(r)
+	if ann == nil {
+		ann = map[string]string{}
+	}
+	ann[ExpiresAnnotation] = now.Add(time.Duration(days) * 24 * time.Hour).UTC().Format("2006-01-02")
+	dep := k8s.Object{APIVersion: "apps/v1", Kind: "Deployment", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: labels, Annotations: ann},
 		DeploymentSpec: &k8s.DeploymentSpec{Replicas: 1, Selector: k8s.LabelSelector{MatchLabels: sel},
 			Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: labels}, Spec: webPod}}}
+	p.Decisions = append(p.Decisions, fmt.Sprintf("Anyone on the internet can open this app; there is no login. It expires on %s (%d days; nrp_status shows the days left). Remove it sooner with nrp_cleanup.", ann[ExpiresAnnotation], days))
 	svc := k8s.Object{APIVersion: "v1", Kind: "Service", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: copyLabels(labels)},
 		ServiceSpec: &k8s.ServiceSpec{Selector: sel, Ports: []k8s.ServicePort{{Port: 80, TargetPort: port}}, Type: "ClusterIP"}}
 	tls := k8s.IngressTLS{Hosts: []string{host}}
@@ -690,7 +726,7 @@ func buildWeb(f *inspect.Facts, r Request, p *Plan) error {
 	p.Objects = []k8s.Object{dep, svc, ing}
 	p.Extra["public_ack_required"] = p.PublicURL
 	p.Extra["code_delivery"] = "nrp_run copies your project files into the pod with a ConfigMap (small projects); use nrp_build for anything larger"
-	p.Decisions = append(p.Decisions, "Going public needs nrp_run with public_ack set to exactly "+p.PublicURL+". Only P1 (non-sensitive) data may be served. The NRP removes Deployments after 2 weeks unless your namespace is on its exceptions list.")
+	p.Decisions = append(p.Decisions, "Going public at "+p.PublicURL+" needs the person's own yes (nrp_run asks them; with consent token, public_ack set to exactly this URL). Only P1 (non-sensitive) data may be served. The NRP removes Deployments after 2 weeks unless your namespace is on its exceptions list.")
 	p.Kubectl = []string{fmt.Sprintf("kubectl -n %s apply -f plan.json", r.Namespace), fmt.Sprintf("kubectl -n %s port-forward svc/%s 8080:80   # private test before going public", r.Namespace, p.Name)}
 	appName := app
 	if appName == "" {
@@ -718,7 +754,6 @@ func buildSession(r Request, p *Plan) error {
 			mem = strconv.Itoa(16*gpu) + "Gi"
 		}
 	}
-	tok := randHex(16)
 	port := 8888
 	var cmd []string
 	if r.Session == "vscode" {
@@ -737,14 +772,16 @@ func buildSession(r Request, p *Plan) error {
 	if r.DataPVC != "" {
 		ctr.VolumeMounts = append(ctr.VolumeMounts, k8s.Mount{Name: "data", MountPath: "/home/jovyan/data"})
 	}
-	spec := k8s.PodSpec{Containers: []k8s.Container{ctr}}
+	spec := k8s.PodSpec{Containers: []k8s.Container{ctr}, AutomountServiceAccountToken: k8s.BoolPtr(false)}
 	if r.DataPVC != "" {
 		spec.Volumes = []k8s.Volume{{Name: "data", PersistentVolumeClaim: &k8s.PVCSource{ClaimName: r.DataPVC}}}
 	}
 	applyAvoid(&spec, r.AvoidNodes)
 	labels := copyLabels(p.Labels)
 	labels["nrp-mcp/session"] = "true"
-	sec := k8s.Object{APIVersion: "v1", Kind: "Secret", Metadata: k8s.Meta{Name: p.Name + "-session", Namespace: r.Namespace, Labels: copyLabels(labels)}, StringData: map[string]string{"token": tok}}
+	// The token value is made by nrp_run at run time (FillSessionToken), so it is never in
+	// the plan, the plan file or the plan output.
+	sec := k8s.Object{APIVersion: "v1", Kind: "Secret", Metadata: k8s.Meta{Name: p.Name + "-session", Namespace: r.Namespace, Labels: copyLabels(labels)}, StringData: map[string]string{"token": SessionTokenPlaceholder}}
 	dep := k8s.Object{APIVersion: "apps/v1", Kind: "Deployment", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: labels, Annotations: owner(r)},
 		DeploymentSpec: &k8s.DeploymentSpec{Replicas: 1, Selector: k8s.LabelSelector{MatchLabels: map[string]string{"nrp-mcp/name": p.Name, "nrp-mcp/run": p.Run}},
 			Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: labels}, Spec: spec}}}
@@ -769,13 +806,13 @@ func buildSession(r Request, p *Plan) error {
 	return nil
 }
 
-func randHex(n int) string {
-	const h = "0123456789abcdef"
-	b := make([]byte, n*2)
-	for i := range b {
-		b[i] = h[rand.Intn(16)]
+// RandHex is n random bytes from crypto/rand as hex (sign-in tokens).
+func RandHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
 	}
-	return string(b)
+	return hex.EncodeToString(b)
 }
 
 var sbatchLine = regexp.MustCompile(`^#SBATCH\s+(--?[A-Za-z-]+)(?:[= ]\s*(\S+))?`)
@@ -1084,7 +1121,7 @@ func buildPull(r Request, p *Plan) error {
 	}
 	js := &k8s.JobSpec{BackoffLimit: k8s.IntPtr(2), TTLSecondsAfterFinished: k8s.IntPtr(86400), ActiveDeadlineSeconds: k8s.IntPtr(hours * 3600),
 		Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: copyLabels(p.Labels)}, Spec: k8s.PodSpec{RestartPolicy: "Never", Containers: []k8s.Container{ctr},
-			Volumes: []k8s.Volume{{Name: "data", PersistentVolumeClaim: &k8s.PVCSource{ClaimName: r.DataPVC}}}}}}
+			Volumes: []k8s.Volume{{Name: "data", PersistentVolumeClaim: &k8s.PVCSource{ClaimName: r.DataPVC}}}, AutomountServiceAccountToken: k8s.BoolPtr(false)}}}
 	p.Objects = []k8s.Object{{APIVersion: "batch/v1", Kind: "Job", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: copyLabels(p.Labels), Annotations: owner(r)}, JobSpec: js}}
 	p.Image, p.ImageWhy = "curlimages/curl:latest", "small image with curl"
 	p.Decisions = append(p.Decisions,
@@ -1093,6 +1130,27 @@ func buildPull(r Request, p *Plan) error {
 	p.Summary = fmt.Sprintf("A download Job pulling %d file(s) into %s:%s.", len(r.URLs), r.DataPVC, strings.TrimPrefix(dir, "/data"))
 	p.Kubectl = []string{fmt.Sprintf("kubectl -n %s logs -f job/%s", r.Namespace, p.Name)}
 	return nil
+}
+
+// SessionTokenPlaceholder stands in for the session sign-in token until nrp_run.
+const SessionTokenPlaceholder = "<made by nrp_run>"
+
+// FillSessionToken returns a copy of objs where the session Secret placeholder is replaced
+// by a fresh random token. The plan itself (and its hash) never holds the token.
+func FillSessionToken(objs []k8s.Object) []k8s.Object {
+	out := make([]k8s.Object, len(objs))
+	for i, o := range objs {
+		if o.Kind == "Secret" && o.StringData["token"] == SessionTokenPlaceholder {
+			sd := map[string]string{}
+			for k, v := range o.StringData {
+				sd[k] = v
+			}
+			sd["token"] = RandHex(16)
+			o.StringData = sd
+		}
+		out[i] = o
+	}
+	return out
 }
 
 // Cleanup makes a cleanup plan for a run (or "all" nrp-mcp objects).

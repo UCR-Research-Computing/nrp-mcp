@@ -8,7 +8,9 @@ honest limits, and a starter kit you can adapt.
 
 These are illustrations, not case studies. None of these groups use nrp-mcp today, and
 none of these runs happened. Times, throughputs, failure counts and costs are stated
-assumptions, not measurements. The conversations are written against nrp-mcp 0.6.4.
+assumptions, not measurements. The conversations were written against nrp-mcp 0.6.4 and updated for 0.9.0: risky steps
+(public web, GPUs, deleting, uploading) wait for your own approval, and job results go to
+your NRP S3 bucket once you run `nrp-mcp s3 setup`.
 
 | # | Example | Field | Fit | What it shows |
 |---|---|---|---|---|

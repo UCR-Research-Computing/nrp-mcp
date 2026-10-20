@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/inspect"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/k8s"
@@ -380,13 +381,14 @@ func TestAvoidNodesJobAndSession(t *testing.T) {
 	}
 }
 
-// goldenWebDigest is the masked manifest digest of the web plan below, recorded
-// before avoid_node existed: plans without avoid_node must not change at all.
-const goldenWebDigest = "8cfd2e5807b47804427803dcd223a8e083b49378037308d843ea553550af8b57"
+// goldenWebDigest is the masked manifest digest of the web plan below (fixed clock).
+// Plans without avoid_node must not change. 0.9.0 re-pinned it on purpose: web pods now
+// carry automountServiceAccountToken false and the nrp-mcp/expires annotation.
+const goldenWebDigest = "ebacc7ac13537842ccdb15b6cbe3aeb733c0da6eeba079c720a880cec11ee9ed"
 
 func TestNoAvoidNodesManifestsUnchanged(t *testing.T) {
 	f := avoidFacts(t)
-	r := Request{Namespace: "ucr-example", Goal: GoalWeb, Run: "0101-0000-test"}
+	r := Request{Namespace: "ucr-example", Goal: GoalWeb, Run: "0101-0000-test", Now: time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)}
 	p, err := Build(f, r)
 	if err != nil {
 		t.Fatal(err)
@@ -425,5 +427,100 @@ func TestAvoidNodesRefusesBadInput(t *testing.T) {
 	}
 	if _, err := Build(f, Request{Namespace: "ucr-example", Goal: GoalWeb, AvoidNodes: []string{"n1", "n2", "n3", "n4", "n5"}}); err != nil {
 		t.Fatalf("5 nodes refused: %v", err)
+	}
+}
+
+func TestSessionTokenNotInPlan(t *testing.T) {
+	p, err := Build(nil, Request{Namespace: "ucr-example", Goal: GoalSession})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Objects[0].Kind != "Secret" || p.Objects[0].StringData["token"] != SessionTokenPlaceholder {
+		t.Fatalf("session Secret must hold only the placeholder: %+v", p.Objects[0].StringData)
+	}
+	f1, f2 := FillSessionToken(p.Objects), FillSessionToken(p.Objects)
+	t1, t2 := f1[0].StringData["token"], f2[0].StringData["token"]
+	if len(t1) != 32 || t1 == t2 || t1 == SessionTokenPlaceholder {
+		t.Fatalf("tokens %q %q", t1, t2)
+	}
+	if p.Objects[0].StringData["token"] != SessionTokenPlaceholder {
+		t.Fatal("FillSessionToken changed the plan itself")
+	}
+}
+
+func TestIDsAreLongerAndRandom(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 200; i++ {
+		id := newID("r")
+		if len(id) != len("r1018-2037-")+6 || seen[id] {
+			t.Fatalf("id %q", id)
+		}
+		seen[id] = true
+	}
+}
+
+func TestWebPlanHardening(t *testing.T) {
+	f := avoidFacts(t)
+	p, err := Build(f, Request{Namespace: "ucr-example", Goal: GoalWeb, WebDays: 3, Now: time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dep *k8s.Object
+	for i := range p.Objects {
+		if p.Objects[i].Kind == "Deployment" {
+			dep = &p.Objects[i]
+		}
+	}
+	if dep.Metadata.Annotations[ExpiresAnnotation] != "2026-10-23" {
+		t.Fatalf("expires %q", dep.Metadata.Annotations[ExpiresAnnotation])
+	}
+	if a := dep.PodSpecOf().AutomountServiceAccountToken; a == nil || *a {
+		t.Fatal("web pod mounts the service account token")
+	}
+	if !strings.Contains(strings.Join(p.Decisions, " "), "no login") {
+		t.Fatalf("decisions do not say there is no login: %v", p.Decisions)
+	}
+	p, _ = Build(f, Request{Namespace: "ucr-example", Goal: GoalWeb, Image: "quay.io/jupyter/scipy-notebook:latest", Command: "start-notebook.py --IdentityProvider.token=''"})
+	if fs := rules.Check(p.Objects, ctx()); !hasRule(fs, "R20") {
+		t.Fatalf("public notebook not refused: %+v", fs)
+	}
+	p, _ = Build(f, Request{Namespace: "ucr-example", Goal: GoalWeb, Host: "login"})
+	if fs := rules.Check(p.Objects, ctx()); !hasRule(fs, "R21") {
+		t.Fatalf("reserved host not refused: %+v", fs)
+	}
+	for _, g := range []string{GoalJob, GoalSession} {
+		q, err := Build(f, Request{Namespace: "ucr-example", Goal: g, Command: "python app.py"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range q.Objects {
+			if ps := q.Objects[i].PodSpecOf(); ps != nil && (ps.AutomountServiceAccountToken == nil || *ps.AutomountServiceAccountToken) {
+				t.Fatalf("%s pod mounts the service account token", g)
+			}
+		}
+	}
+}
+
+func hasRule(fs []rules.Finding, id string) bool {
+	for _, f := range fs {
+		if f.ID == id && f.Severity == rules.Refuse {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSuggestNamesSkipReservedHosts(t *testing.T) {
+	got := SuggestNames(&inspect.Facts{Name: "nrp-e2e-web-1", Entry: "viewer.py", WebApp: "streamlit"}, "web")
+	if len(got) == 0 {
+		t.Fatal("no suggestions")
+	}
+	for _, n := range got {
+		if rules.ReservedHost(n) {
+			t.Fatalf("suggested %q, which R21 refuses (all: %v)", n, got)
+		}
+	}
+	if got := SuggestNames(&inspect.Facts{Title: "Leaf area explorer", Name: "nrp-x"}, "web"); len(got) != 1 || got[0] != "leaf-area-explorer" {
+		t.Fatalf("got %v, want [leaf-area-explorer]", got)
 	}
 }

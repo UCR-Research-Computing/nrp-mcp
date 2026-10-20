@@ -54,7 +54,7 @@ Your caps are fine as they are: 50 pods at the same time is within `pods_per_run
 
 **Researcher:** Confirm. Keep the volume a month.
 
-**Assistant:** [nrp_cleanup plan_id=... confirm_token=...] Deleted. The volume `floes-data` stays. Untouched volumes are purged after 6 months.
+**Assistant:** [nrp_cleanup plan_id=...] You approve the deletion (a question in your AI app, or the code nrp-mcp shows you). Deleted. The volume `floes-data` stays. Untouched volumes are purged after 6 months.
 
 ## What nrp builds
 
