@@ -222,6 +222,13 @@ var reservedHosts = map[string]bool{"www": true, "nrp": true, "nautilus": true, 
 	"sso": true, "admin": true, "support": true, "portal": true, "api": true, "grafana": true, "gitlab": true, "jupyterhub": true,
 	"jupyterhub-west": true, "s3": true, "s3-west": true, "s3-east": true, "s3-central": true, "matrix": true, "element": true, "status": true, "docs": true}
 
+// ReservedHost reports whether name (the first label of a host under nrp-nautilus.io)
+// looks like an official NRP address, so R21 would refuse it.
+func ReservedHost(name string) bool {
+	name = strings.ToLower(name)
+	return reservedHosts[name] || strings.HasPrefix(name, "nrp-") || strings.HasPrefix(name, "nautilus-")
+}
+
 // webChecks refuses public apps that would expose a notebook/IDE (R20) or use a
 // reserved host name (R21).
 func webChecks(o *k8s.Object, ref string) []Finding {
@@ -242,7 +249,7 @@ func webChecks(o *k8s.Object, ref string) []Finding {
 			h := strings.ToLower(r.Host)
 			if strings.HasSuffix(h, ".nrp-nautilus.io") {
 				first := strings.TrimSuffix(h, ".nrp-nautilus.io")
-				if reservedHosts[first] || strings.HasPrefix(first, "nrp-") || strings.HasPrefix(first, "nautilus-") {
+				if ReservedHost(first) {
 					fs = append(fs, Finding{ID: "R21", Severity: Refuse, Object: ref, Source: srcIngress,
 						Message: fmt.Sprintf("%s looks like an official NRP address.", r.Host),
 						Fix:     "Pick a name that describes your project (nrp_plan suggests some), and plan again with host=<name>."})

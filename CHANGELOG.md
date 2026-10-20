@@ -44,6 +44,8 @@ minor versions may change behavior.
   people's runs and volumes; `nrp_data down` never overwrites.
 - Pods no longer mount the namespace's API token.
 - `scripts/gauntlet.sh` runs the tests with the race detector, as CI does.
+- Suggested web host names never start with `nrp-` or `nautilus-` (R21 would refuse them).
+- S3 key instructions point to https://nrp.ai/s3token/ (found in the live test).
 
 ## [0.8.0] - 2026-10-15
 

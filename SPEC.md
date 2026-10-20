@@ -400,7 +400,35 @@ described as "preparing (unpacking your code)" while its own image (busybox) dow
 about 2 minutes; it is now "downloading <init image>", and "preparing" is only shown while
 the init container is Running.
 
-0.9.0 (to be filled in after the live test, T12).
+Live 0.9.0, 2026-10-20 (real stdio clients driving the 0.9.0 binary, RC namespace
+ucr-research-computing, synthetic P1 data only, public hosts approved by the namespace
+admin). Keys: `nrp-mcp s3 setup` run by the person; file 0600. From this computer, nrp-mcp's
+own S3 client created bucket nrp-results-ae880359f499 on s3-west; a signed POST inside
+`runs/<run>/` was accepted (204), the same form aimed at another run's prefix was refused
+(403 AccessDenied), and the download path returned the file intact. Packing (plan only):
+a folder with run.py, tokenizer.py, a fake id_rsa and patients.csv was refused with R19;
+with data_is_p1=true it was runnable; code_files = patients.csv, run.py, tokenizer.py;
+skipped_files = id_rsa ("looks like a key"); no file text in the plan output.
+`scripts/e2eresults`: a CPU job wrote results/hello.txt; the native sidecar logged
+"nrp-results: saved runs/<run>/hello.txt" through the in-cluster endpoint
+(rook-ceph-rgw-nautiluss3.rook); `nrp_data down run=` returned "results ok"; cleanup removed
+the Job, ConfigMap and the `<job>-results` Secret. E2E RESULTS OK.
+`scripts/e2eapprove` (consent code): the web plan said needs_person_approval with no
+confirm token; the first nrp_run returned NOT STARTED / waiting_for_approval and wrote the
+code only to the person's places; nrp_run with the code started the app; HTTPS 200 at about
+30 s on k8s-haosu-20.sdsc.optiputer.net; cleanup step 1 gave no token, step 2 waited for
+its own code, step 3 deleted; 0 workloads. E2E APPROVE OK.
+`scripts/e2e` and `scripts/e2eweb` (consent token, the 0.8 flow): CPU job, 3-task sweep,
+web plan-only refusal without public_ack, web publish, avoid_node move (haosu-20 ->
+haosu-16, same run id, HTTP 200), two-step cleanup, 0 workloads.
+Found and fixed in the live test: (1) the S3 keys link was https://nrp.ai/s3 (404); it is
+https://nrp.ai/s3token/. (2) suggested host names could start with `nrp-` (from a temp
+folder name) and then be refused by R21; SuggestNames now skips names R21 refuses (test
+added). (3) the web plan's decision line and the server instructions still told the
+assistant to use public_ack under the default consent; they now say the person approves
+(public_ack only with consent token). (4) On macOS, copying a new binary over the old one
+made it die with "Killed: 9"; install by removing the old file first (install docs
+already build to a fresh path).
 
 ## 13. Change log
 

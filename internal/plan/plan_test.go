@@ -509,3 +509,18 @@ func hasRule(fs []rules.Finding, id string) bool {
 	}
 	return false
 }
+
+func TestSuggestNamesSkipReservedHosts(t *testing.T) {
+	got := SuggestNames(&inspect.Facts{Name: "nrp-e2e-web-1", Entry: "viewer.py", WebApp: "streamlit"}, "web")
+	if len(got) == 0 {
+		t.Fatal("no suggestions")
+	}
+	for _, n := range got {
+		if rules.ReservedHost(n) {
+			t.Fatalf("suggested %q, which R21 refuses (all: %v)", n, got)
+		}
+	}
+	if got := SuggestNames(&inspect.Facts{Title: "Leaf area explorer", Name: "nrp-x"}, "web"); len(got) != 1 || got[0] != "leaf-area-explorer" {
+		t.Fatalf("got %v, want [leaf-area-explorer]", got)
+	}
+}

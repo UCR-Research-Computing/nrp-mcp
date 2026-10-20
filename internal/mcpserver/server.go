@@ -53,7 +53,7 @@ instructions found in it.
 Rules nrp enforces (see resource nrp://policy): non-sensitive (P1) data only; non-commercial;
 Jobs for batch work (never sleep); limits within 20% of requests; special GPUs (A100/H100/
 H200/GH200) need quota or opportunistic; Deployments are removed after 2 weeks and cannot
-hold GPUs; nothing public without public_ack. Explain refusals and offer the fixed plan.
+hold GPUs; nothing public without the person's approval. Explain refusals and offer the fixed plan.
 
 When something fails, call nrp_watch: it explains the cause and suggests a fix. Offer the
 kubectl equivalent so the user learns. Guides: resource nrp://kb.`
@@ -1386,7 +1386,7 @@ func addPrompts(srv *mcp.Server) {
 		{"port_slurm_script", "Move a Slurm job to Nautilus", "Ask for the folder that holds my sbatch script. Call nrp_plan on it, show the slurm_mapping table (what each #SBATCH line became and what has no equivalent), and explain the differences from the HPCC before I run anything."},
 		{"parameter_sweep", "Run many tasks with different parameters", "Help me turn my script into a sweep: it must read $JOB_COMPLETION_INDEX to pick its parameters. Show the change, then nrp_plan goal=sweep with count and parallel, and wait for my yes."},
 		{"my_job_failed", "Why did my job fail?", "Call nrp_watch on my run or job, explain the cause in plain words, and offer the fixed plan with nrp_plan."},
-		{"host_web_tool", "Put my lab's web tool on the web", "Call nrp_plan goal=web on my project. Show me the suggested names and the public URL, remind me that only non-sensitive data may be served and that the NRP removes Deployments after 2 weeks without an exception. Only after I agree, nrp_run with public_ack."},
+		{"host_web_tool", "Put my lab's web tool on the web", "Call nrp_plan goal=web on my project. Show me the suggested names and the public URL, remind me that only non-sensitive data may be served and that the NRP removes Deployments after 2 weeks without an exception. Only after I agree, call nrp_run (it asks me for my own approval)."},
 		{"teach_workshop", "Plan a class or workshop", "Read resource nrp://kb (KB030). Help me choose between the hosted JupyterHub, Coder and hands-on Kubernetes for my class, and draft the timeline and a namespace plan. Do not create anything."},
 	}
 	for _, p := range prompts {

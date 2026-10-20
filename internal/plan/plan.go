@@ -16,6 +16,7 @@ import (
 
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/inspect"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/k8s"
+	"github.com/UCR-Research-Computing/nrp-mcp/internal/rules"
 )
 
 // Goals.
@@ -125,8 +126,8 @@ func SuggestNames(f *inspect.Facts, goal string) []string {
 	var cands []string
 	add := func(s string) {
 		s = DNSName(s)
-		if s == "" || s == "app" {
-			return
+		if s == "" || s == "app" || rules.ReservedHost(s) {
+			return // R21 would refuse an official-looking name
 		}
 		for _, c := range cands {
 			if c == s {
@@ -725,7 +726,7 @@ func buildWeb(f *inspect.Facts, r Request, p *Plan) error {
 	p.Objects = []k8s.Object{dep, svc, ing}
 	p.Extra["public_ack_required"] = p.PublicURL
 	p.Extra["code_delivery"] = "nrp_run copies your project files into the pod with a ConfigMap (small projects); use nrp_build for anything larger"
-	p.Decisions = append(p.Decisions, "Going public needs nrp_run with public_ack set to exactly "+p.PublicURL+". Only P1 (non-sensitive) data may be served. The NRP removes Deployments after 2 weeks unless your namespace is on its exceptions list.")
+	p.Decisions = append(p.Decisions, "Going public at "+p.PublicURL+" needs the person's own yes (nrp_run asks them; with consent token, public_ack set to exactly this URL). Only P1 (non-sensitive) data may be served. The NRP removes Deployments after 2 weeks unless your namespace is on its exceptions list.")
 	p.Kubectl = []string{fmt.Sprintf("kubectl -n %s apply -f plan.json", r.Namespace), fmt.Sprintf("kubectl -n %s port-forward svc/%s 8080:80   # private test before going public", r.Namespace, p.Name)}
 	appName := app
 	if appName == "" {
