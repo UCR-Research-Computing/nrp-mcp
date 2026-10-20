@@ -33,35 +33,36 @@ const (
 
 // Request is what the user asked for.
 type Request struct {
-	Goal       string
-	Namespace  string
-	Name       string // optional; suggested if empty
-	Command    string // shell command; inferred if empty
-	Image      string // override
-	GPU        int
-	GPUType    string // e.g. a100, a40; empty = any standard GPU
-	CPU        string
-	Memory     string
-	Hours      int
-	Count      int // sweep tasks
-	Parallel   int // sweep parallelism
-	Host       string
-	Port       int
-	DataPVC    string // existing PVC to mount at /data
-	Owner      string
-	Session    string // jupyter | vscode
-	LLMSecret  string // Secret holding the LLM token (key "token")
-	Opportun   bool
-	Size       string   // volume size, e.g. 50Gi
-	URLs       []string // pull: files to download
-	Subdir     string   // pull: folder inside the volume
-	DataIsP1   bool     // pull/volume: user confirmed the data is P1 (non-sensitive)
-	ArrayIDs   []int    // sweep from a Slurm --array: the task ids, in order
-	PullSecret string   // docker-registry Secret for a private image
-	Run        string   // reuse a run id (update a running web app in place)
-	AvoidNodes []string // node names the pod must not run on (required node anti-affinity)
-	WebDays    int      // web: days until the app is marked expired (default 14)
-	Now        time.Time
+	Goal            string
+	Namespace       string
+	Name            string // optional; suggested if empty
+	Command         string // shell command; inferred if empty
+	Image           string // override
+	GPU             int
+	GPUType         string // e.g. a100, a40; empty = any standard GPU
+	CPU             string
+	Memory          string
+	Hours           int
+	Count           int // sweep tasks
+	Parallel        int // sweep parallelism
+	Host            string
+	Port            int
+	DataPVC         string // existing PVC to mount at /data
+	Owner           string
+	Session         string // jupyter | vscode
+	LLMSecret       string // Secret holding the LLM token (key "token")
+	Opportun        bool
+	Size            string   // volume size, e.g. 50Gi
+	URLs            []string // pull: files to download
+	Subdir          string   // pull: folder inside the volume
+	DataIsP1        bool     // pull/volume: user confirmed the data is P1 (non-sensitive)
+	ArrayIDs        []int    // sweep from a Slurm --array: the task ids, in order
+	PullSecret      string   // docker-registry Secret for a private image
+	Run             string   // reuse a run id (update a running web app in place)
+	AvoidNodes      []string // node names the pod must not run on (required node anti-affinity)
+	WebDays         int      // web: days until the app is marked expired (default 14)
+	GPUSessionHours int      // session with gpu>0: default hours before the Job stops (default 6, max 12)
+	Now             time.Time
 }
 
 // Plan is the reviewed result.
@@ -323,38 +324,38 @@ func pickImage(f *inspect.Facts, r *Request, p *Plan) {
 			p.ImageWhy = "the image you named, run as built (its own start command; no code copied in)"
 		}
 	case f != nil && f.Dockerfile:
-		p.Image = "ghcr.io/<you>/" + p.Name + ":latest"
+		p.Image = "ghcr.io/<you>/" + p.Name + ":v1"
 		if f.GitHubRepo != "" {
-			p.Image = "ghcr.io/" + f.GitHubRepo + ":latest"
+			p.Image = "ghcr.io/" + f.GitHubRepo + ":v1"
 		}
 		p.ImageWhy = "your project has a Dockerfile; build it first (nrp_build gives a GitHub Actions file), then plan again with image="
 		p.NeedsBuild = true
 	case r.Goal == GoalSession && r.Session == "vscode":
-		p.Image, p.ImageWhy = "codercom/code-server:latest", "VS Code in the browser (code-server)"
+		p.Image, p.ImageWhy = "codercom/code-server:4.96.4", "VS Code in the browser (code-server)"
 	case r.Goal == GoalSession:
 		if r.GPU > 0 {
-			p.Image, p.ImageWhy = "quay.io/jupyter/pytorch-notebook:cuda12-latest", "JupyterLab with PyTorch + CUDA (tested on Nautilus 2026-10-06)"
+			p.Image, p.ImageWhy = "quay.io/jupyter/pytorch-notebook:cuda12-python-3.13", "JupyterLab with PyTorch + CUDA (tested on Nautilus 2026-10-06)"
 		} else {
-			p.Image, p.ImageWhy = "quay.io/jupyter/scipy-notebook:latest", "JupyterLab with the scientific Python stack"
+			p.Image, p.ImageWhy = "quay.io/jupyter/scipy-notebook:python-3.13", "JupyterLab with the scientific Python stack"
 		}
 	case f != nil && f.WebApp == "shiny":
-		p.Image, p.ImageWhy = "rocker/shiny:latest", "R Shiny Server (serves /srv/shiny-server on 3838)"
+		p.Image, p.ImageWhy = "rocker/shiny:4.4.2", "R Shiny Server (serves /srv/shiny-server on 3838)"
 	case f != nil && f.WebApp == "static":
-		p.Image, p.ImageWhy = "nginxinc/nginx-unprivileged:stable", "static site served by nginx"
+		p.Image, p.ImageWhy = "nginxinc/nginx-unprivileged:1.27-alpine", "static site served by nginx"
 	case f != nil && f.WebApp == "node":
-		p.Image, p.ImageWhy = "node:22-slim", "Node.js app"
+		p.Image, p.ImageWhy = "node:22-bookworm-slim", "Node.js app"
 	case f != nil && f.Framework == "pytorch":
-		p.Image, p.ImageWhy = "pytorch/pytorch:latest", "PyTorch with CUDA (torch import found)"
+		p.Image, p.ImageWhy = "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime", "PyTorch with CUDA (torch import found)"
 	case f != nil && f.Framework == "tensorflow":
-		p.Image, p.ImageWhy = "tensorflow/tensorflow:latest-gpu", "TensorFlow with GPU support (tensorflow import found)"
+		p.Image, p.ImageWhy = "tensorflow/tensorflow:2.18.0-gpu", "TensorFlow with GPU support (tensorflow import found)"
 	case f != nil && f.Framework == "jax":
-		p.Image, p.ImageWhy = "nvcr.io/nvidia/jax:latest", "JAX with CUDA"
+		p.Image, p.ImageWhy = "nvcr.io/nvidia/jax:24.10-py3", "JAX with CUDA"
 	case f != nil && contains(f.Languages, "r"):
-		p.Image, p.ImageWhy = "rocker/r-ver:latest", "R (rocker); packages install at start"
+		p.Image, p.ImageWhy = "rocker/r-ver:4.4.2", "R (rocker); packages install at start"
 	case f != nil && contains(f.Languages, "julia"):
-		p.Image, p.ImageWhy = "julia:latest", "Julia"
+		p.Image, p.ImageWhy = "julia:1.11-bookworm", "Julia"
 	default:
-		p.Image, p.ImageWhy = "python:3.12-slim", "plain Python"
+		p.Image, p.ImageWhy = "python:3.12-slim-bookworm", "plain Python"
 	}
 }
 
@@ -814,7 +815,8 @@ func buildSession(r Request, p *Plan) error {
 	}
 	res := k8s.Resources{Requests: map[string]string{"cpu": cpu, "memory": mem}, Limits: map[string]string{"cpu": cpu, "memory": mem}}
 	if gpu > 0 {
-		res.Requests["nvidia.com/gpu"], res.Limits["nvidia.com/gpu"] = strconv.Itoa(gpu), strconv.Itoa(gpu)
+		g := gpuResource(r)
+		res.Requests[g], res.Limits[g] = strconv.Itoa(gpu), strconv.Itoa(gpu)
 	}
 	ctr := k8s.Container{Name: "session", Image: p.Image, Command: cmd, Ports: []k8s.Port{{ContainerPort: port}}, Resources: res,
 		Env: []k8s.EnvVar{{Name: "NRP_SESSION_TOKEN", ValueFrom: &k8s.EnvVarSource{SecretKeyRef: &k8s.KeyRef{Name: p.Name + "-session", Key: "token"}}},
@@ -829,23 +831,54 @@ func buildSession(r Request, p *Plan) error {
 	applyAvoid(&spec, r.AvoidNodes)
 	labels := copyLabels(p.Labels)
 	labels["nrp-mcp/session"] = "true"
+	sel := map[string]string{"nrp-mcp/name": p.Name, "nrp-mcp/run": p.Run}
 	// The token value is made by nrp_run at run time (FillSessionToken), so it is never in
 	// the plan, the plan file or the plan output.
 	sec := k8s.Object{APIVersion: "v1", Kind: "Secret", Metadata: k8s.Meta{Name: p.Name + "-session", Namespace: r.Namespace, Labels: copyLabels(labels)}, StringData: map[string]string{"token": SessionTokenPlaceholder}}
-	dep := k8s.Object{APIVersion: "apps/v1", Kind: "Deployment", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: labels, Annotations: owner(r)},
-		DeploymentSpec: &k8s.DeploymentSpec{Replicas: 1, Selector: k8s.LabelSelector{MatchLabels: map[string]string{"nrp-mcp/name": p.Name, "nrp-mcp/run": p.Run}},
-			Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: labels}, Spec: spec}}}
-	p.Objects = []k8s.Object{sec, dep}
-	p.Extra["session_port"] = port
-	p.Extra["session_token_secret"] = p.Name + "-session"
 	kind := "Jupyter"
 	if r.Session == "vscode" {
 		kind = "VS Code"
 	}
-	gs := "no GPU"
 	if gpu > 0 {
-		gs = fmt.Sprintf("%d GPU", gpu)
+		hours := r.Hours
+		if hours <= 0 {
+			hours = r.GPUSessionHours
+		}
+		if hours <= 0 {
+			hours = 6
+		}
+		if hours > 12 {
+			hours = 12
+		}
+		spec.RestartPolicy = "Never"
+		if r.Opportun || (isSpecial(gpuResource(r)) && r.Opportun) {
+			spec.PriorityClassName = "opportunistic"
+		}
+		job := k8s.Object{APIVersion: "batch/v1", Kind: "Job", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: labels, Annotations: owner(r)},
+			JobSpec: &k8s.JobSpec{BackoffLimit: k8s.IntPtr(1), TTLSecondsAfterFinished: k8s.IntPtr(3600), ActiveDeadlineSeconds: k8s.IntPtr(hours * 3600),
+				Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: labels}, Spec: spec}}}
+		svc := k8s.Object{APIVersion: "v1", Kind: "Service", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: copyLabels(labels)},
+			ServiceSpec: &k8s.ServiceSpec{Selector: sel, Ports: []k8s.ServicePort{{Port: port, TargetPort: port}}, Type: "ClusterIP"}}
+		p.Objects = []k8s.Object{sec, job, svc}
+		p.Extra["session_port"] = port
+		p.Extra["session_token_secret"] = p.Name + "-session"
+		gs := fmt.Sprintf("%d GPU", gpu)
+		p.Decisions = append(p.Decisions,
+			fmt.Sprintf("%s GPU session as a Job with a %d h time limit (%s CPU, %s, %s; NRP rule R8: Deployments cannot request GPUs) plus a Service for kubectl port-forward on your machine, never public.", kind, hours, cpu, mem, gs),
+			"Its sign-in token lives in a Secret and is shown to you once by nrp_session.",
+			"Use the GPU actively (NRP checks for >= 40% GPU use) and stop the session early with nrp_cleanup when you are done.",
+			"For a no-install option, the NRP's hosted JupyterHub is https://jupyterhub-west.nrp-nautilus.io (shuts down 1 h after you close the tab).")
+		p.Summary = fmt.Sprintf("A private %s GPU session (Job, %d h limit) in %s with %s CPU, %s memory, %s, image %s.", kind, hours, r.Namespace, cpu, mem, gs, p.Image)
+		p.Kubectl = []string{fmt.Sprintf("kubectl -n %s port-forward svc/%s %d:%d", r.Namespace, p.Name, port, port)}
+		return nil
 	}
+	dep := k8s.Object{APIVersion: "apps/v1", Kind: "Deployment", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: labels, Annotations: owner(r)},
+		DeploymentSpec: &k8s.DeploymentSpec{Replicas: 1, Selector: k8s.LabelSelector{MatchLabels: sel},
+			Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: labels}, Spec: spec}}}
+	p.Objects = []k8s.Object{sec, dep}
+	p.Extra["session_port"] = port
+	p.Extra["session_token_secret"] = p.Name + "-session"
+	gs := "no GPU"
 	p.Decisions = append(p.Decisions,
 		fmt.Sprintf("%s session as a 1-replica Deployment (%s CPU, %s, %s); reached only through kubectl port-forward on your machine, never public.", kind, cpu, mem, gs),
 		"Its sign-in token lives in a Secret and is shown to you once by nrp_session.",
@@ -1194,7 +1227,7 @@ func buildPull(r Request, p *Plan) error {
 		p.Name = "pull-" + shortRun(p.Run)
 	}
 	p.Labels["nrp-mcp/name"] = p.Name
-	ctr := k8s.Container{Name: "pull", Image: "curlimages/curl:latest", Command: []string{"sh", "-c", b.String()},
+	ctr := k8s.Container{Name: "pull", Image: "quay.io/curl/curl:8.23.0", Command: []string{"sh", "-c", b.String()},
 		Resources:    k8s.Resources{Requests: map[string]string{"cpu": "1", "memory": "2Gi"}, Limits: map[string]string{"cpu": "1", "memory": "2Gi"}},
 		VolumeMounts: []k8s.Mount{{Name: "data", MountPath: "/data"}}}
 	hours := r.Hours
@@ -1205,7 +1238,7 @@ func buildPull(r Request, p *Plan) error {
 		Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: copyLabels(p.Labels)}, Spec: k8s.PodSpec{RestartPolicy: "Never", Containers: []k8s.Container{ctr},
 			Volumes: []k8s.Volume{{Name: "data", PersistentVolumeClaim: &k8s.PVCSource{ClaimName: r.DataPVC}}}, AutomountServiceAccountToken: k8s.BoolPtr(false)}}}
 	p.Objects = []k8s.Object{{APIVersion: "batch/v1", Kind: "Job", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: copyLabels(p.Labels), Annotations: owner(r)}, JobSpec: js}}
-	p.Image, p.ImageWhy = "curlimages/curl:latest", "small image with curl"
+	p.Image, p.ImageWhy = "quay.io/curl/curl:8.23.0", "small image with curl"
 	p.Decisions = append(p.Decisions,
 		fmt.Sprintf("Downloads %d file(s) inside the cluster straight into volume %s at %s, so nothing large passes through your laptop or the Kubernetes API.", len(r.URLs), r.DataPVC, dir),
 		"Retries each file 5 times; stops after "+strconv.Itoa(hours)+" h.")

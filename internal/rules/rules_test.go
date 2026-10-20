@@ -139,8 +139,8 @@ func TestR8DeploymentGPU(t *testing.T) {
 	}
 	cx := base()
 	cx.Session = true
-	if has(Check([]k8s.Object{d}, cx), "R8", Refuse) {
-		t.Error("session GPU refused")
+	if !has(Check([]k8s.Object{d}, cx), "R8", Refuse) {
+		t.Error("session Deployment with GPU must also be refused by R8")
 	}
 	if !has(Check([]k8s.Object{d}, cx), "R17", Warn) {
 		t.Error("2-week warning missing")

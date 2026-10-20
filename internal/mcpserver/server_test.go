@@ -245,10 +245,13 @@ func TestPlanRunJobFlow(t *testing.T) {
 		}
 	}
 	s := string(last)
-	for _, want := range []string{`"ConfigMap"`, `"app.kubernetes.io/managed-by"`, `"unpack-code"`} {
+	for _, want := range []string{`"ConfigMap"`, `"app.kubernetes.io/managed-by"`, `"code-src"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("applied manifest missing %s", want)
 		}
+	}
+	if strings.Contains(s, "busybox") || strings.Contains(s, "unpack-code") {
+		t.Errorf("applied manifest must not use a busybox unpack init container: %s", s)
 	}
 }
 
@@ -852,7 +855,7 @@ func TestJobResultsWithKeys(t *testing.T) {
 	defer cs.Close()
 	dir := project(t, map[string]string{"run.py": "print(1)\n"})
 	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir})
-	if isErr || !strings.Contains(fmt.Sprint(m["decisions"]), "Saves results") || !strings.Contains(fmt.Sprint(m["manifests"]), "save-results") {
+	if isErr || !strings.Contains(fmt.Sprint(m["decisions"]), "Saves results") || !strings.Contains(fmt.Sprint(m["manifests"]), "RESULTS_DIR") || strings.Contains(fmt.Sprint(m["manifests"]), "save-results") {
 		t.Fatalf("plan: %s %v", text, m["decisions"])
 	}
 	out, isErr, text := call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"], "confirm_token": m["confirm_token"]})
@@ -1070,5 +1073,24 @@ func TestCleanupSaysHowToSignIn(t *testing.T) {
 	_, isErr, text := call(t, cs, "nrp_cleanup", map[string]any{})
 	if !isErr || !strings.Contains(text, "nrp_setup") {
 		t.Fatalf("cleanup without a working sign-in must say what to do: %s", text)
+	}
+}
+
+func TestSessionToolFindsJobPods(t *testing.T) {
+	cs, fk := setup(t)
+	fk.mu.Lock()
+	fk.out = map[string]string{
+		"get deployment -l nrp-mcp/run=gpu-sess,nrp-mcp/session=true": `{"items":[]}`,
+		"get job -l nrp-mcp/run=gpu-sess,nrp-mcp/session=true":        `{"items":[{"metadata":{"name":"nb-gpu","labels":{"app.kubernetes.io/managed-by":"nrp-mcp","nrp-mcp/session":"true","nrp-mcp/run":"gpu-sess"}},"spec":{"template":{"spec":{"containers":[{"ports":[{"containerPort":8888}]}]}}},"status":{"active":1}}]}`,
+		"get pods -l nrp-mcp/run=gpu-sess":                            `{"items":[{"status":{"phase":"Running","containerStatuses":[{"ready":true}]}}]}`,
+		"get secret nb-gpu-session":                                   `{"data":{"token":"c2VjcmV0MTIz"}}`,
+	}
+	fk.mu.Unlock()
+	m, isErr, text := call(t, cs, "nrp_session", map[string]any{"run": "gpu-sess"})
+	if isErr {
+		t.Fatal(text)
+	}
+	if m["ready"] != true || m["token"] != "secret123" || !strings.Contains(fmt.Sprint(m["command"]), "port-forward svc/nb-gpu 8888:8888") {
+		t.Fatalf("session output: %v", m)
 	}
 }

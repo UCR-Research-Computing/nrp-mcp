@@ -43,7 +43,7 @@ func TestGPUJobPlanPassesRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Goal != GoalJob || p.Image != "pytorch/pytorch:latest" || len(p.Objects) != 1 {
+	if p.Goal != GoalJob || p.Image != "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime" || len(p.Objects) != 1 {
 		t.Fatalf("plan %+v", p)
 	}
 	c := p.Objects[0].JobSpec.Template.Spec.Containers[0]
@@ -156,17 +156,35 @@ func TestSlurmTranslation(t *testing.T) {
 }
 
 func TestSessionPlan(t *testing.T) {
+	// GPU session: Job with activeDeadlineSeconds (default 6 h, max 12 h) + Service + Secret.
 	p, err := Build(nil, Request{Namespace: "ucr-example", Goal: GoalSession, GPU: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(p.Objects) != 2 || p.Objects[0].Kind != "Secret" {
+	if len(p.Objects) != 3 || p.Objects[0].Kind != "Secret" || p.Objects[1].Kind != "Job" || p.Objects[2].Kind != "Service" {
 		t.Fatalf("objects %+v", p.Objects)
+	}
+	if *p.Objects[1].JobSpec.ActiveDeadlineSeconds != 6*3600 {
+		t.Fatalf("deadline %d, want 6h", *p.Objects[1].JobSpec.ActiveDeadlineSeconds)
 	}
 	cx := ctx()
 	cx.Session = true
 	if rules.Blocking(rules.Check(p.Objects, cx)) {
 		t.Fatalf("session refused: %+v", rules.Check(p.Objects, cx))
+	}
+	// Custom and capped hours.
+	p2, err := Build(nil, Request{Namespace: "ucr-example", Goal: GoalSession, GPU: 1, GPUSessionHours: 8})
+	if err != nil || *p2.Objects[1].JobSpec.ActiveDeadlineSeconds != 8*3600 {
+		t.Fatalf("gpu_session_hours 8: %v %+v", err, p2)
+	}
+	p3, err := Build(nil, Request{Namespace: "ucr-example", Goal: GoalSession, GPU: 1, Hours: 20})
+	if err != nil || *p3.Objects[1].JobSpec.ActiveDeadlineSeconds != 12*3600 {
+		t.Fatalf("capped at 12h: %v %+v", err, p3)
+	}
+	// CPU session stays a Deployment.
+	cpuSess, err := Build(nil, Request{Namespace: "ucr-example", Goal: GoalSession, GPU: 0})
+	if err != nil || len(cpuSess.Objects) != 2 || cpuSess.Objects[1].Kind != "Deployment" {
+		t.Fatalf("CPU session must stay a Deployment: %v %+v", err, cpuSess)
 	}
 	if _, err := Build(nil, Request{Namespace: "x", Goal: GoalSession, GPU: 3}); err == nil {
 		t.Fatal("3-GPU session allowed")
@@ -382,9 +400,9 @@ func TestAvoidNodesJobAndSession(t *testing.T) {
 }
 
 // goldenWebDigest is the masked manifest digest of the web plan below (fixed clock).
-// Plans without avoid_node must not change. 0.9.0 re-pinned it on purpose: web pods now
-// carry automountServiceAccountToken false and the nrp-mcp/expires annotation.
-const goldenWebDigest = "ebacc7ac13537842ccdb15b6cbe3aeb733c0da6eeba079c720a880cec11ee9ed"
+// Plans without avoid_node must not change. 0.10.0 re-pinned it on purpose: default
+// images are now pinned to tags (python:3.12-slim-bookworm).
+const goldenWebDigest = "a9e26f53c9d95a3190653f4cb4e753c4f1762bdb02ed01d56f47c1d9d72d8d26"
 
 func TestNoAvoidNodesManifestsUnchanged(t *testing.T) {
 	f := avoidFacts(t)
@@ -593,5 +611,42 @@ func TestCleanupHashCoversTargetsAndScope(t *testing.T) {
 	a.Extra["owner_scope"] = "me"
 	if Hash(a) == Hash(c) {
 		t.Fatal("widening the owner scope must change the hash")
+	}
+}
+
+func TestNoLatestTagsInDefaultImages(t *testing.T) {
+	b, err := os.ReadFile("plan.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), ":latest") {
+		t.Fatalf("plan.go still contains :latest")
+	}
+	for _, tc := range []struct {
+		f    *inspect.Facts
+		r    Request
+		want string
+	}{
+		{nil, Request{Namespace: "x", Goal: GoalSession, Session: "vscode"}, "codercom/code-server:4.96.4"},
+		{nil, Request{Namespace: "x", Goal: GoalSession, GPU: 1}, "quay.io/jupyter/pytorch-notebook:cuda12-python-3.13"},
+		{nil, Request{Namespace: "x", Goal: GoalSession, GPU: 0}, "quay.io/jupyter/scipy-notebook:python-3.13"},
+		{&inspect.Facts{Name: "a", Entry: "app.R", WebApp: "shiny", Languages: []string{"r"}}, Request{Namespace: "x", Goal: GoalWeb}, "rocker/shiny:4.4.2"},
+		{&inspect.Facts{Name: "a", WebApp: "static"}, Request{Namespace: "x", Goal: GoalWeb}, "nginxinc/nginx-unprivileged:1.27-alpine"},
+		{&inspect.Facts{Name: "a", WebApp: "node"}, Request{Namespace: "x", Goal: GoalWeb}, "node:22-bookworm-slim"},
+		{&inspect.Facts{Name: "a", Entry: "a.py", Framework: "pytorch"}, Request{Namespace: "x", Goal: GoalJob}, "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime"},
+		{&inspect.Facts{Name: "a", Entry: "a.py", Framework: "tensorflow"}, Request{Namespace: "x", Goal: GoalJob}, "tensorflow/tensorflow:2.18.0-gpu"},
+		{&inspect.Facts{Name: "a", Entry: "a.py", Framework: "jax"}, Request{Namespace: "x", Goal: GoalJob}, "nvcr.io/nvidia/jax:24.10-py3"},
+		{&inspect.Facts{Name: "a", Entry: "a.R", Languages: []string{"r"}}, Request{Namespace: "x", Goal: GoalJob}, "rocker/r-ver:4.4.2"},
+		{&inspect.Facts{Name: "a", Entry: "a.jl", Languages: []string{"julia"}}, Request{Namespace: "x", Goal: GoalJob}, "julia:1.11-bookworm"},
+		{&inspect.Facts{Name: "a", Entry: "a.py"}, Request{Namespace: "x", Goal: GoalJob}, "python:3.12-slim-bookworm"},
+		{nil, Request{Namespace: "x", Goal: GoalPull, DataIsP1: true, DataPVC: "v", URLs: []string{"https://example.com/a.txt"}}, "quay.io/curl/curl:8.23.0"},
+	} {
+		p, err := Build(tc.f, tc.r)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.want, err)
+		}
+		if p.Image != tc.want || strings.HasSuffix(p.Image, ":latest") || !strings.Contains(p.Image, ":") {
+			t.Fatalf("got image %q, want %q", p.Image, tc.want)
+		}
 	}
 }

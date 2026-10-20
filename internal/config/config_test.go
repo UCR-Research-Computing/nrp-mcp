@@ -48,3 +48,19 @@ func TestBadValuesFallBack(t *testing.T) {
 		t.Fatalf("env override: %q", c.Consent)
 	}
 }
+
+func TestGPUSessionHoursConfig(t *testing.T) {
+	c := Load(filepath.Join(t.TempDir(), "missing.yaml"))
+	if c.GPUSessionHours != 6 {
+		t.Fatalf("default gpu_session_hours %d, want 6", c.GPUSessionHours)
+	}
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	_ = os.WriteFile(p, []byte("gpu_session_hours: 10\n"), 0o600)
+	if c = Load(p); c.GPUSessionHours != 10 {
+		t.Fatalf("got %d, want 10", c.GPUSessionHours)
+	}
+	_ = os.WriteFile(p, []byte("gpu_session_hours: 20\n"), 0o600)
+	if c = Load(p); c.GPUSessionHours != 12 {
+		t.Fatalf("capped at 12, got %d", c.GPUSessionHours)
+	}
+}

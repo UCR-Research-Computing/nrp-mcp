@@ -357,7 +357,7 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 		CPU: in.CPU, Memory: in.Memory, Hours: in.Hours, Count: in.Count, Parallel: in.Parallel, Host: in.Host, Port: in.Port,
 		DataPVC: in.DataVolume, Owner: owner, Session: in.Session, LLMSecret: in.LLMSecret, Opportun: in.Opportunist,
 		Size: in.Size, URLs: in.URLs, Subdir: in.Subdir, DataIsP1: in.DataIsP1, PullSecret: in.PullSecret,
-		AvoidNodes: splitNodes(in.AvoidNode), WebDays: s.Cfg.WebDays}
+		AvoidNodes: splitNodes(in.AvoidNode), WebDays: s.Cfg.WebDays, GPUSessionHours: s.Cfg.GPUSessionHours}
 	p, err := plan.Build(facts, req)
 	if err != nil {
 		return nil, nil, err
@@ -529,7 +529,7 @@ func (s *Server) planResults(p *plan.Plan) bool {
 		p.Extra["results_secret"] = results.SecretName(p.Objects[i].Metadata.Name)
 	}
 	p.Extra["results_prefix"] = "runs/" + p.Run + "/"
-	p.Decisions = append(p.Decisions, "Saves results: anything the code writes to results/ (the folder $RESULTS_DIR) is uploaded to your NRP S3 bucket under runs/"+p.Run+"/ when the job ends. Get it with nrp_data action=down run="+p.Run+". The pod never sees your S3 keys: it gets a one-run upload permission that ends at the job's time limit. The uploader's small share (0.1 CPU, 64 MiB) comes out of the job's, so the pod's total stays as planned.")
+	p.Decisions = append(p.Decisions, "Saves results: anything the code writes to results/ (the folder $RESULTS_DIR) is uploaded to your NRP S3 bucket under runs/"+p.Run+"/ when the job ends. Get it with nrp_data action=down run="+p.Run+". The pod never sees your S3 keys: it gets a one-run upload permission that ends at the job's time limit.")
 	return true
 }
 
@@ -930,12 +930,24 @@ func (s *Server) cleanupScope(ctx context.Context, ns string, everyone bool) (op
 
 func (s *Server) sessionTool(ctx context.Context, _ *mcp.CallToolRequest, in sessionIn) (*mcp.CallToolResult, *sessionOut, error) {
 	ns := s.nsCtx(ctx, in.Namespace)
+	type sessionSpec struct {
+		Template struct {
+			Spec struct {
+				Containers []struct {
+					Ports []struct {
+						ContainerPort int `json:"containerPort"`
+					} `json:"ports"`
+				} `json:"containers"`
+			} `json:"spec"`
+		} `json:"template"`
+	}
 	var dl struct {
 		Items []struct {
 			Metadata struct {
 				Name   string            `json:"name"`
 				Labels map[string]string `json:"labels"`
 			} `json:"metadata"`
+			Spec   sessionSpec `json:"spec"`
 			Status struct {
 				ReadyReplicas int `json:"readyReplicas"`
 			} `json:"status"`
@@ -944,11 +956,74 @@ func (s *Server) sessionTool(ctx context.Context, _ *mcp.CallToolRequest, in ses
 	if err := s.Ops.K.JSON(ctx, ns, &dl, "get", "deployment", "-l", "nrp-mcp/run="+in.Run+",nrp-mcp/session=true"); err != nil {
 		return nil, nil, err
 	}
-	if len(dl.Items) == 0 {
-		return nil, nil, fmt.Errorf("no session for run %s in %s (start one with nrp_plan goal=session, then nrp_run)", in.Run, ns)
+	var (
+		name       string
+		labels     map[string]string
+		spec       sessionSpec
+		ready      bool
+		targetKind = "deploy"
+	)
+	if len(dl.Items) > 0 {
+		d := dl.Items[0]
+		name, labels, spec, ready = d.Metadata.Name, d.Metadata.Labels, d.Spec, d.Status.ReadyReplicas > 0
+		if len(spec.Template.Spec.Containers) == 0 {
+			var dep struct {
+				Spec sessionSpec `json:"spec"`
+			}
+			if s.Ops.K.JSON(ctx, ns, &dep, "get", "deployment", name) == nil {
+				spec = dep.Spec
+			}
+		}
+	} else {
+		var jl struct {
+			Items []struct {
+				Metadata struct {
+					Name   string            `json:"name"`
+					Labels map[string]string `json:"labels"`
+				} `json:"metadata"`
+				Spec   sessionSpec `json:"spec"`
+				Status struct {
+					Active int `json:"active"`
+				} `json:"status"`
+			} `json:"items"`
+		}
+		if err := s.Ops.K.JSON(ctx, ns, &jl, "get", "job", "-l", "nrp-mcp/run="+in.Run+",nrp-mcp/session=true"); err != nil {
+			return nil, nil, err
+		}
+		if len(jl.Items) == 0 {
+			return nil, nil, fmt.Errorf("no session for run %s in %s (start one with nrp_plan goal=session, then nrp_run)", in.Run, ns)
+		}
+		j := jl.Items[0]
+		name, labels, spec, targetKind = j.Metadata.Name, j.Metadata.Labels, j.Spec, "svc"
+		var pl struct {
+			Items []struct {
+				Status struct {
+					Phase             string `json:"phase"`
+					ContainerStatuses []struct {
+						Ready bool `json:"ready"`
+					} `json:"containerStatuses"`
+				} `json:"status"`
+			} `json:"items"`
+		}
+		if err := s.Ops.K.JSON(ctx, ns, &pl, "get", "pods", "-l", "nrp-mcp/run="+in.Run); err == nil {
+			for _, p := range pl.Items {
+				if p.Status.Phase != "Running" {
+					continue
+				}
+				allReady := len(p.Status.ContainerStatuses) > 0
+				for _, cs := range p.Status.ContainerStatuses {
+					if !cs.Ready {
+						allReady = false
+					}
+				}
+				if allReady || len(p.Status.ContainerStatuses) == 0 {
+					ready = true
+					break
+				}
+			}
+		}
 	}
-	d := dl.Items[0]
-	if who := d.Metadata.Labels[plan.OwnerLabel]; who != "" {
+	if who := labels[plan.OwnerLabel]; who != "" {
 		w, err := s.Ops.K.WhoAmI(ctx)
 		if err != nil {
 			return nil, nil, fmt.Errorf("could not confirm who you are, so the session sign-in was not shown (nothing changed); try again: %w", err)
@@ -961,35 +1036,22 @@ func (s *Server) sessionTool(ctx context.Context, _ *mcp.CallToolRequest, in ses
 		Data map[string]string `json:"data"`
 	}
 	tok := ""
-	if err := s.Ops.K.JSON(ctx, ns, &sec, "get", "secret", d.Metadata.Name+"-session"); err == nil {
+	if err := s.Ops.K.JSON(ctx, ns, &sec, "get", "secret", name+"-session"); err == nil {
 		tok = decodeB64(sec.Data["token"])
 	}
 	port := 8888
 	path := "/lab?token=" + tok
-	if strings.Contains(d.Metadata.Name, "vscode") {
+	if strings.Contains(name, "vscode") {
 		port, path = 8080, "/"
 	}
-	var dep struct {
-		Spec struct {
-			Template struct {
-				Spec struct {
-					Containers []struct {
-						Ports []struct {
-							ContainerPort int `json:"containerPort"`
-						} `json:"ports"`
-					} `json:"containers"`
-				} `json:"spec"`
-			} `json:"template"`
-		} `json:"spec"`
-	}
-	if s.Ops.K.JSON(ctx, ns, &dep, "get", "deployment", d.Metadata.Name) == nil && len(dep.Spec.Template.Spec.Containers) > 0 && len(dep.Spec.Template.Spec.Containers[0].Ports) > 0 {
-		port = dep.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort
+	if len(spec.Template.Spec.Containers) > 0 && len(spec.Template.Spec.Containers[0].Ports) > 0 {
+		port = spec.Template.Spec.Containers[0].Ports[0].ContainerPort
 		if port == 8080 {
 			path = "/"
 		}
 	}
-	out := &sessionOut{Ready: d.Status.ReadyReplicas > 0, Token: tok}
-	out.Command = fmt.Sprintf("kubectl --context %s -n %s port-forward deploy/%s %d:%d", s.Cfg.Context, ns, d.Metadata.Name, port, port)
+	out := &sessionOut{Ready: ready, Token: tok}
+	out.Command = fmt.Sprintf("kubectl --context %s -n %s port-forward %s/%s %d:%d", s.Cfg.Context, ns, targetKind, name, port, port)
 	out.URL = fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
 	if out.Ready {
 		out.Summary = "Ready. Run the command in a terminal (leave it open), then open the URL. VS Code asks for the token as its password."
@@ -1287,7 +1349,7 @@ func containsStr(xs []string, x string) bool {
 // suggestDockerfile writes a starting Dockerfile from what the project uses.
 func suggestDockerfile(f *inspect.Facts) string {
 	p, err := plan.Build(f, plan.Request{Namespace: "x", Command: "true"})
-	base := "python:3.12-slim"
+	base := "python:3.12-slim-bookworm"
 	if err == nil && p.Image != "" && !p.NeedsBuild {
 		base = p.Image
 	}

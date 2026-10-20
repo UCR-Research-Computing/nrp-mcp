@@ -28,6 +28,8 @@ type Config struct {
 	Consent string
 	// WebDays is how long a public web app stays up before nrp_status calls it expired.
 	WebDays int
+	// GPUSessionHours is the default time limit for a GPU session (a Job; default 6, max 12).
+	GPUSessionHours int
 	// S3 results storage (all optional; see SPEC section 5.4).
 	S3Endpoint   string // outside endpoint, default https://s3-west.nrp-nautilus.io
 	S3Internal   string // inside endpoint pods use, default http://rook-ceph-rgw-nautiluss3.rook
@@ -48,7 +50,7 @@ func DefaultPath() string {
 // Load reads the file (missing is fine) then applies env overrides.
 func Load(path string) Config {
 	c := Config{Context: "nautilus", Kubectl: "kubectl", PodsPerRun: 50, GPUsPerRun: 4, HoursPerRun: 48, TasksPerRun: 10000, UploadGB: 50, Path: path,
-		Consent: "ask", WebDays: 14, S3Endpoint: "https://s3-west.nrp-nautilus.io", S3Internal: "http://rook-ceph-rgw-nautiluss3.rook"}
+		Consent: "ask", WebDays: 14, GPUSessionHours: 6, S3Endpoint: "https://s3-west.nrp-nautilus.io", S3Internal: "http://rook-ceph-rgw-nautiluss3.rook"}
 	c.S3KeysFile = filepath.Join(filepath.Dir(path), "s3.env") // missing file = results not set up
 	if f, err := os.Open(path); err == nil {
 		defer f.Close()
@@ -87,6 +89,8 @@ func Load(path string) Config {
 				c.Consent = strings.ToLower(v)
 			case "web_days":
 				c.WebDays = n
+			case "gpu_session_hours":
+				c.GPUSessionHours = n
 			case "s3_endpoint":
 				c.S3Endpoint = v
 			case "s3_internal_endpoint":
@@ -121,6 +125,12 @@ func Load(path string) Config {
 	if c.WebDays <= 0 || c.WebDays > 14 {
 		c.WebDays = 14
 	}
+	if c.GPUSessionHours <= 0 {
+		c.GPUSessionHours = 6
+	}
+	if c.GPUSessionHours > 12 {
+		c.GPUSessionHours = 12
+	}
 	return c
 }
 
@@ -150,6 +160,7 @@ upload_gb_per_run: 50
 #   token = no human check (0.8 behavior); only for scripts and CI
 consent: ask
 web_days: 14                  # public web apps expire after this many days (max 14)
+gpu_session_hours: 6          # GPU sessions run as Jobs and stop after this many hours (max 12)
 # results storage (NRP S3). Keys: https://nrp.ai/s3token/ -> put them in s3_keys_file
 # s3_endpoint: https://s3-west.nrp-nautilus.io
 # s3_bucket: nrp-results-<your id>

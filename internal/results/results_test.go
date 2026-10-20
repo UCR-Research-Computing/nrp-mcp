@@ -89,21 +89,28 @@ func TestDownloadRefusesEscape(t *testing.T) {
 }
 
 func TestAttachUploader(t *testing.T) {
-	ps := &k8s.PodSpec{Containers: []k8s.Container{{Name: "main", Command: []string{"bash", "-c", "set -e; cd /work; python run.py"}}}}
+	// Default Python/curl images upload from the main container's shell at exit, with no sidecar image pull.
+	ps := &k8s.PodSpec{Containers: []k8s.Container{{Name: "main", Image: "python:3.12-slim-bookworm", Command: []string{"bash", "-c", "set -e; cd /work; python run.py"}}}}
 	AttachUploader(ps, "job-results")
-	if len(ps.InitContainers) != 1 || ps.InitContainers[0].RestartPolicy != "Always" || ps.InitContainers[0].Image != UploaderImage {
-		t.Fatalf("sidecar %+v", ps.InitContainers)
+	if len(ps.InitContainers) != 0 {
+		t.Fatalf("inline upload must not add a sidecar initContainer: %+v", ps.InitContainers)
 	}
-	if !strings.HasPrefix(ps.Containers[0].Command[2], "mkdir -p /work/results; ") {
+	if !strings.Contains(ps.Containers[0].Command[2], "trap _nrp_up EXIT") || !strings.Contains(ps.Containers[0].Command[2], "mkdir -p /work/results; ") {
 		t.Fatalf("main command %q", ps.Containers[0].Command[2])
 	}
 	if ps.TerminationGracePeriodSeconds == nil || *ps.TerminationGracePeriodSeconds != 300 {
 		t.Fatal("grace period")
 	}
-	for _, e := range ps.InitContainers[0].Env {
+	for _, e := range ps.Containers[0].Env {
 		if e.Value != "" && strings.Contains(e.Value, "SK") {
 			t.Fatal("secret in env literal")
 		}
+	}
+	// Unknown custom images fall back to the native sidecar.
+	ps2 := &k8s.PodSpec{Containers: []k8s.Container{{Name: "main", Image: "custom/tool:1.0", Command: []string{"bash", "-c", "set -e; cd /work; ./tool"}}}}
+	AttachUploader(ps2, "job-results")
+	if len(ps2.InitContainers) != 1 || ps2.InitContainers[0].RestartPolicy != "Always" || ps2.InitContainers[0].Image != UploaderImage {
+		t.Fatalf("sidecar fallback %+v", ps2.InitContainers)
 	}
 }
 
@@ -185,5 +192,70 @@ func TestUploaderScriptHandlesOddNamesAndFailures(t *testing.T) {
 	out, err = run()
 	if err == nil || !strings.Contains(out, "FAILED") {
 		t.Fatalf("a refused upload must be reported and exit non-zero: err=%v out=%s", err, out)
+	}
+}
+
+func TestExitUploadBodyCurlAndPython(t *testing.T) {
+	var mu sync.Mutex
+	got := map[string]string{}
+	fail := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			w.WriteHeader(400)
+			return
+		}
+		f, _, err := r.FormFile("file")
+		if err != nil {
+			w.WriteHeader(400)
+			return
+		}
+		b, _ := io.ReadAll(f)
+		mu.Lock()
+		defer mu.Unlock()
+		if fail {
+			w.WriteHeader(403)
+			return
+		}
+		got[r.FormValue("key")] = string(b)
+		w.WriteHeader(204)
+	}))
+	defer srv.Close()
+
+	runExit := func(pyOnly bool) (string, error) {
+		work := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(work, "results", "sub dir"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		_ = os.WriteFile(filepath.Join(work, "results", "data;filter=1,x.csv"), []byte("a,b\n"), 0o644)
+		_ = os.WriteFile(filepath.Join(work, "results", "sub dir", "plot.png"), []byte("png"), 0o644)
+		body := strings.ReplaceAll(exitUploadBody, "/work", work)
+		if pyOnly {
+			body = strings.Replace(body, "if command -v curl >/dev/null 2>&1; then", "if false; then", 1)
+		}
+		cmd := exec.Command("bash", "-c", body+"echo job-done")
+		env := []string{}
+		for _, kv := range os.Environ() {
+			if !strings.HasPrefix(kv, "PYTHONPATH=") {
+				env = append(env, kv)
+			}
+		}
+		cmd.Env = append(env, "S3_URL="+srv.URL, "S3_PREFIX=runs/r1/", "S3_POLICY=p", "S3_ALG=a", "S3_CRED=c;x", "S3_DATE=d", "S3_SIG=s")
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	for _, pyOnly := range []bool{false, true} {
+		if pyOnly {
+			if _, err := exec.LookPath("python3"); err != nil {
+				continue
+			}
+		}
+		mu.Lock()
+		got = map[string]string{}
+		fail = false
+		mu.Unlock()
+		out, err := runExit(pyOnly)
+		if err != nil || got["runs/r1/data;filter=1,x.csv"] != "a,b\n" || got["runs/r1/sub dir/plot.png"] != "png" {
+			t.Fatalf("pyOnly=%v failed: err=%v got=%v out=%s", pyOnly, err, got, out)
+		}
 	}
 }

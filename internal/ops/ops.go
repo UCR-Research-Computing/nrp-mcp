@@ -623,11 +623,11 @@ func CodeConfigMap(pk *inspect.Pack, name, ns string, labels map[string]string) 
 	return &k8s.Object{APIVersion: "v1", Kind: "ConfigMap", Metadata: k8s.Meta{Name: name, Namespace: ns, Labels: labels}, Data: data}
 }
 
-// unpackScript is the init container script that rebuilds the project tree in /work.
-const unpackScript = `set -e; cd /code; for f in *; do d="/work/$(echo "$f" | sed 's/__SLASH__/\//g')"; mkdir -p "$(dirname "$d")"; cp "$f" "$d"; done; ls -R /work | head -50`
+// unpackScript is the shell snippet that rebuilds the project tree from /code into /work.
+const unpackScript = `(cd /code && for f in *; do [ -e "$f" ] || continue; d="/work/$(echo "$f" | sed 's/__SLASH__/\//g')"; mkdir -p "$(dirname "$d")"; cp "$f" "$d"; done); `
 
-// AttachCode adds the ConfigMap volume and an init container that unpacks it into the
-// existing /work volume of every pod spec in objs.
+// AttachCode mounts the ConfigMap read-only at /code and unpacks it into /work at the
+// start of the main container's command, so no extra helper image (busybox) is pulled.
 func AttachCode(objs []k8s.Object, cmName string) {
 	for i := range objs {
 		ps := objs[i].PodSpecOf()
@@ -644,10 +644,13 @@ func AttachCode(objs []k8s.Object, cmName string) {
 			continue
 		}
 		ps.Volumes = append(ps.Volumes, k8s.Volume{Name: "code-src", ConfigMap: &k8s.ConfigMapSource{Name: cmName}})
-		ps.InitContainers = append(ps.InitContainers, k8s.Container{Name: "unpack-code", Image: "busybox:1.36",
-			Command:      []string{"sh", "-c", unpackScript},
-			Resources:    k8s.Resources{Requests: map[string]string{"cpu": "100m", "memory": "64Mi"}, Limits: map[string]string{"cpu": "100m", "memory": "64Mi"}},
-			VolumeMounts: []k8s.Mount{{Name: "code-src", MountPath: "/code", ReadOnly: true}, {Name: "code", MountPath: "/work"}}})
+		for j := range ps.Containers {
+			c := &ps.Containers[j]
+			c.VolumeMounts = append(c.VolumeMounts, k8s.Mount{Name: "code-src", MountPath: "/code", ReadOnly: true})
+			if len(c.Command) == 3 && (c.Command[0] == "bash" || c.Command[0] == "sh") && c.Command[1] == "-c" {
+				c.Command[2] = unpackScript + c.Command[2]
+			}
+		}
 	}
 }
 

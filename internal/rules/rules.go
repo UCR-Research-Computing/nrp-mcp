@@ -44,7 +44,7 @@ type Context struct {
 	TasksPerRun int
 	// SweepCount is the number of tasks for an Indexed Job plan (0 if none).
 	SweepCount int
-	// Session is true for nrp_session plans (an interactive Deployment that may hold a GPU).
+	// Session is true for nrp_session plans.
 	Session bool
 	// QuotaUnknown is true when the namespace quota could not be read: special GPUs are
 	// then refused (R6Q) instead of assumed free.
@@ -183,10 +183,10 @@ func Check(objs []k8s.Object, c Context) []Finding {
 				Message: fmt.Sprintf("%d GPUs in one pod; the NRP allows up to %d here.", podGPU, maxGPU),
 				Fix:     "Split the work across pods (an Indexed Job), or request fewer GPUs."})
 		}
-		if o.DeploymentSpec != nil && podGPU > 0 && !c.Session {
+		if o.DeploymentSpec != nil && podGPU > 0 {
 			add(Finding{ID: "R8", Severity: Refuse, Object: ref, Source: srcLongIdle,
-				Message: "Long-running Deployments (web tools, idle services) cannot request GPUs on Nautilus.",
-				Fix:     "Remove the GPU, or run the GPU part as a Job."})
+				Message: "Deployments cannot request GPUs on Nautilus (long-running GPU pods sit idle and get the namespace flagged).",
+				Fix:     "Remove the GPU, or run GPU work as a Job with activeDeadlineSeconds (goal=session with gpu>0 uses a Job)."})
 		}
 		if o.DeploymentSpec != nil {
 			add(Finding{ID: "R17", Severity: Warn, Object: ref, Source: srcLongIdle,
