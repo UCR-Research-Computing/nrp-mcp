@@ -502,7 +502,7 @@ func (s *Server) resultsForm(ctx context.Context, p *plan.Plan) (*results.PostFo
 // plainly where output goes (or that it will be lost).
 func (s *Server) planResults(p *plan.Plan) {
 	if _, err := results.LoadKeys(s.Cfg.S3KeysFile); err != nil {
-		p.Decisions = append(p.Decisions, "Results are NOT saved: files the job writes disappear when it ends. To keep them, the person runs `nrp-mcp s3 setup` once (NRP S3 keys from https://nrp.ai/s3), then you plan again. ("+err.Error()+")")
+		p.Decisions = append(p.Decisions, "Results are NOT saved: files the job writes disappear when it ends. To keep them, the person runs `nrp-mcp s3 setup` once (NRP S3 keys from https://nrp.ai/s3token/), then you plan again. ("+err.Error()+")")
 		return
 	}
 	for i := range p.Objects {

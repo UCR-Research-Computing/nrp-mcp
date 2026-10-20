@@ -40,7 +40,7 @@ Usage:
   nrp-mcp doctor     check kubectl, the NRP config and sign-in, and print your namespaces
   nrp-mcp init       write an example ~/.config/nrp-mcp/config.yaml (never overwrites)
   nrp-mcp approve    show the newest approval code (for when no notification appeared)
-  nrp-mcp s3 setup   save your NRP S3 keys (from https://nrp.ai/s3) so job results are kept
+  nrp-mcp s3 setup   save your NRP S3 keys (from https://nrp.ai/s3token/) so job results are kept
   nrp-mcp version
 
 Flags (serve, doctor, setup): --config PATH  --kubeconfig PATH  --context NAME  --namespace NS
@@ -191,7 +191,7 @@ func runDoctor(cfg config.Config) int {
 // runS3Setup asks for the NRP S3 keys without echoing the secret and saves them 0600.
 func runS3Setup(cfg config.Config) int {
 	fmt.Println("nrp-mcp keeps job results in your own NRP S3 bucket.")
-	fmt.Println("1. Open https://nrp.ai/s3 , sign in, and create an access key (it is free).")
+	fmt.Println("1. Open https://nrp.ai/s3token/ , sign in, and create an access key (it is free).")
 	fmt.Println("2. Paste the two values here. The secret is not shown while you type.")
 	fmt.Println("   They are saved only on this computer, in", cfg.S3KeysFile, "(readable only by you).")
 	fmt.Print("\nAccess key: ")

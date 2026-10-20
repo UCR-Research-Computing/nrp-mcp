@@ -16,7 +16,7 @@ import (
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/k8s"
 )
 
-// Keys are the person's NRP S3 keys (from https://nrp.ai/s3), kept on this computer.
+// Keys are the person's NRP S3 keys (from https://nrp.ai/s3token/), kept on this computer.
 type Keys struct{ Access, Secret string }
 
 // LoadKeys reads KEY=VALUE lines (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) from path.
@@ -24,7 +24,7 @@ type Keys struct{ Access, Secret string }
 func LoadKeys(path string) (*Keys, error) {
 	st, err := os.Stat(path)
 	if err != nil {
-		return nil, fmt.Errorf("no S3 keys at %s: run `nrp-mcp s3 setup` in a terminal (keys come from https://nrp.ai/s3)", path)
+		return nil, fmt.Errorf("no S3 keys at %s: run `nrp-mcp s3 setup` in a terminal (keys come from https://nrp.ai/s3token/)", path)
 	}
 	if st.Mode().Perm()&0o077 != 0 {
 		return nil, fmt.Errorf("%s can be read by other users; run: chmod 600 %s", path, path)
@@ -60,7 +60,7 @@ func SaveKeys(path string, k Keys) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	body := "# NRP S3 keys for nrp-mcp results (from https://nrp.ai/s3). Never share this file.\nAWS_ACCESS_KEY_ID=" + k.Access + "\nAWS_SECRET_ACCESS_KEY=" + k.Secret + "\n"
+	body := "# NRP S3 keys for nrp-mcp results (from https://nrp.ai/s3token/). Never share this file.\nAWS_ACCESS_KEY_ID=" + k.Access + "\nAWS_SECRET_ACCESS_KEY=" + k.Secret + "\n"
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
 		return err
@@ -119,7 +119,7 @@ func (c *Client) EnsureBucket(ctx context.Context) error {
 	case 200:
 		return nil
 	case 403:
-		return fmt.Errorf("NRP S3 refused your keys for bucket %s (403): check the keys from https://nrp.ai/s3, or pick another s3_bucket in the nrp-mcp config", c.Bucket)
+		return fmt.Errorf("NRP S3 refused your keys for bucket %s (403): check the keys from https://nrp.ai/s3token/, or pick another s3_bucket in the nrp-mcp config", c.Bucket)
 	case 404:
 	default:
 		return fmt.Errorf("NRP S3 answered %d for bucket %s", resp.StatusCode, c.Bucket)

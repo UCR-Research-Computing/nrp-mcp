@@ -150,7 +150,7 @@ upload_gb_per_run: 50
 #   token = no human check (0.8 behavior); only for scripts and CI
 consent: ask
 web_days: 14                  # public web apps expire after this many days (max 14)
-# results storage (NRP S3). Keys: https://nrp.ai/s3 -> put them in s3_keys_file
+# results storage (NRP S3). Keys: https://nrp.ai/s3token/ -> put them in s3_keys_file
 # s3_endpoint: https://s3-west.nrp-nautilus.io
 # s3_bucket: nrp-results-<your id>
 # s3_keys_file: ~/.config/nrp-mcp/s3.env
