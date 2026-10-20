@@ -17,6 +17,8 @@ minor versions may change behavior.
 - `nrp_watch` field `logs` is renamed `untrusted_logs` and comes with `untrusted_note`.
 - New config `consent: ask|code|token` (default ask). `token` restores 0.8 behavior for
   scripts and CI, with a warning in each result.
+- Jobs and sweeps without results storage are refused (R23) until the person says
+  "yes, discard results" (`nrp_plan discard_results=true`).
 
 ### Added
 
@@ -43,6 +45,12 @@ minor versions may change behavior.
 - In a shared namespace, `nrp_watch`, `nrp_session` and `nrp_data up` refuse other
   people's runs and volumes; `nrp_data down` never overwrites.
 - Pods no longer mount the namespace's API token.
+- An approval answer counts only for a question nrp-mcp actually asked (request state).
+- Tool results no longer name the file that holds the approval code.
+- `nrp_session` refuses to show a sign-in when it cannot confirm who you are.
+- The results uploader's share (0.1 CPU, 64 MiB) comes out of the main container, so a
+  1 CPU / 2 GiB job stays inside NRP's usage-check exemption; uploads work with any file
+  name and failed uploads are reported.
 - `scripts/gauntlet.sh` runs the tests with the race detector, as CI does.
 - Suggested web host names never start with `nrp-` or `nautilus-` (R21 would refuse them).
 - S3 key instructions point to https://nrp.ai/s3token/ (found in the live test).

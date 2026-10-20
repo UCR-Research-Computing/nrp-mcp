@@ -51,7 +51,7 @@ func main() {
 		return m
 	}
 
-	p := call("nrp_plan", map[string]any{"project": *dir, "name": "array-check"})
+	p := call("nrp_plan", map[string]any{"project": *dir, "name": "array-check", "discard_results": true})
 	fmt.Println("PLAN:", p["summary"])
 	for _, m := range p["slurm_mapping"].([]any) {
 		mm := m.(map[string]any)

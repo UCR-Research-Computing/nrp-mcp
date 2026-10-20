@@ -191,7 +191,8 @@ with anyone, and never paste one you did not ask for.
 Run `nrp-mcp s3 setup` once in your own terminal (it asks for your keys from
 https://nrp.ai/s3token/). Then anything your job writes to `results/` is saved to your own NRP
 S3 bucket when the job ends. Ask for it back with `nrp_data action=down run=<id>`; it lands
-in `<project>/results/<run>/`.
+in `<project>/results/<run>/`. Without this setup, nrp-mcp will not start a job until you
+say "yes, discard results".
 
 ## Configuration
 

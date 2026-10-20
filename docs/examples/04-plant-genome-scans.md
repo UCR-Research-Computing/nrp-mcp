@@ -45,7 +45,7 @@ Next, the per-chromosome stage: [nrp_plan goal=sweep project=~/proj/avo-scan/ass
 
 **Researcher:** Delete the runs. I'll copy the VCFs to lab storage and then drop the volume.
 
-**Assistant:** [nrp_cleanup plan_id=... confirm_token=...] Deleted. When the copy is done, ask me to clean up the volume's run as well.
+**Assistant:** [nrp_cleanup plan_id=...] You approve the deletion (a question in your AI app, or the code nrp-mcp shows you). Deleted. When the copy is done, ask me to clean up the volume's run as well.
 
 ## What nrp builds
 

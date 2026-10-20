@@ -27,7 +27,7 @@ The ECPP lives in the Department of History in the College of Humanities, Arts, 
 
 **Researcher:** Yes. And the records are P1.
 
-**Assistant:** [nrp_run plan_id=... confirm_token=...] Volume `ecpp-batches` created. The batches folder is 85 MB of JSONL, under the 100 MB limit for `nrp_data up`. [nrp_data up local=batches/ volume=ecpp-batches path=/batches data_is_p1=true] Done. Now the extraction. [nrp_plan goal=llm-batch data_volume=ecpp-batches command="python extract.py --model qwen3 --concurrency 12 --limit 500" cpu=2 memory=4Gi hours=36] Plan summary: "A Job, no GPU, 2 CPU and 4 GiB, mounts ecpp-batches at /data, stops after 36 h. LLM token comes from the Secret nrp-llm-token (key token), never the spec; base URL https://ellm.nrp-nautilus.io/v1. Retry with backoff in your script (fair use: 200K output tokens/min per token and model)." Note: an llm-batch is one Job, not an indexed sweep. That suits this work: the real limit is the endpoint's per-user concurrency (16 requests for qwen3), not pods. Your script runs 12 requests at once and skips batches that already have output, so a restart resumes. This plan is the 500-record pilot.
+**Assistant:** [nrp_run plan_id=... confirm_token=...] Volume `ecpp-batches` created (a CPU-only step, so a confirm token is enough). The batches folder is 85 MB of JSONL, under the 100 MB limit for `nrp_data up`. [nrp_data up local=batches/ volume=ecpp-batches path=/batches data_is_p1=true] Done. Now the extraction. [nrp_plan goal=llm-batch data_volume=ecpp-batches command="python extract.py --model qwen3 --concurrency 12 --limit 500" cpu=2 memory=4Gi hours=36] Plan summary: "A Job, no GPU, 2 CPU and 4 GiB, mounts ecpp-batches at /data, stops after 36 h. LLM token comes from the Secret nrp-llm-token (key token), never the spec; base URL https://ellm.nrp-nautilus.io/v1. Retry with backoff in your script (fair use: 200K output tokens/min per token and model)." Note: an llm-batch is one Job, not an indexed sweep. That suits this work: the real limit is the endpoint's per-user concurrency (16 requests for qwen3), not pods. Your script runs 12 requests at once and skips batches that already have output, so a restart resumes. This plan is the 500-record pilot.
 
 **Researcher:** Yes, pilot first.
 
@@ -43,7 +43,7 @@ The ECPP lives in the Department of History in the College of Humanities, Arts, 
 
 **Researcher:** RC approved it for the spring seminar. https://mission-records-explorer.nrp-nautilus.io
 
-**Assistant:** [nrp_run plan_id=... confirm_token=... public_ack=https://mission-records-explorer.nrp-nautilus.io] Live. [nrp_watch target=mission-records-explorer] HTTPS returns 200. It will be removed after 2 weeks; for the full term, ask NRP for an exception or plan permanent hosting on CHASS servers. When the seminar ends: [nrp_cleanup] lists your runs; deleting needs a second yes.
+**Assistant:** [nrp_run plan_id=...] nrp-mcp asks you to approve publishing https://mission-records-explorer.nrp-nautilus.io (a question in your AI app, or a code it shows you that you type here). **Researcher:** ABC-234. [nrp_run plan_id=... approval_code=...] Live. [nrp_watch target=mission-records-explorer] HTTPS returns 200. It will be removed after 2 weeks; for the full term, ask NRP for an exception or plan permanent hosting on CHASS servers. When the seminar ends: [nrp_cleanup] lists your runs; deleting needs a second yes.
 
 ## What nrp builds
 

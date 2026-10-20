@@ -50,7 +50,7 @@ None of these groups use nrp-mcp today; this is an illustration.
 
 **Researcher:** Clean up the jobs but keep the volume.
 
-**Assistant:** [nrp_cleanup] Step 1 lists your runs: the pilot, the full sweep, the MRIQC sweep and the volume run. I will remove only the three job runs. [nrp_cleanup run=<sweep-run>] (and the same for the other two) Each step 1 lists the Job and its ConfigMap. Confirm? **Researcher:** Yes. [nrp_cleanup plan_id=... confirm_token=...] Deleted; the ds201 volume is untouched.
+**Assistant:** [nrp_cleanup] Step 1 lists your runs: the pilot, the full sweep, the MRIQC sweep and the volume run. I will remove only the three job runs. [nrp_cleanup run=<sweep-run>] (and the same for the other two) Each step 1 lists the Job and its ConfigMap. Confirm? **Researcher:** Yes. [nrp_cleanup plan_id=...] You approve each deletion (a question in your AI app, or the code nrp-mcp shows you). Deleted; the ds201 volume is untouched.
 
 ## What nrp builds
 

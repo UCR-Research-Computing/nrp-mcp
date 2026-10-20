@@ -23,11 +23,15 @@ We aim to acknowledge reports within three working days.
   approval: a question from your AI app, or a one-time code that only you see (desktop
   notification, `nrp-mcp approve`). Other changes need a single-use confirm token bound to
   the exact plan (10 minutes). Known limit: an AI assistant that can run shell commands on
-  your computer could read the code file (`~/.local/state/nrp-mcp/approve.txt`). Codes stop
+  your computer could read the code file (`~/.local/state/nrp-mcp/approve.txt`); nrp-mcp
+  never tells the assistant where it is. Codes stop
   an assistant that only has nrp-mcp's tools, and prompt injection through job output;
   they do not protect a compromised computer.
 - S3 keys for saving results stay on your computer (`~/.config/nrp-mcp/s3.env`, 0600).
-  Pods get only a signed upload permission for one run's folder.
+  Pods get only a signed upload permission for one run's folder. That permission sits in a
+  Secret in your namespace until the job's time limit plus an hour; in a shared namespace
+  others with access could add files to that run's folder. Use your own namespace when
+  that matters.
 - `nrp_setup` downloads only from dl.k8s.io and the kubelogin GitHub releases, verifies the
   published SHA256 before installing, installs into your user folder, and keeps any old copy.
 - Every change is written to a local audit log (`~/.local/state/nrp-mcp/audit.log`).

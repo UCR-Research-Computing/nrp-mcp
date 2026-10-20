@@ -41,6 +41,7 @@ Source: https://nrp.ai/documentation/userdocs/start/policies/ unless noted.
   person's own yes (a question from the AI app, or a one-time code shown only to them).
 - nrp-mcp results: files a job writes to results/ go to the person's own NRP S3 bucket
   (set up once with nrp-mcp s3 setup); get them with nrp_data action=down run=<id>.
+  Without it, a job runs only after the person says "yes, discard results".
 - nrp-mcp public web apps expire after 14 days by default (before NRP's 2-week removal).
 `
 

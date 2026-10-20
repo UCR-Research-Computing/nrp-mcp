@@ -59,7 +59,7 @@ total = sum(i*i for i in range(2_000_000))
 print("hello from", platform.node(), "run", os.environ.get("NRP_RUN"), "sum", total)
 `), 0o644)
 
-	p := call("nrp_plan", map[string]any{"project": dir, "cpu": "1", "memory": "1Gi", "hours": 1, "name": "e2e-hello"})
+	p := call("nrp_plan", map[string]any{"project": dir, "cpu": "1", "memory": "1Gi", "hours": 1, "name": "e2e-hello", "discard_results": true})
 	fmt.Println("PLAN:", p["summary"])
 	fmt.Println("  runnable:", p["runnable"], " image:", p["image"])
 	for _, d := range p["decisions"].([]any) {
@@ -104,7 +104,7 @@ print("hello from", platform.node(), "run", os.environ.get("NRP_RUN"), "sum", to
 	sd, _ := os.MkdirTemp("", "nrp-e2e-sweep-")
 	defer os.RemoveAll(sd)
 	_ = os.WriteFile(filepath.Join(sd, "task.py"), []byte("import os\ni=int(os.environ['JOB_COMPLETION_INDEX'])\nprint('task', i, 'alpha', [0.1,0.5,0.9][i])\n"), 0o644)
-	swp := call("nrp_plan", map[string]any{"project": sd, "goal": "sweep", "count": 3, "parallel": 3, "cpu": "1", "memory": "1Gi", "hours": 1, "name": "e2e-sweep"})
+	swp := call("nrp_plan", map[string]any{"project": sd, "goal": "sweep", "count": 3, "parallel": 3, "cpu": "1", "memory": "1Gi", "hours": 1, "name": "e2e-sweep", "discard_results": true})
 	fmt.Println("SWEEP PLAN:", swp["summary"], "runnable:", swp["runnable"])
 	if swp["runnable"] != true {
 		fail("sweep not runnable: %v", swp["refusals"])

@@ -22,7 +22,7 @@ than Kubernetes objects.
 | D2 | Local only: stdio MCP on the user's machine; their kubeconfig; acts as them through the kubelogin exec plugin. Never reads, prints or sends the token | design |
 | D3 | Plan, approve, run. Risky steps (public web, GPUs, deleting, uploading, installing) need the person's own approval: an MCP elicitation question, or a single-use 6-character approval code shown only to the person (10 minutes, bound to the plan hash). Other runs take a single-use confirm token. consent: token keeps the 0.8 token-only flow for scripts | Chuck 2026-10-18; review 2026-10-15 |
 | D4 | Builds run outside the namespace and nrp-mcp never holds registry credentials. Default (2026-10-07, Chuck: most researchers already keep code on GitHub): a GitHub Actions workflow builds into ghcr.io with the built-in GITHUB_TOKEN. Alternative: NRP GitLab CI with kaniko (2026-10-06). `nrp_build` suggests the Dockerfile and workflow; `nrp_plan image=` runs a built image as is (`prebuilt`: its own CMD, no code copy), with `pull_secret=` for private images | design, revised 2026-10-07; live-tested |
-| D5 | Web hosting in v1 as a goal of `nrp_plan`; publishing also needs `public_ack` equal to the exact public URL | RC 2026-10-06 |
+| D5 | Web hosting in v1 as a goal of `nrp_plan`; publishing needs the person's own approval (D3); `public_ack` equal to the exact public URL only with consent token | RC 2026-10-06; revised 2026-10-20 |
 | D6 | The tool suggests names (2-3, checked unused, default first) from the app or project; no person or lab names unless the user asks | RC 2026-10-06 |
 | D7 | Go, one static binary, `kubectl` (with `kubectl-oidc_login`) as the cluster client | design |
 | D8 | NRP rules are code with a test per rule, and are also served as an MCP resource | design |
@@ -144,13 +144,17 @@ asks for a GPU, `nrp_cleanup` step 2, `nrp_data up`, and `nrp_setup fix=true`. C
 
 - Question (`ask`, when the AI app supports MCP elicitation): nrp-mcp asks the person
   directly with one boolean field, `approve`. Accept + true runs; decline or cancel refuses.
+  An answer counts only when it carries the request state nrp-mcp issued with that question
+  (random, single use, 10 minutes, bound to plan id + plan hash + action), so a client
+  cannot answer a question that was never asked.
 - Code (`code`, or `ask` with an app that cannot ask): the first `nrp_run` returns
   `waiting_for_approval` and nothing starts. nrp-mcp shows a 6-character code (for example
   ABC-234) only to the person: desktop notification, stderr, `nrp-mcp approve`, and
   `~/.local/state/nrp-mcp/approve.txt`. The person types it into the chat and the
   assistant calls again with `approval_code`. Codes use an alphabet without look-alikes
   (no 0/O, 1/I/L), are stored as sha256, single use, valid 10 minutes, and bound to the
-  plan id + plan hash + action. The assistant never receives a code from nrp-mcp.
+  plan id + plan hash + action. The assistant never receives a code from nrp-mcp, and tool
+  results do not name the file the code is in.
 - Token (`token`): the 0.8 flow for scripts and CI; every result carries a warning.
 
 Low-risk runs (CPU job, sweep, pull, volume, CPU session) keep the confirm token: 24
@@ -170,8 +174,13 @@ on mismatch, expiry or reuse.
   per file, expiring at the job deadline + 1 h, and stores the form fields in a run-time
   Secret `<job>-results`.
 - A native sidecar (initContainer with restartPolicy Always, image
-  quay.io/curl/curl:8.23.0) uploads everything under /work/results when it gets SIGTERM,
-  after the main container ends or at the deadline (300 s grace).
+  quay.io/curl/curl:8.23.0, 100m CPU / 64 MiB taken out of the main container's share so the
+  pod total stays as planned) uploads everything under /work/results when it gets SIGTERM,
+  after the main container ends or at the deadline (300 s grace). Form values are sent
+  literally and files are streamed, so any file name works; a failed upload is logged as
+  "nrp-results: FAILED <key> (HTTP n)" and the sidecar exits non-zero.
+- No keys: job and sweep plans are refused (R23) until the person says "yes, discard
+  results" and the assistant plans again with `discard_results=true`.
 - `nrp_data action=down run=<id>` downloads to `<project>/results/<run>/` and never
   overwrites.
 
@@ -194,7 +203,7 @@ pure function `Check(manifests, ctx) -> []Finding`; refusals block the token.
 | R10 | Storage class `ceph-rbd` not allowed (never provisions) | refuse | tested 2026-10-05 |
 | R11 | No secret-looking literal env values (keys, tokens, passwords) in specs; use Secrets | refuse | Scheduling page (specs visible) |
 | R12 | Ingress: class `haproxy`, TLS host listed, HTTP only, host under `nrp-nautilus.io` or user domain with certificate | refuse | Exposing HTTP page |
-| R13 | Web/publish requires `public_ack` equal to the plan's URL | refuse (at run) | RC 2026-10-06 |
+| R13 | Web/publish needs the person's approval (5.2); with consent token, `public_ack` equal to the plan's URL | refuse (at run) | RC 2026-10-06; revised 2026-10-20 |
 | R14 | Caps (config): pods and GPUs running at the same time (a Job counts min(parallelism, completions); Kubernetes defaults parallelism to 1), total tasks per sweep, hours per run | refuse | nrp-mcp config |
 | R15 | Jobs get `ttlSecondsAfterFinished` and `backoffLimit` | auto-fix | good citizen |
 | R16 | Requests over 1 CPU / 2 GiB are subject to usage-violation checks (GPU < 40%, CPU outside 20-200%, RAM outside 20-150%) | warn | Cluster Policies |
@@ -204,6 +213,7 @@ pure function `Check(manifests, ctx) -> []Finding`; refusals block the token.
 | R20 | A public web app may not run a notebook, IDE or web shell: anyone on the internet could run code in your namespace (use goal=session) | refuse | nrp-mcp review 2026-10-15 |
 | R21 | A host name must not look like an official NRP address (reserved names, `nrp-*`, `nautilus-*`) | refuse | nrp-mcp review 2026-10-15 |
 | R22 | The host must not already answer (someone is using that address); no answer = warning "could not confirm" | refuse/warn (at plan) | nrp-mcp review 2026-10-15 |
+| R23 | A job or sweep without results storage (no S3 keys) is refused until the person says "yes, discard results" (`discard_results=true`) | refuse | Chuck 2026-10-20 |
 
 ## 7. Labels
 
@@ -426,7 +436,11 @@ https://nrp.ai/s3token/. (2) suggested host names could start with `nrp-` (from 
 folder name) and then be refused by R21; SuggestNames now skips names R21 refuses (test
 added). (3) the web plan's decision line and the server instructions still told the
 assistant to use public_ack under the default consent; they now say the person approves
-(public_ack only with consent token). (4) On macOS, copying a new binary over the old one
+(public_ack only with consent token). Review fixes after the 0.9.0 panel (same day, unit-
+tested, results re-run live): approval answers only for questions nrp-mcp asked; the waiting
+note no longer names approve.txt; nrp_session refuses when identity cannot be confirmed;
+R23; uploader share carved from the main container; uploader handles any file name and
+reports failures. (4) On macOS, copying a new binary over the old one
 made it die with "Killed: 9"; install by removing the old file first (install docs
 already build to a fresh path).
 
