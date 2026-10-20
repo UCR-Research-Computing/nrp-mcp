@@ -40,6 +40,7 @@ type Facts struct {
 	GitCommit   string   `json:"git_commit,omitempty"`
 	Skipped     []string `json:"skipped_sensitive,omitempty"`
 	Title       string   `json:"title,omitempty"`
+	Single      string   `json:"single_file,omitempty"` // the project is this one file (relative to Root)
 }
 
 var skipDirs = map[string]bool{".git": true, "node_modules": true, ".venv": true, "venv": true, "__pycache__": true,
@@ -68,6 +69,7 @@ func Dir(root string) (*Facts, error) {
 		scanFile(f, root, filepath.Base(root))
 		f.Entry = filepath.Base(root)
 		f.EntryReason = "the file you gave"
+		f.Single = filepath.Base(root)
 		finish(f)
 		return f, nil
 	}

@@ -673,3 +673,47 @@ func TestSetupFixNeedsPersonApproval(t *testing.T) {
 		t.Fatalf("setup acted before approval: %v", out["actions"])
 	}
 }
+
+func TestPlanPacksSafelyAndRedacts(t *testing.T) {
+	cs, _ := setup(t)
+	dir := project(t, map[string]string{"run.py": "print(1)\n", "id_rsa": "-----BEGIN OPENSSH PRIVATE KEY-----\nx\n", "tokenizer.py": "x = 1\n"})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir})
+	if isErr {
+		t.Fatal(text)
+	}
+	if fmt.Sprint(m["code_files"]) != "[run.py tokenizer.py]" {
+		t.Fatalf("code_files %v", m["code_files"])
+	}
+	if !strings.Contains(fmt.Sprint(m["skipped_files"]), "id_rsa") {
+		t.Fatalf("skipped_files %v", m["skipped_files"])
+	}
+	b, _ := json.Marshal(m["manifests"])
+	if strings.Contains(string(b), "print(1)") || strings.Contains(string(b), "PRIVATE KEY") {
+		t.Fatalf("plan output echoes file contents: %s", b)
+	}
+}
+
+func TestPlanDataNeedsP1(t *testing.T) {
+	cs, _ := setup(t)
+	dir := project(t, map[string]string{"run.py": "print(1)\n", "patients.csv": "name,dob\n"})
+	m, _, _ := call(t, cs, "nrp_plan", map[string]any{"project": dir})
+	if m["runnable"] == true || !strings.Contains(fmt.Sprint(m["refusals"]), "R19") {
+		t.Fatalf("data without data_is_p1 must be refused: %v", m["refusals"])
+	}
+	m, _, _ = call(t, cs, "nrp_plan", map[string]any{"project": dir, "data_is_p1": true})
+	if m["runnable"] != true || !strings.Contains(fmt.Sprint(m["code_files"]), "patients.csv") {
+		t.Fatalf("data with data_is_p1: %v %v", m["refusals"], m["code_files"])
+	}
+}
+
+func TestPlanSingleFilePacksOnlyThatFile(t *testing.T) {
+	cs, _ := setup(t)
+	dir := project(t, map[string]string{"one.py": "print(1)\n", "other.py": "print(2)\n"})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": filepath.Join(dir, "one.py")})
+	if isErr {
+		t.Fatal(text)
+	}
+	if fmt.Sprint(m["code_files"]) != "[one.py]" {
+		t.Fatalf("code_files %v", m["code_files"])
+	}
+}

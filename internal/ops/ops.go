@@ -6,13 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/diagnose"
+	"github.com/UCR-Research-Computing/nrp-mcp/internal/inspect"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/k8s"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/kube"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/plan"
@@ -480,60 +479,17 @@ func toDiagPod(pm map[string]any, events []map[string]any) diagnose.Pod {
 	return p
 }
 
-// CodeConfigMap packs small project text files into a ConfigMap (max ~900 KB) and
-// returns it with the init step that unpacks it into /work.
-func CodeConfigMap(project, name, ns string, labels map[string]string) (*k8s.Object, []string, error) {
-	if project == "" {
-		return nil, nil, nil
+// CodeConfigMap turns a pack (see inspect.PackDir) into a ConfigMap. Keys use
+// "__SLASH__" for "/" because ConfigMap keys cannot hold slashes.
+func CodeConfigMap(pk *inspect.Pack, name, ns string, labels map[string]string) *k8s.Object {
+	if pk == nil || len(pk.Names) == 0 {
+		return nil
 	}
 	data := map[string]string{}
-	var files []string
-	total := 0
-	err := filepath.WalkDir(project, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		rel, _ := filepath.Rel(project, p)
-		if d.IsDir() {
-			if rel != "." && (strings.HasPrefix(d.Name(), ".") || d.Name() == "node_modules" || d.Name() == "__pycache__" || d.Name() == "venv" || d.Name() == "data" || d.Name() == "results") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		low := strings.ToLower(d.Name())
-		if strings.HasPrefix(low, ".env") || strings.Contains(low, "secret") || strings.Contains(low, "token") || strings.HasSuffix(low, ".pem") || strings.HasSuffix(low, ".key") {
-			return nil
-		}
-		ext := strings.ToLower(filepath.Ext(low))
-		okExt := map[string]bool{".py": true, ".r": true, ".jl": true, ".sh": true, ".txt": true, ".toml": true, ".yml": true, ".yaml": true,
-			".json": true, ".js": true, ".ts": true, ".html": true, ".css": true, ".md": true, ".cfg": true, ".ini": true, ".csv": true, "": true, ".lock": true}
-		if !okExt[ext] {
-			return nil
-		}
-		info, e := d.Info()
-		if e != nil || info.Size() > 200*1024 {
-			return nil
-		}
-		b, e := os.ReadFile(p)
-		if e != nil {
-			return nil
-		}
-		total += len(b)
-		if total > 900*1024 {
-			return fmt.Errorf("project text files exceed 900 KB; use nrp_build (an image) or put the code in git")
-		}
-		key := strings.ReplaceAll(rel, string(os.PathSeparator), "__SLASH__")
-		key = strings.ReplaceAll(key, "/", "__SLASH__")
-		data[key] = string(b)
-		files = append(files, rel)
-		return nil
-	})
-	if err != nil {
-		return nil, nil, err
+	for _, rel := range pk.Names {
+		data[strings.ReplaceAll(rel, "/", "__SLASH__")] = pk.Files[rel]
 	}
-	sort.Strings(files)
-	cm := &k8s.Object{APIVersion: "v1", Kind: "ConfigMap", Metadata: k8s.Meta{Name: name, Namespace: ns, Labels: labels}, Data: data}
-	return cm, files, nil
+	return &k8s.Object{APIVersion: "v1", Kind: "ConfigMap", Metadata: k8s.Meta{Name: name, Namespace: ns, Labels: labels}, Data: data}
 }
 
 // unpackScript is the init container script that rebuilds the project tree in /work.

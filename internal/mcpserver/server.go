@@ -129,6 +129,7 @@ type planOut struct {
 	NeedsBuild   bool                `json:"needs_build,omitempty"`
 	Slurm        []plan.SlurmMapping `json:"slurm_mapping,omitempty"`
 	CodeFiles    []string            `json:"code_files,omitempty"`
+	Skipped      []inspect.Skip      `json:"skipped_files,omitempty"`
 	Manifests    map[string]any      `json:"manifests" jsonschema:"a Kubernetes List of every object the plan would create"`
 	Kubectl      []string            `json:"kubectl_equivalent"`
 	Next         string              `json:"next"`
@@ -361,16 +362,23 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 		}
 	}
 	var codeFiles []string
+	var skippedFiles []inspect.Skip
+	var needsP1 []string
 	if project != "" && facts != nil && (p.Goal == plan.GoalJob || p.Goal == plan.GoalSweep || p.Goal == plan.GoalWeb || p.Goal == plan.GoalLLMBatch) && !p.NeedsBuild && !p.Prebuilt {
-		cm, files, err := ops.CodeConfigMap(project, p.Name+"-code-"+shortRun(p.Run), ns, copyMap(p.Labels))
+		po := inspect.PackOptions{DataIsP1: in.DataIsP1, Only: facts.Single, WebOnly: p.Goal == plan.GoalWeb && facts.WebApp == "static"}
+		pk, err := inspect.PackDir(project, po)
 		if err != nil {
 			return nil, nil, err
 		}
-		if cm != nil && len(files) > 0 {
+		skippedFiles, needsP1 = pk.Skipped, pk.NeedsP1
+		if cm := ops.CodeConfigMap(pk, p.Name+"-code-"+shortRun(p.Run), ns, copyMap(p.Labels)); cm != nil {
 			ops.AttachCode(p.Objects, cm.Metadata.Name)
 			p.Objects = append([]k8s.Object{*cm}, p.Objects...)
-			codeFiles = files
-			p.Decisions = append(p.Decisions, fmt.Sprintf("Copies %d project file(s) into the pod with a ConfigMap (text files under 200 KB; no data, secrets or hidden folders).", len(files)))
+			codeFiles = pk.Names
+			p.Decisions = append(p.Decisions, fmt.Sprintf("Copies %d project file(s) into the pod (listed in code_files; %d left out, listed with reasons in skipped_files). Files in a ConfigMap can be read by everyone in the namespace.", len(pk.Names), len(pk.Skipped)))
+			if len(pk.DataFiles) > 0 {
+				p.Decisions = append(p.Decisions, fmt.Sprintf("Includes %d data file(s) because you confirmed the data is non-sensitive (P1): %s.", len(pk.DataFiles), strings.Join(pk.DataFiles, ", ")))
+			}
 		}
 	}
 	if p.Goal == plan.GoalWeb && s.Ops != nil {
@@ -378,8 +386,13 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 	}
 	p.Hash = plan.Hash(p)
 	findings := rules.Check(p.Objects, s.ruleCtx(ctx, ns, p))
+	if len(needsP1) > 0 {
+		findings = append(findings, rules.Finding{ID: "R19", Severity: rules.Refuse, Source: "NRP Acceptable Use Policy",
+			Message: fmt.Sprintf("The project has %d data file(s) (%s). Only non-sensitive (P1) data may go to Nautilus.", len(needsP1), strings.Join(needsP1, ", ")),
+			Fix:     "Ask the person whether these files are free of HIPAA, FERPA, PII, CUI and restrictive data-use terms. Only if they say yes, plan again with data_is_p1=true. Or move the data files out of the project folder."})
+	}
 	out := &planOut{Summary: p.Summary, PlanID: p.ID, PublicURL: p.PublicURL, Suggested: p.Suggested, Decisions: p.Decisions,
-		Refusals: []rules.Finding{}, Warnings: []rules.Finding{}, Image: p.Image, NeedsBuild: p.NeedsBuild, Slurm: p.Slurm, CodeFiles: codeFiles, Kubectl: p.Kubectl}
+		Refusals: []rules.Finding{}, Warnings: []rules.Finding{}, Image: p.Image, NeedsBuild: p.NeedsBuild, Slurm: p.Slurm, CodeFiles: codeFiles, Skipped: skippedFiles, Kubectl: p.Kubectl}
 	for _, f := range findings {
 		if f.Severity == rules.Refuse {
 			out.Refusals = append(out.Refusals, f)
@@ -387,7 +400,7 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 			out.Warnings = append(out.Warnings, f)
 		}
 	}
-	if b, err := k8s.List(p.Objects); err == nil {
+	if b, err := k8s.List(redactForOutput(p.Objects)); err == nil {
 		_ = json.Unmarshal(b, &out.Manifests)
 	}
 	p.Extra["project"] = project
@@ -456,6 +469,27 @@ func approvalSummary(p *plan.Plan) string {
 		return "Publish " + p.PublicURL + " (public, no login) in " + p.Namespace + ". " + p.Summary
 	}
 	return "Start in " + p.Namespace + ": " + p.Summary
+}
+
+// redactForOutput copies objs for showing to the assistant: ConfigMap file contents and
+// Secret values become a short note, so the plan stays small and leaks nothing.
+func redactForOutput(objs []k8s.Object) []k8s.Object {
+	out := make([]k8s.Object, len(objs))
+	for i, o := range objs {
+		if o.Kind == "ConfigMap" && o.Data != nil {
+			o.Data = map[string]string{"(files)": fmt.Sprintf("%d project file(s); names are in code_files", len(o.Data))}
+		}
+		if o.Kind == "Secret" {
+			if o.StringData != nil {
+				o.StringData = map[string]string{"(secret)": fmt.Sprintf("%d value(s), not shown", len(o.StringData))}
+			}
+			if o.Data != nil {
+				o.Data = map[string]string{"(secret)": fmt.Sprintf("%d value(s), not shown", len(o.Data))}
+			}
+		}
+		out[i] = o
+	}
+	return out
 }
 
 func shortRun(run string) string {
