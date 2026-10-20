@@ -59,6 +59,8 @@ type Request struct {
 	PullSecret string   // docker-registry Secret for a private image
 	Run        string   // reuse a run id (update a running web app in place)
 	AvoidNodes []string // node names the pod must not run on (required node anti-affinity)
+	WebDays    int      // web: days until the app is marked expired (default 14)
+	Now        time.Time
 }
 
 // Plan is the reviewed result.
@@ -488,7 +490,7 @@ func buildJob(f *inspect.Facts, r Request, p *Plan) error {
 			p.Decisions = append(p.Decisions, "Sweep with a prebuilt image: read the task number from $JOB_COMPLETION_INDEX.")
 		}
 	}
-	pod := k8s.PodSpec{RestartPolicy: "Never", Containers: []k8s.Container{ctr}, Volumes: vols, ImagePullSecrets: pullSecrets(r, p)}
+	pod := k8s.PodSpec{RestartPolicy: "Never", Containers: []k8s.Container{ctr}, Volumes: vols, ImagePullSecrets: pullSecrets(r, p), AutomountServiceAccountToken: k8s.BoolPtr(false)}
 	applyAvoid(&pod, r.AvoidNodes)
 	if r.Opportun || (gpu > 0 && isSpecial(gpuResource(r)) && r.Opportun) {
 		pod.PriorityClassName = "opportunistic"
@@ -560,6 +562,9 @@ func copyLabels(m map[string]string) map[string]string {
 	}
 	return o
 }
+
+// ExpiresAnnotation holds the date (YYYY-MM-DD, UTC) a public web app expires.
+const ExpiresAnnotation = "nrp-mcp/expires"
 
 // OwnerLabel holds a short hash of the cluster user who made an object, so several
 // people can share a namespace (a workshop) and each cleans up only their own runs.
@@ -683,11 +688,25 @@ func buildWeb(f *inspect.Facts, r Request, p *Plan) error {
 		}
 	}
 	ctr.Env = append(ctr.Env, k8s.EnvVar{Name: "NRP_RUN", Value: p.Run})
-	webPod := k8s.PodSpec{Containers: []k8s.Container{ctr}, Volumes: vols, ImagePullSecrets: pullSecrets(r, p)}
+	webPod := k8s.PodSpec{Containers: []k8s.Container{ctr}, Volumes: vols, ImagePullSecrets: pullSecrets(r, p), AutomountServiceAccountToken: k8s.BoolPtr(false)}
 	applyAvoid(&webPod, r.AvoidNodes)
-	dep := k8s.Object{APIVersion: "apps/v1", Kind: "Deployment", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: labels, Annotations: owner(r)},
+	days := r.WebDays
+	if days <= 0 || days > 14 {
+		days = 14
+	}
+	now := r.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	ann := owner(r)
+	if ann == nil {
+		ann = map[string]string{}
+	}
+	ann[ExpiresAnnotation] = now.Add(time.Duration(days) * 24 * time.Hour).UTC().Format("2006-01-02")
+	dep := k8s.Object{APIVersion: "apps/v1", Kind: "Deployment", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: labels, Annotations: ann},
 		DeploymentSpec: &k8s.DeploymentSpec{Replicas: 1, Selector: k8s.LabelSelector{MatchLabels: sel},
 			Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: labels}, Spec: webPod}}}
+	p.Decisions = append(p.Decisions, fmt.Sprintf("Anyone on the internet can open this app; there is no login. It expires on %s (%d days; nrp_status shows the days left). Remove it sooner with nrp_cleanup.", ann[ExpiresAnnotation], days))
 	svc := k8s.Object{APIVersion: "v1", Kind: "Service", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: copyLabels(labels)},
 		ServiceSpec: &k8s.ServiceSpec{Selector: sel, Ports: []k8s.ServicePort{{Port: 80, TargetPort: port}}, Type: "ClusterIP"}}
 	tls := k8s.IngressTLS{Hosts: []string{host}}
@@ -747,7 +766,7 @@ func buildSession(r Request, p *Plan) error {
 	if r.DataPVC != "" {
 		ctr.VolumeMounts = append(ctr.VolumeMounts, k8s.Mount{Name: "data", MountPath: "/home/jovyan/data"})
 	}
-	spec := k8s.PodSpec{Containers: []k8s.Container{ctr}}
+	spec := k8s.PodSpec{Containers: []k8s.Container{ctr}, AutomountServiceAccountToken: k8s.BoolPtr(false)}
 	if r.DataPVC != "" {
 		spec.Volumes = []k8s.Volume{{Name: "data", PersistentVolumeClaim: &k8s.PVCSource{ClaimName: r.DataPVC}}}
 	}
@@ -1096,7 +1115,7 @@ func buildPull(r Request, p *Plan) error {
 	}
 	js := &k8s.JobSpec{BackoffLimit: k8s.IntPtr(2), TTLSecondsAfterFinished: k8s.IntPtr(86400), ActiveDeadlineSeconds: k8s.IntPtr(hours * 3600),
 		Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: copyLabels(p.Labels)}, Spec: k8s.PodSpec{RestartPolicy: "Never", Containers: []k8s.Container{ctr},
-			Volumes: []k8s.Volume{{Name: "data", PersistentVolumeClaim: &k8s.PVCSource{ClaimName: r.DataPVC}}}}}}
+			Volumes: []k8s.Volume{{Name: "data", PersistentVolumeClaim: &k8s.PVCSource{ClaimName: r.DataPVC}}}, AutomountServiceAccountToken: k8s.BoolPtr(false)}}}
 	p.Objects = []k8s.Object{{APIVersion: "batch/v1", Kind: "Job", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: copyLabels(p.Labels), Annotations: owner(r)}, JobSpec: js}}
 	p.Image, p.ImageWhy = "curlimages/curl:latest", "small image with curl"
 	p.Decisions = append(p.Decisions,

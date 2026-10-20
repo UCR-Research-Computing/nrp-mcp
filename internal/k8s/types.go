@@ -120,6 +120,8 @@ type PodSpec struct {
 	Volumes           []Volume    `json:"volumes,omitempty"`
 	ImagePullSecrets  []NameRef   `json:"imagePullSecrets,omitempty"`
 	Affinity          *Affinity   `json:"affinity,omitempty"`
+	// AutomountServiceAccountToken false keeps the namespace's API token out of the pod.
+	AutomountServiceAccountToken *bool `json:"automountServiceAccountToken,omitempty"`
 }
 
 // Affinity holds scheduling rules; nrp-mcp only uses required node affinity.

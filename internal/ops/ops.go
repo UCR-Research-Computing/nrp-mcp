@@ -149,7 +149,17 @@ func (o *Ops) StatusOf(ctx context.Context, ns string) (*Status, error) {
 		wl := wlFrom("Deployment", d)
 		st := mapGet(d, "status")
 		wl.Status = fmt.Sprintf("%d/%d ready", int(num(st, "readyReplicas")), int(num(mapGet(d, "spec"), "replicas")))
-		if t := created(d); !t.IsZero() {
+		if exp, _ := mapGet(mapGet(d, "metadata"), "annotations")[plan.ExpiresAnnotation].(string); exp != "" {
+			if t, err := time.Parse("2006-01-02", exp); err == nil {
+				days := int(time.Until(t.Add(24*time.Hour)).Hours() / 24)
+				if days < 0 {
+					wl.Warning = "public web app expired on " + exp + ": remove it with nrp_cleanup run=" + wl.Run + " (or plan it again to renew for up to 14 days)"
+				} else {
+					wl.Warning = fmt.Sprintf("public web app expires on %s (%d day(s) left)", exp, days)
+				}
+				s.Warnings = append(s.Warnings, "Deployment "+wl.Name+": "+wl.Warning)
+			}
+		} else if t := created(d); !t.IsZero() {
 			left := 14*24*time.Hour - time.Since(t)
 			if left < 3*24*time.Hour {
 				wl.Warning = fmt.Sprintf("the NRP removes Deployments after 2 weeks: about %d days left unless your namespace has an exception", int(left.Hours()/24))

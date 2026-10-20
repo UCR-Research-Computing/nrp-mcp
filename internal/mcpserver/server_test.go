@@ -764,3 +764,15 @@ func TestWatchMarksLogsUntrustedAndChecksOwner(t *testing.T) {
 		t.Fatalf("watched another person's run: %s", text)
 	}
 }
+
+func TestWebHostInUseRefused(t *testing.T) {
+	cs, _ := setup(t)
+	dir := project(t, map[string]string{"app.py": "import streamlit as st\nst.write('hi')\n"})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "goal": "web"})
+	if isErr {
+		t.Fatal(text)
+	}
+	if !strings.Contains(fmt.Sprint(m["warnings"]), "R22") {
+		t.Fatalf("404 must be a 'could not confirm' warning: %v", m["warnings"])
+	}
+}

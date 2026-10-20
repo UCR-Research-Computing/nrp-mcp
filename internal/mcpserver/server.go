@@ -349,7 +349,7 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 		CPU: in.CPU, Memory: in.Memory, Hours: in.Hours, Count: in.Count, Parallel: in.Parallel, Host: in.Host, Port: in.Port,
 		DataPVC: in.DataVolume, Owner: owner, Session: in.Session, LLMSecret: in.LLMSecret, Opportun: in.Opportunist,
 		Size: in.Size, URLs: in.URLs, Subdir: in.Subdir, DataIsP1: in.DataIsP1, PullSecret: in.PullSecret,
-		AvoidNodes: splitNodes(in.AvoidNode)}
+		AvoidNodes: splitNodes(in.AvoidNode), WebDays: s.Cfg.WebDays}
 	p, err := plan.Build(facts, req)
 	if err != nil {
 		return nil, nil, err
@@ -387,11 +387,27 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 			}
 		}
 	}
+	var hostFinding *rules.Finding
 	if p.Goal == plan.GoalWeb && s.Ops != nil {
 		p.Suggested = s.availableHosts(ctx, p.Suggested)
+		if s.HTTP != nil && p.PublicURL != "" && req.Run == "" {
+			code, err := s.HTTP(p.PublicURL)
+			switch {
+			case err == nil && code != 404 && code != 503:
+				hostFinding = &rules.Finding{ID: "R22", Severity: rules.Refuse, Source: "nrp-mcp host check",
+					Message: fmt.Sprintf("%s already answers (HTTP %d): someone is using that address.", p.PublicURL, code),
+					Fix:     "Pick another name (see suggested_names) and plan again with host=<name>."}
+			default:
+				hostFinding = &rules.Finding{ID: "R22", Severity: rules.Warn, Source: "nrp-mcp host check",
+					Message: "nrp-mcp could not confirm " + p.PublicURL + " is free (it did not answer). If someone else claims it first, the publish fails safely."}
+			}
+		}
 	}
 	p.Hash = plan.Hash(p)
 	findings := rules.Check(p.Objects, s.ruleCtx(ctx, ns, p))
+	if hostFinding != nil {
+		findings = append(findings, *hostFinding)
+	}
 	if len(needsP1) > 0 {
 		findings = append(findings, rules.Finding{ID: "R19", Severity: rules.Refuse, Source: "NRP Acceptable Use Policy",
 			Message: fmt.Sprintf("The project has %d data file(s) (%s). Only non-sensitive (P1) data may go to Nautilus.", len(needsP1), strings.Join(needsP1, ", ")),
@@ -1057,7 +1073,7 @@ func (s *Server) helperPod(ctx context.Context, ns, pvc string) (string, error) 
 			Command:      []string{"sh", "-c", "sleep 3600"},
 			Resources:    k8s.Resources{Requests: map[string]string{"cpu": "100m", "memory": "128Mi"}, Limits: map[string]string{"cpu": "100m", "memory": "128Mi"}},
 			VolumeMounts: []k8s.Mount{{Name: "data", MountPath: "/data"}}}},
-			Volumes: []k8s.Volume{{Name: "data", PersistentVolumeClaim: &k8s.PVCSource{ClaimName: pvc}}}}}
+			Volumes: []k8s.Volume{{Name: "data", PersistentVolumeClaim: &k8s.PVCSource{ClaimName: pvc}}}, AutomountServiceAccountToken: k8s.BoolPtr(false)}}
 	b, _ := k8s.List([]k8s.Object{obj})
 	if _, err := s.Ops.K.Apply(ctx, ns, b, ""); err != nil {
 		return "", err

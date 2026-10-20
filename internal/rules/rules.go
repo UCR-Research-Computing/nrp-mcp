@@ -98,6 +98,7 @@ func Check(objs []k8s.Object, c Context) []Finding {
 		if o.IngressSpec != nil {
 			fs = append(fs, checkIngress(o, ref)...)
 		}
+		fs = append(fs, webChecks(o, ref)...)
 		ps := o.PodSpecOf()
 		if ps == nil {
 			continue
@@ -209,6 +210,45 @@ func Check(objs []k8s.Object, c Context) []Finding {
 		add(Finding{ID: "R14", Severity: Refuse, Source: srcConfig,
 			Message: fmt.Sprintf("%d tasks in this run is over your cap of %d.", totalTasks, c.TasksPerRun),
 			Fix:     "Split the sweep into smaller runs or bundle several cases per task, or raise tasks_per_run in your nrp-mcp config."})
+	}
+	return fs
+}
+
+// ideRe finds notebook, IDE and web-shell servers, which must never be public.
+var ideRe = regexp.MustCompile(`(?i)(jupyter|notebook|start-notebook|jupyterlab|code-server|openvscode|ttyd|gotty|wetty|rstudio|--allow-root|--token=('|")?('|")?\s|--auth\s+none)`)
+
+// reservedHosts may not be used as public host names (they look official).
+var reservedHosts = map[string]bool{"www": true, "nrp": true, "nautilus": true, "login": true, "cilogon": true, "auth": true,
+	"sso": true, "admin": true, "support": true, "portal": true, "api": true, "grafana": true, "gitlab": true, "jupyterhub": true,
+	"jupyterhub-west": true, "s3": true, "s3-west": true, "s3-east": true, "s3-central": true, "matrix": true, "element": true, "status": true, "docs": true}
+
+// webChecks refuses public apps that would expose a notebook/IDE (R20) or use a
+// reserved host name (R21).
+func webChecks(o *k8s.Object, ref string) []Finding {
+	var fs []Finding
+	if o.DeploymentSpec != nil && o.Metadata.Labels["nrp-mcp/session"] != "true" {
+		for _, c := range o.DeploymentSpec.Template.Spec.Containers {
+			line := c.Image + " " + strings.Join(append(append([]string{}, c.Command...), c.Args...), " ")
+			if ideRe.MatchString(line) {
+				fs = append(fs, Finding{ID: "R20", Severity: Refuse, Object: ref, Source: srcIngress,
+					Message: "A public web app may not run a notebook, IDE or web shell: anyone on the internet could run code in your namespace.",
+					Fix:     "Use goal=session for Jupyter or VS Code (private, through your own computer), or publish only your app."})
+				break
+			}
+		}
+	}
+	if o.IngressSpec != nil {
+		for _, r := range o.IngressSpec.Rules {
+			h := strings.ToLower(r.Host)
+			if strings.HasSuffix(h, ".nrp-nautilus.io") {
+				first := strings.TrimSuffix(h, ".nrp-nautilus.io")
+				if reservedHosts[first] || strings.HasPrefix(first, "nrp-") || strings.HasPrefix(first, "nautilus-") {
+					fs = append(fs, Finding{ID: "R21", Severity: Refuse, Object: ref, Source: srcIngress,
+						Message: fmt.Sprintf("%s looks like an official NRP address.", r.Host),
+						Fix:     "Pick a name that describes your project (nrp_plan suggests some), and plan again with host=<name>."})
+				}
+			}
+		}
 	}
 	return fs
 }
