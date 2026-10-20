@@ -268,6 +268,8 @@ func (s *Server) ruleCtx(ctx context.Context, ns string, p *plan.Plan) rules.Con
 	}
 	if qs, err := s.Ops.K.Quotas(ctx, ns); err == nil {
 		rc.GPUQuota = kube.GPUQuota(qs)
+	} else if kube.Kind(err) != kube.KindNotFound {
+		rc.QuotaUnknown = true
 	}
 	return rc
 }
@@ -283,7 +285,7 @@ func New(s *Server) *mcp.Server {
 			return nil, st, err
 		})
 
-	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_plan", Description: "Plan work on Nautilus from a project folder and a goal (job, sweep, web, session, llm-batch, volume, pull). Inspects the code (language, GPU use, entry point, web app, Slurm script), picks an image, sizes it, applies every NRP rule, and returns a plain-language summary, decisions, refusals, manifests and, if runnable, a single-use confirm_token for nrp_run. Creates nothing. For web, suggests names.", Annotations: readOnly("Plan"), InputSchema: singleTypeSchema[planIn]()}, s.planTool)
+	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_plan", Description: "Plan work on Nautilus from a project folder and a goal (job, sweep, web, session, llm-batch, volume, pull). Inspects the code (language, GPU use, entry point, web app, Slurm script), picks an image, sizes it, applies every NRP rule, and returns a plain-language summary, decisions, refusals, the files it will copy and skip, and either a single-use confirm_token (low-risk plans) or needs_person_approval (web, GPU: nrp_run then asks the person). Creates nothing. For web, suggests names.", Annotations: readOnly("Plan"), InputSchema: singleTypeSchema[planIn]()}, s.planTool)
 
 	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_run", Description: "Start a plan from nrp_plan, only after the person has seen it. If nrp_plan said needs_person_approval, pass plan_id only: nrp-mcp asks the person itself (a question in the app, or an approval code shown only to them that they type into the chat; then call again with approval_code). Otherwise pass plan_id and confirm_token. Never guess a code. Validates with a server dry run, applies, labels everything for cleanup, writes a run card in the project's .nrp/runs/.", Annotations: writes("Run", false)}, s.runTool)
 
@@ -341,12 +343,15 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 		facts = f
 		project = f.Root
 	}
-	owner := ""
-	if w, err := s.Ops.K.WhoAmI(ctx); err == nil {
-		owner = w.Username
-		if ns == "" && len(w.Namespaces) > 0 {
-			ns = w.Namespaces[0]
-		}
+	// Without a confirmed identity a plan would carry no owner label and skip quota
+	// checks, so no plan is made.
+	w, err := s.Ops.K.WhoAmI(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("no plan was made: %w", kube.Explain("who you are on Nautilus", err))
+	}
+	owner := w.Username
+	if ns == "" && len(w.Namespaces) > 0 {
+		ns = w.Namespaces[0]
 	}
 	req := plan.Request{Goal: in.Goal, Namespace: ns, Name: in.Name, Command: in.Command, Image: in.Image, GPU: in.GPU, GPUType: in.GPUType,
 		CPU: in.CPU, Memory: in.Memory, Hours: in.Hours, Count: in.Count, Parallel: in.Parallel, Host: in.Host, Port: in.Port,
@@ -663,6 +668,12 @@ func (s *Server) runTool(ctx context.Context, req *mcp.CallToolRequest, in runIn
 	if fs := rules.Check(p.Objects, s.ruleCtx(ctx, p.Namespace, p)); rules.Blocking(fs) {
 		return nil, nil, fmt.Errorf("the plan no longer passes the NRP rules (%s: %s); plan again", fs[0].ID, fs[0].Message)
 	}
+	// Validate with a server dry run before asking the person or using a token, so a plan
+	// Nautilus would refuse never spends an approval.
+	objs := plan.FillSessionToken(p.Objects)
+	if err := s.Ops.DryRun(ctx, p.Namespace, objs); err != nil {
+		return nil, nil, err
+	}
 	warning := ""
 	switch {
 	case s.Cfg.Consent == "token":
@@ -694,7 +705,6 @@ func (s *Server) runTool(ctx context.Context, req *mcp.CallToolRequest, in runIn
 			return nil, nil, err
 		}
 	}
-	objs := plan.FillSessionToken(p.Objects)
 	if sec, _ := p.Extra["results_secret"].(string); sec != "" {
 		form, err := s.resultsForm(ctx, p)
 		if err != nil {
@@ -702,19 +712,23 @@ func (s *Server) runTool(ctx context.Context, req *mcp.CallToolRequest, in runIn
 		}
 		objs = append([]k8s.Object{results.FormSecret(sec, p.Namespace, copyMap(p.Labels), form)}, objs...)
 	}
-	applied, err := s.Ops.Apply(ctx, p.Namespace, objs)
-	s.Store.Audit(map[string]any{"tool": "nrp_run", "plan_id": p.ID, "run_id": p.Run, "namespace": p.Namespace, "goal": p.Goal, "ok": err == nil, "public_url": p.PublicURL})
-	if err != nil {
-		return nil, nil, err
-	}
-	out := &runOut{Started: true, RunID: p.Run, Applied: applied, Cleanup: "nrp_cleanup run=" + p.Run, Warning: warning}
+	// The run card is written before anything is created, so a half-finished run can
+	// always be found and cleaned up.
 	project, _ := p.Extra["project"].(string)
 	card := map[string]any{"run_id": p.Run, "plan_id": p.ID, "goal": p.Goal, "namespace": p.Namespace, "image": p.Image, "summary": p.Summary,
 		"decisions": p.Decisions, "public_url": p.PublicURL, "git_commit": p.Extra["git_commit"], "git_remote": p.Extra["git_remote"],
-		"started": time.Now().UTC().Format(time.RFC3339), "nrp_mcp": version.Version, "objects": objectNames(p.Objects)}
-	if path, err := store.RunCard(project, card); err == nil {
-		out.RunCard = path
+		"started": time.Now().UTC().Format(time.RFC3339), "nrp_mcp": version.Version, "objects": objectNames(p.Objects), "status": "starting"}
+	cardPath, _ := store.RunCard(project, card)
+	applied, err := s.Ops.Apply(ctx, p.Namespace, objs)
+	s.Store.Audit(map[string]any{"tool": "nrp_run", "plan_id": p.ID, "run_id": p.Run, "namespace": p.Namespace, "goal": p.Goal, "ok": err == nil, "public_url": p.PublicURL})
+	if err != nil {
+		card["status"], card["error"] = "failed", err.Error()
+		_, _ = store.RunCard(project, card)
+		return nil, nil, fmt.Errorf("run %s did not start completely; some objects may exist. Remove them with nrp_cleanup run=%s, fix the cause, then plan again: %w", p.Run, p.Run, err)
 	}
+	card["status"] = "started"
+	_, _ = store.RunCard(project, card)
+	out := &runOut{Started: true, RunID: p.Run, Applied: applied, Cleanup: "nrp_cleanup run=" + p.Run, Warning: warning, RunCard: cardPath}
 	switch p.Goal {
 	case plan.GoalWeb:
 		out.URL = p.PublicURL
@@ -901,7 +915,7 @@ func (s *Server) cleanupTool(ctx context.Context, req *mcp.CallToolRequest, in c
 func (s *Server) cleanupScope(ctx context.Context, ns string, everyone bool) (ops.Scope, string, error) {
 	w, err := s.Ops.K.WhoAmI(ctx)
 	if err != nil {
-		return ops.Scope{}, "", err
+		return ops.Scope{}, "", ops.SignInHint(err)
 	}
 	if everyone {
 		for _, a := range w.Admin {

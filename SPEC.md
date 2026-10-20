@@ -1,6 +1,6 @@
 # nrp-mcp SPEC
 
-Version 0.9.0 (2026-10-20; code 0.9.0). Owner: UCR Research Computing.
+Version 0.9.1 (2026-10-20; code 0.9.1). Owner: UCR Research Computing.
 Repo: `UCR-Research-Computing/nrp-mcp`. License: MIT.
 
 ## 1. What it is
@@ -95,7 +95,7 @@ useful the `kubectl` equivalent so people learn. Errors are explanations, not st
 |---|---|---|---|
 | `nrp_setup` | only with `fix=true` | the model asks the user; CLI `nrp-mcp setup` asks [y/N] | laptop readiness: kubectl (version vs the cluster's public /version, verified against the kubeconfig CA), kubelogin, NRP config, sign-in. Fix: official kubectl (dl.k8s.io, matched to the cluster's minor line via stable-X.Y.txt) and kubelogin (GitHub latest release) into the user bin folder, SHA256 verified against the published files, atomic install with a dated backup of any old copy; downloaded NRP config copied to ~/.kube/config (0600), or merged with `kubectl config view --flatten` after a dated backup when a non-NRP config exists. Never needs admin rights; never reads the sign-in token |
 | `nrp_status` | no | - | who am I, namespaces, quotas, limit ranges, running workloads and their use, policy warnings, public URLs, upcoming purges/expiries |
-| `nrp_plan` | no | - | inspect a project + goal; return summary, manifests, rules applied, warnings, refusals, suggested names (web), `plan_id`, and a `confirm_token` when the plan is runnable |
+| `nrp_plan` | no | - | inspect a project + goal; return summary, manifests, rules applied, warnings, refusals, suggested names (web), `plan_id`, and, when runnable, a `confirm_token` (low-risk) or `needs_person_approval` (web, GPU). No plan when the caller's identity cannot be confirmed |
 | `nrp_build` | no | no | containerize: suggests a Dockerfile and a GitHub Actions workflow (`target=github`, default; image `ghcr.io/<owner>/<repo>` from the git remote) or a `.gitlab-ci.yml` (`target=gitlab`), plus steps and public/private image guidance; writes nothing |
 | `nrp_run` | yes | the person (web, GPU; 5.2) or token (low-risk) | apply an approved plan; label; secrets; TTL; run card |
 | `nrp_watch` | no | - | progress, logs (tail/grep), plain-language diagnosis with a suggested fix; per pod: node, minutes waiting (Pending), containers (image and state) and the last 5 events |
@@ -197,6 +197,7 @@ pure function `Check(manifests, ctx) -> []Finding`; refusals block the token.
 | R4 | > 100 pods (sweep count, counted on the total, conservatively) requires limit = request | refuse | Cluster Policies |
 | R5 | No banned `priorityClassName` (only unset, `armada-default`, `owner-no-preempt`, `opportunistic`, `opportunistic2`) | refuse | Opportunistic Use page |
 | R6 | Special GPU (`nvidia.com/a100`, `h100`, `h200`, `gh200`) needs quota > 0 or `opportunistic` | refuse | GPU Pods page + live quota |
+| R6Q | Special GPU when the namespace quota cannot be read (not opportunistic) | refuse | nrp-mcp 0.9.1 |
 | R7 | GPUs per pod: at most 8 for Jobs, 2 for bare pods/interactive | refuse | GPU Pods page |
 | R8 | Deployments (web/session idle) must not request GPUs, except `session` with an explicit GPU and a confirm | refuse/warn | Long Idle Pods page |
 | R9 | No bare Pod for batch work (use a Job) | refuse | Cluster Policies |
@@ -247,6 +248,20 @@ Pending progress rows; a Pending pod is never described as unscheduled once it h
 | `ContainerCreating` long, `FailedMount` | volume can't mount on that node (seen with CephFS) | delete the pod so the Job reschedules |
 | exit 137 without OOM | killed (deadline or preemption) | check activeDeadlineSeconds / opportunistic |
 | Ingress up, HTTPS not 200 | app not ready or wrong port | check readiness probe and Service port |
+| Running > 5 min, readiness probe failing | the app does not answer on its port | listen on 0.0.0.0 (not 127.0.0.1) and on port= |
+| `Evicted`, ephemeral storage | wrote more to local disk than allowed | write big files to a volume or results/ |
+| `Evicted`, node pressure | the node ran short of memory or disk | run again (Jobs retry elsewhere) |
+| ImagePull with `toomanyrequests` / 429 | Docker Hub download limit | wait 15-30 min or use ghcr.io / quay.io |
+| `CreateContainerError` | image downloaded, container cannot be created | check command= or the image (never shown as downloading) |
+| event `admission webhook ... denied` | a Nautilus policy check refused the pod | fix what the message names |
+| Job condition Failed, DeadlineExceeded | hit the time limit | raise hours= or checkpoint |
+| Job condition Failed, BackoffLimitExceeded | failed and used its retries | read the logs, fix, plan again |
+| Job/ReplicaSet FailedCreate (quota, forbidden) | no pod could be created | ask for less, or ask the namespace admin |
+| Slow node, a Job | a Job is not moved in place | nrp_cleanup the run, then plan again with avoid_node |
+
+nrp_watch reads events only for the run's own pods and their Job or ReplicaSet
+(`--field-selector involvedObject.name=`), plus the Job or Deployment conditions. Any kubectl
+failure other than not-found is an error with a next step (sign in, not allowed, no answer).
 
 ## 9. Resources and prompts
 
@@ -444,6 +459,24 @@ reports failures. (4) On macOS, copying a new binary over the old one
 made it die with "Killed: 9"; install by removing the old file first (install docs
 already build to a fresh path).
 
+Live 0.9.1, 2026-10-20 (real stdio clients driving the 0.9.1 binary, RC namespace
+ucr-research-computing, CPU only, no public objects). No working kubeconfig (an empty
+KUBECONFIG): nrp_status and nrp_cleanup are errors that name the fix (download the NRP
+config, nrp_setup); neither says "0 workloads". The cleanup message was raw kubectl text in
+the first run and was fixed to the same sign-in hint (test added). Plan-only: a Slurm script
+with `--time=1-12:00 --mem=16GB --cpus-per-task=2` and a for-loop became 129600 s (36 h),
+16Gi, 2 CPU, lines kept with set -e; memory "16" and gpu_type "a10" were refused with the
+new messages. `scripts/e2eresults`: the pod landed on yge-nrp-01.kreonet.net, nrp_watch
+reported the sidecar image (quay.io/curl/curl) downloading for about 2 min, then the result
+was saved, downloaded and cleaned up. E2E RESULTS OK. `scripts/e2e`, first try: the job
+pod sat on k8s-a6000-01.unm.edu downloading quay.io/curl/curl for over 12 minutes. 0.9.1's
+nrp_watch said "Slow node ... Remove this run with nrp_cleanup run=<run id>, then plan
+again with avoid_node=... (a Job is not moved in place)", where the 0.9.0 server still
+running in Hermes said "the old pod is replaced" (wrong for Jobs, fixed in U06). The run was
+cleaned up with the two-step token flow (0 workloads). Second try: CPU job, 3-task sweep and
+web plan-only refusal all passed. E2E OK. Note for 0.10.0 (images): the results sidecar adds
+a second image download per new node; pre-pulling or reusing the main image would remove it.
+
 ## 13. Change log
 
 | Version | Date | Change |
@@ -459,3 +492,4 @@ already build to a fresh path).
 | 0.7.0 | 2026-10-07 | Code 0.7.0: GitHub image builds by default (D4 revised), prebuilt images with `pull_secret`, in-place web updates, Flask+Dash detection; live test recorded; phase table cleaned (duplicate P5b) |
 | 0.8.0 | 2026-10-15 | Code 0.8.0: `nrp_watch` Pending diagnosis (node, preparing, downloading, slow node; node, age, containers, events in the result); `nrp_plan avoid_node`; gauntlet ASCII check portable; slow-node incident and live test recorded |
 | 0.9.0 | 2026-10-20 | Code 0.9.0: person approval (elicitation or code) for risky steps; safe packing with packed/skipped lists; results to a per-person NRP S3 bucket; web hardening (R20-R22, no API token, 14-day expiry); untrusted text and owner checks; D3 revised, D9-D11 added |
+| 0.9.1 | 2026-10-20 | Code 0.9.1: kubectl errors are errors; dry run before approval and run card first; no plan without identity, R6Q; per-command time limits; locked token/approval stores; nrp_watch Job conditions, scoped events and new diagnoses; input validation and Slurm fixes; 0.9.0 review leftovers |

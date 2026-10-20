@@ -124,11 +124,14 @@ func (o *Ops) StatusOf(ctx context.Context, ns string) (*Status, error) {
 	var jobs, deps, pods, ings, pvcs struct {
 		Items []map[string]any `json:"items"`
 	}
-	_ = o.K.JSON(ctx, ns, &jobs, "get", "jobs")
-	_ = o.K.JSON(ctx, ns, &deps, "get", "deployments")
-	_ = o.K.JSON(ctx, ns, &pods, "get", "pods")
-	_ = o.K.JSON(ctx, ns, &ings, "get", "ingress")
-	_ = o.K.JSON(ctx, ns, &pvcs, "get", "pvc")
+	for _, g := range []struct {
+		kind string
+		into any
+	}{{"jobs", &jobs}, {"deployments", &deps}, {"pods", &pods}, {"ingress", &ings}, {"pvc", &pvcs}} {
+		if err := o.K.JSON(ctx, ns, g.into, "get", g.kind); err != nil && kube.Kind(err) != kube.KindNotFound {
+			return nil, kube.Explain(g.kind+" in "+ns, err)
+		}
+	}
 	owned := map[string]bool{}
 	for _, j := range jobs.Items {
 		wl := wlFrom("Job", j)
@@ -221,6 +224,9 @@ func shortUser(u string) string {
 	}
 	return u
 }
+
+// SignInHint turns a failed identity lookup into one sentence with what to do.
+func SignInHint(err error) error { return signInHint(err) }
 
 func signInHint(err error) error {
 	msg := err.Error()
@@ -317,15 +323,23 @@ func (o *Ops) Watch(ctx context.Context, ns, target string, tail int, grep strin
 		{"get", "pods", "-l", "nrp-mcp/name=" + target},
 	}
 	for _, t := range tries {
-		if err := o.K.JSON(ctx, ns, &podsJSON, t...); err == nil && len(podsJSON.Items) > 0 {
+		err := o.K.JSON(ctx, ns, &podsJSON, t...)
+		if err != nil && kube.Kind(err) != kube.KindNotFound {
+			return nil, kube.Explain("pods in "+ns, err)
+		}
+		if err == nil && len(podsJSON.Items) > 0 {
 			selector = t[3]
 			break
 		}
 	}
 	if selector == "" {
 		var one map[string]any
-		if err := o.K.JSON(ctx, ns, &one, "get", "pod", target); err == nil {
+		err := o.K.JSON(ctx, ns, &one, "get", "pod", target)
+		switch {
+		case err == nil:
 			podsJSON.Items = []map[string]any{one}
+		case kube.Kind(err) != kube.KindNotFound:
+			return nil, kube.Explain("pod "+target+" in "+ns, err)
 		}
 	}
 	if owner != "" {
@@ -338,16 +352,45 @@ func (o *Ops) Watch(ctx context.Context, ns, target string, tail int, grep strin
 	}
 	if len(podsJSON.Items) == 0 {
 		var j map[string]any
-		if err := o.K.JSON(ctx, ns, &j, "get", "job", target); err == nil {
+		err := o.K.JSON(ctx, ns, &j, "get", "job", target)
+		if err == nil {
 			res.Summary = "The Job exists but has no pods yet (or they were cleaned up after finishing)."
 			return res, nil
 		}
+		if kube.Kind(err) != kube.KindNotFound {
+			return nil, kube.Explain("job "+target+" in "+ns, err)
+		}
 		return nil, fmt.Errorf("nothing called %q in %s (give a run id from nrp_run, a Job or Deployment name, or a pod name; nrp_status lists them)", target, ns)
 	}
+	// Events only for this run's own objects (pods and their Job/ReplicaSet), not the
+	// whole namespace: one call per object name, filtered on the server.
 	var evs struct {
 		Items []map[string]any `json:"items"`
 	}
-	_ = o.K.JSON(ctx, ns, &evs, "get", "events")
+	names := map[string]bool{}
+	for _, pm := range podsJSON.Items {
+		md := mapGet(pm, "metadata")
+		if n, _ := md["name"].(string); n != "" {
+			names[n] = true
+		}
+		if refs, ok := md["ownerReferences"].([]any); ok {
+			for _, r := range refs {
+				if rm, _ := r.(map[string]any); rm != nil {
+					if n, _ := rm["name"].(string); n != "" {
+						names[n] = true
+					}
+				}
+			}
+		}
+	}
+	for n := range names {
+		var one struct {
+			Items []map[string]any `json:"items"`
+		}
+		if err := o.K.JSON(ctx, ns, &one, "get", "events", "--field-selector", "involvedObject.name="+n); err == nil {
+			evs.Items = append(evs.Items, one.Items...)
+		}
+	}
 	counts := map[string]int{}
 	var newest string
 	var newestT time.Time
@@ -358,6 +401,25 @@ func (o *Ops) Watch(ctx context.Context, ns, target string, tail int, grep strin
 		counts[f.State]++
 		if t := created(pm); t.After(newestT) || newest == "" {
 			newest, newestT = p.Name, t
+		}
+	}
+	// The Job or Deployment itself can explain what pods cannot (time limit, retries
+	// used up, quota or policy refusals before a pod exists).
+	var workloadFinding *diagnose.Finding
+	if selector != "" {
+		for _, kind := range []string{"job", "deployment"} {
+			var l struct {
+				Items []map[string]any `json:"items"`
+			}
+			if err := o.K.JSON(ctx, ns, &l, "get", kind, "-l", selector); err != nil {
+				continue
+			}
+			for _, it := range l.Items {
+				w := toDiagWorkload(kind, it, evs.Items)
+				if f, ok := diagnose.ExplainWorkload(w); ok {
+					workloadFinding = &f
+				}
+			}
 		}
 	}
 	// Prefer logs from a failing pod.
@@ -403,6 +465,10 @@ func (o *Ops) Watch(ctx context.Context, ns, target string, tail int, grep strin
 	if first.Fix != "" {
 		res.Summary += " Fix: " + first.Fix
 	}
+	if workloadFinding != nil {
+		res.Pods = append([]diagnose.Finding{*workloadFinding}, res.Pods...)
+		res.Summary = workloadFinding.Explain + " Fix: " + workloadFinding.Fix + " (" + fmt.Sprintf("%d pod(s): %s", len(res.Pods)-1, res.Progress) + ")"
+	}
 	// Public URL check for web workloads: find Ingresses by the same label selector
 	// (a run id, a Job name or a workload name all resolve), or by name.
 	if httpGet != nil && selector != "" {
@@ -441,6 +507,40 @@ func (o *Ops) Watch(ctx context.Context, ns, target string, tail int, grep strin
 	return res, nil
 }
 
+// toDiagWorkload maps a Job or Deployment JSON and its events into diagnose.Workload.
+func toDiagWorkload(kind string, it map[string]any, events []map[string]any) diagnose.Workload {
+	md := mapGet(it, "metadata")
+	w := diagnose.Workload{Kind: strings.ToUpper(kind[:1]) + kind[1:]}
+	w.Name, _ = md["name"].(string)
+	conds, _ := mapGet(it, "status")["conditions"].([]any)
+	for _, c := range conds {
+		cm, _ := c.(map[string]any)
+		dc := diagnose.Condition{}
+		dc.Type, _ = cm["type"].(string)
+		dc.Status, _ = cm["status"].(string)
+		dc.Reason, _ = cm["reason"].(string)
+		dc.Message, _ = cm["message"].(string)
+		dc.Message = Clean(dc.Message, 300)
+		w.Conditions = append(w.Conditions, dc)
+	}
+	for _, e := range events {
+		io := mapGet(e, "involvedObject")
+		if n, _ := io["name"].(string); n != w.Name && !strings.HasPrefix(n, w.Name+"-") {
+			continue
+		}
+		if k, _ := io["kind"].(string); k == "Pod" {
+			continue
+		}
+		ev := diagnose.Event{}
+		ev.Type, _ = e["type"].(string)
+		ev.Reason, _ = e["reason"].(string)
+		ev.Message, _ = e["message"].(string)
+		ev.Message = Clean(ev.Message, 300)
+		w.Events = append(w.Events, ev)
+	}
+	return w
+}
+
 func toDiagPod(pm map[string]any, events []map[string]any) diagnose.Pod {
 	md := mapGet(pm, "metadata")
 	st := mapGet(pm, "status")
@@ -452,6 +552,14 @@ func toDiagPod(pm map[string]any, events []map[string]any) diagnose.Pod {
 	p.Node, _ = mapGet(pm, "spec")["nodeName"].(string)
 	p.Now = time.Now()
 	p.Created = created(pm)
+	if refs, ok := md["ownerReferences"].([]any); ok && len(refs) > 0 {
+		if rm, _ := refs[0].(map[string]any); rm != nil {
+			p.Owner, _ = rm["kind"].(string)
+		}
+	}
+	if s, _ := st["startTime"].(string); s != "" {
+		p.Started, _ = time.Parse(time.RFC3339, s)
+	}
 	conds, _ := st["conditions"].([]any)
 	for _, c := range conds {
 		cm, _ := c.(map[string]any)
@@ -543,14 +651,23 @@ func AttachCode(objs []k8s.Object, cmName string) {
 	}
 }
 
-// Apply applies objects, dry-run first; returns kubectl's output lines.
+// DryRun asks Nautilus to validate objects without creating anything.
+func (o *Ops) DryRun(ctx context.Context, ns string, objs []k8s.Object) error {
+	b, err := k8s.List(objs)
+	if err != nil {
+		return err
+	}
+	if _, err := o.K.Apply(ctx, ns, b, "server"); err != nil {
+		return fmt.Errorf("Nautilus rejected the plan in a dry run (nothing was created): %w", err)
+	}
+	return nil
+}
+
+// Apply creates or updates objects (call DryRun first); returns kubectl's output lines.
 func (o *Ops) Apply(ctx context.Context, ns string, objs []k8s.Object) (string, error) {
 	b, err := k8s.List(objs)
 	if err != nil {
 		return "", err
-	}
-	if out, err := o.K.Apply(ctx, ns, b, "server"); err != nil {
-		return out, fmt.Errorf("Nautilus rejected the plan in a dry run (nothing was created): %w", err)
 	}
 	return o.K.Apply(ctx, ns, b, "")
 }
@@ -581,7 +698,10 @@ func (o *Ops) CleanupList(ctx context.Context, ns, run string, sc Scope) ([]Work
 			Items []map[string]any `json:"items"`
 		}
 		if err := o.K.JSON(ctx, ns, &l, "get", kind, "-l", sel); err != nil {
-			continue
+			if kube.Kind(err) == kube.KindNotFound {
+				continue
+			}
+			return nil, kube.Explain(kind+" objects in "+ns, err)
 		}
 		for _, it := range l.Items {
 			if kind == "pod" {
@@ -607,8 +727,14 @@ func (o *Ops) Delete(ctx context.Context, ns, run string, sc Scope) (string, err
 	}
 	sel := sc.selector("nrp-mcp/run=" + run + ",app.kubernetes.io/managed-by=" + plan.ManagedBy)
 	// Pods first (data helpers hold volumes), then everything else.
-	out1, _ := o.K.Run(ctx, ns, nil, "delete", "pod", "-l", sel, "--wait=false")
+	out1, err := o.K.Run(ctx, ns, nil, "delete", "pod", "-l", sel, "--wait=false")
+	if err != nil && kube.Kind(err) != kube.KindNotFound {
+		return strings.TrimSpace(string(out1)), fmt.Errorf("could not delete run %s (nothing may have been removed): %w", run, kube.Explain("pods of run "+run, err))
+	}
 	out, err := o.K.Run(ctx, ns, nil, "delete", "job,deployment,service,ingress,configmap,secret,pvc", "-l", sel, "--wait=false")
 	out = append(out1, out...)
-	return strings.TrimSpace(string(out)), err
+	if err != nil && kube.Kind(err) != kube.KindNotFound {
+		return strings.TrimSpace(string(out)), fmt.Errorf("could not finish deleting run %s; check with nrp_cleanup run=%s: %w", run, run, err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }

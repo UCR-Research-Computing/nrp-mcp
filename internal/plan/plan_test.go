@@ -524,3 +524,74 @@ func TestSuggestNamesSkipReservedHosts(t *testing.T) {
 		t.Fatalf("got %v, want [leaf-area-explorer]", got)
 	}
 }
+
+func TestValidateInputs(t *testing.T) {
+	for _, tc := range []struct {
+		r    Request
+		want string // "" = ok
+	}{
+		{Request{Memory: "16"}, "no unit"},
+		{Request{Memory: "16Gi"}, ""},
+		{Request{Memory: "16G"}, ""},
+		{Request{Memory: "1Mi"}, "under 64Mi"},
+		{Request{Memory: "lots"}, "not a size"},
+		{Request{CPU: "4"}, ""},
+		{Request{CPU: "500m"}, ""},
+		{Request{CPU: "four"}, "not a number"},
+		{Request{GPUType: "a100"}, ""},
+		{Request{GPUType: "A40"}, ""},
+		{Request{GPUType: "nvidia.com/rtxa6000"}, ""},
+		{Request{GPUType: "a10"}, "a40, rtxa6000"},
+		{Request{GPUType: "A-100"}, "not a Nautilus GPU"},
+	} {
+		r := tc.r
+		err := validateInputs(&r)
+		switch {
+		case tc.want == "" && err != nil:
+			t.Errorf("%+v: unexpected %v", tc.r, err)
+		case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+			t.Errorf("%+v: got %v, want %q", tc.r, err, tc.want)
+		}
+	}
+}
+
+func TestSlurmTranslationFormats(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"16GB", "16Gi"}, {"16G", "16Gi"}, {"500M", "500Mi"}, {"500MB", "500Mi"}, {"4000", "4000Mi"}, {"1T", "1Ti"}, {"2048K", "2048Ki"},
+	} {
+		if got := slurmMem(tc.in); got != tc.want {
+			t.Errorf("slurmMem(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		in   string
+		want int
+	}{
+		{"1-12:00:00", 36}, {"1-12:00", 36}, {"12:00:00", 12}, {"02:30:00", 3}, {"90", 2}, {"30:00", 1},
+	} {
+		if got := slurmHours(tc.in); got != tc.want {
+			t.Errorf("slurmHours(%q) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+	if got := joinShell([]string{"python a.py", "python b.py"}); got != "python a.py && python b.py" {
+		t.Errorf("plain lines: %q", got)
+	}
+	loop := []string{"for i in 1 2 3; do", "python run.py $i", "done"}
+	if got := joinShell(loop); !strings.HasPrefix(got, "set -e\n") || strings.Contains(got, "&&") {
+		t.Errorf("a loop must stay line by line: %q", got)
+	}
+}
+
+func TestCleanupHashCoversTargetsAndScope(t *testing.T) {
+	a := Cleanup("ns", "r1", []string{"Job/a"})
+	b := Cleanup("ns", "r1", []string{"Job/a", "Pvc/data"})
+	if a.Hash == b.Hash {
+		t.Fatal("a cleanup with more targets must have a different hash")
+	}
+	c := Cleanup("ns", "r1", []string{"Job/a"})
+	c.Extra["owner_scope"] = ""
+	a.Extra["owner_scope"] = "me"
+	if Hash(a) == Hash(c) {
+		t.Fatal("widening the owner scope must change the hash")
+	}
+}

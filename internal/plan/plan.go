@@ -198,6 +198,9 @@ func Build(f *inspect.Facts, r Request) (*Plan, error) {
 	if f != nil && len(f.Slurm) > 0 && r.Goal != GoalWeb && r.Goal != GoalSession {
 		mappings = translateSlurm(f, &r)
 	}
+	if err := validateInputs(&r); err != nil {
+		return nil, err
+	}
 	if r.Goal == "" {
 		r.Goal = GoalJob
 		if f != nil && f.WebApp != "" {
@@ -293,13 +296,20 @@ func applyAvoid(ps *k8s.PodSpec, nodes []string) {
 
 // Hash is the sha256 of what would be applied (objects + goal + public URL).
 func Hash(p *Plan) string {
-	b, _ := json.Marshal(struct {
+	v := struct {
 		O []k8s.Object
 		G string
 		U string
 		N string
 		R string
-	}{p.Objects, p.Goal, p.PublicURL, p.Namespace, p.Run})
+		T any `json:",omitempty"`
+		S any `json:",omitempty"`
+	}{O: p.Objects, G: p.Goal, U: p.PublicURL, N: p.Namespace, R: p.Run}
+	if p.Goal == GoalCleanup {
+		// What gets deleted, and whose: changing either needs a new approval.
+		v.T, v.S = p.Extra["targets"], p.Extra["owner_scope"]
+	}
+	b, _ := json.Marshal(v)
 	s := sha256.Sum256(b)
 	return hex.EncodeToString(s[:])
 }
@@ -355,6 +365,46 @@ func contains(xs []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// validateInputs checks the sizes a person or assistant typed, so a typo gets a clear
+// message instead of a pod that never fits (memory "16" is 16 bytes) or never schedules.
+func validateInputs(r *Request) error {
+	if r.Memory != "" {
+		b, err := k8s.ParseBytes(r.Memory)
+		switch {
+		case err != nil:
+			return fmt.Errorf("memory %q is not a size; use a number with a unit, e.g. 16Gi or 512Mi", r.Memory)
+		case strings.Trim(r.Memory, "0123456789.") == "":
+			return fmt.Errorf("memory %q has no unit; add one, e.g. %sGi (gigabytes) or %sMi (megabytes)", r.Memory, r.Memory, r.Memory)
+		case b < 64<<20:
+			return fmt.Errorf("memory %q is under 64Mi; did you mean %sGi?", r.Memory, strings.TrimRight(r.Memory, "KMGTkmgtiB"))
+		}
+	}
+	if r.CPU != "" {
+		if c, err := k8s.ParseCPU(r.CPU); err != nil || c <= 0 {
+			return fmt.Errorf("cpu %q is not a number of cores; use e.g. 4, 0.5 or 500m", r.CPU)
+		}
+	}
+	if t := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(r.GPUType)), "nvidia.com/"); t != "" && t != "any" && t != "gpu" {
+		ok := false
+		var names []string
+		for _, g := range rules.GPUResources {
+			short := strings.TrimPrefix(g, "nvidia.com/")
+			if short == "gpu" {
+				continue
+			}
+			names = append(names, short)
+			if short == t {
+				ok = true
+			}
+		}
+		if !ok {
+			return fmt.Errorf("gpu_type %q is not a Nautilus GPU name; use one of: %s (or leave it empty for any standard GPU)", r.GPUType, strings.Join(names, ", "))
+		}
+		r.GPUType = t
+	}
+	return nil
 }
 
 func gpuResource(r Request) string {
@@ -896,14 +946,31 @@ func translateSlurm(f *inspect.Facts, r *Request) []SlurmMapping {
 		cmds = append(cmds, t)
 	}
 	if r.Command == "" && len(cmds) > 0 {
-		r.Command = strings.Join(cmds, " && ")
+		r.Command = joinShell(cmds)
 	}
 	return out
 }
 
+var shellBlock = regexp.MustCompile(`^(for|while|until|if|case|function)\b|\b(do|then|done|fi|esac|else|elif)\b|[{}]\s*$|\\$`)
+
+// joinShell joins script lines with " && " (stop at the first failure) unless the script
+// has loops, if-blocks or line continuations, which only work line by line; then it keeps
+// the lines and adds set -e so a failure still stops the job.
+func joinShell(cmds []string) string {
+	for _, c := range cmds {
+		if shellBlock.MatchString(c) {
+			return "set -e\n" + strings.Join(cmds, "\n")
+		}
+	}
+	return strings.Join(cmds, " && ")
+}
+
 func slurmMem(v string) string {
 	v = strings.ToUpper(strings.TrimSpace(v))
+	v = strings.TrimSuffix(v, "B") // 16GB, 500MB
 	switch {
+	case strings.HasSuffix(v, "K"):
+		return strings.TrimSuffix(v, "K") + "Ki"
 	case strings.HasSuffix(v, "G"):
 		return strings.TrimSuffix(v, "G") + "Gi"
 	case strings.HasSuffix(v, "M"):
@@ -914,28 +981,43 @@ func slurmMem(v string) string {
 	return v + "Mi"
 }
 
+// slurmHours converts a Slurm --time value to whole hours, rounded up. Slurm formats:
+// M, M:S, H:M:S, D-H, D-H:M, D-H:M:S (with a day part, two fields are hours:minutes).
 func slurmHours(v string) int {
+	v = strings.TrimSpace(v)
 	days := 0
+	hasDays := false
 	if i := strings.Index(v, "-"); i >= 0 {
 		days, _ = strconv.Atoi(v[:i])
 		v = v[i+1:]
+		hasDays = true
 	}
 	parts := strings.Split(v, ":")
-	h := 0
-	switch len(parts) {
-	case 3:
-		h, _ = strconv.Atoi(parts[0])
-		if m, _ := strconv.Atoi(parts[1]); m > 0 {
-			h++
+	n := func(i int) int {
+		if i >= len(parts) {
+			return 0
 		}
-	case 2:
-		m, _ := strconv.Atoi(parts[0])
-		h = (m + 59) / 60
-	case 1:
-		m, _ := strconv.Atoi(parts[0])
-		h = (m + 59) / 60
+		x, _ := strconv.Atoi(parts[i])
+		return x
 	}
-	return days*24 + h
+	var mins, secs int
+	switch {
+	case hasDays && len(parts) == 1:
+		mins = n(0) * 60
+	case hasDays && len(parts) == 2:
+		mins = n(0)*60 + n(1)
+	case len(parts) == 3:
+		mins, secs = n(0)*60+n(1), n(2)
+	case len(parts) == 2:
+		mins, secs = n(0), n(1)
+	default:
+		mins = n(0)
+	}
+	total := days*24*60 + mins
+	if secs > 0 {
+		total++
+	}
+	return (total + 59) / 60
 }
 
 // arrayIDs expands a Slurm --array value ("0-9", "1-50%10", "1,3,7", "0-20:2") into its

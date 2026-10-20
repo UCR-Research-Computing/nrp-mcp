@@ -97,9 +97,49 @@ func (r *Runner) base(ns string) []string {
 	return a
 }
 
-// Run runs kubectl with args in namespace ns (empty: none) and optional stdin.
+// Run runs kubectl with args in namespace ns (empty: none) and optional stdin, with a
+// time limit that fits the command (see LimitFor).
 func (r *Runner) Run(ctx context.Context, ns string, stdin []byte, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
+	return r.RunTimeout(ctx, r.LimitFor(args), ns, stdin, args...)
+}
+
+// LimitFor is the time limit for a kubectl command: sign-in may open a browser and wait
+// for the person (5 min), `wait --timeout=X` gets X + 30 s, apply and cp get 2 and 5 min,
+// everything else the Runner's default (60 s).
+func (r *Runner) LimitFor(args []string) time.Duration {
+	d := r.Timeout
+	if d <= 0 {
+		d = 60 * time.Second
+	}
+	scale := func(x time.Duration) time.Duration {
+		return time.Duration(float64(x) * float64(d) / float64(60*time.Second))
+	}
+	if len(args) >= 2 && args[0] == "auth" && args[1] == "whoami" {
+		return scale(5 * time.Minute)
+	}
+	if len(args) > 0 {
+		switch args[0] {
+		case "wait":
+			for _, a := range args {
+				if v, ok := strings.CutPrefix(a, "--timeout="); ok {
+					if w, err := time.ParseDuration(v); err == nil {
+						return scale(w + 30*time.Second)
+					}
+				}
+			}
+			return scale(150 * time.Second)
+		case "apply":
+			return scale(2 * time.Minute)
+		case "cp":
+			return scale(5 * time.Minute)
+		}
+	}
+	return d
+}
+
+// RunTimeout is Run with an explicit time limit.
+func (r *Runner) RunTimeout(ctx context.Context, limit time.Duration, ns string, stdin []byte, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	full := append(r.base(ns), args...)
 	ex := r.Exec
@@ -107,6 +147,9 @@ func (r *Runner) Run(ctx context.Context, ns string, stdin []byte, args ...strin
 		ex = osExec
 	}
 	out, errb, err := ex(ctx, r.Cfg.Kubectl, full, stdin)
+	if err != nil && ctx.Err() != nil {
+		return out, fmt.Errorf("kubectl %s: no answer within %s: %w", strings.Join(args, " "), limit.Round(time.Second), context.DeadlineExceeded)
+	}
 	if err != nil && authRetryable(string(errb)) {
 		// The OIDC token was refreshed mid-call (seen on Nautilus); one retry is enough.
 		out, errb, err = ex(ctx, r.Cfg.Kubectl, full, stdin)
@@ -142,6 +185,58 @@ type Error struct {
 
 func (e *Error) Error() string { return "kubectl " + strings.Join(e.Args, " ") + ": " + e.Msg }
 
+// Kinds of kubectl failure, from Kind.
+const (
+	KindSignedOut = "signed-out"
+	KindForbidden = "forbidden"
+	KindTimeout   = "timeout"
+	KindNotFound  = "not-found"
+	KindOther     = "other"
+)
+
+// Kind sorts a kubectl failure so callers can tell "nothing there" (not-found) from a
+// failure that must be reported (signed out, forbidden, timeout, anything else).
+func Kind(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return KindTimeout
+	}
+	msg := err.Error()
+	var ke *Error
+	if errors.As(err, &ke) {
+		msg = ke.Msg
+	}
+	low := strings.ToLower(msg)
+	switch {
+	case strings.Contains(msg, "Unauthorized") || strings.Contains(low, "provide credentials") || strings.Contains(low, "oidc") ||
+		strings.Contains(low, "token has expired") || strings.Contains(low, "refresh token"):
+		return KindSignedOut
+	case strings.Contains(low, "forbidden"):
+		return KindForbidden
+	case strings.Contains(low, "deadline exceeded") || strings.Contains(low, "i/o timeout") || strings.Contains(low, "signal: killed") ||
+		strings.Contains(low, "timed out") || strings.Contains(low, "timeout"):
+		return KindTimeout
+	case strings.Contains(msg, "NotFound") || strings.Contains(low, "not found") || strings.Contains(low, "the server doesn't have a resource type"):
+		return KindNotFound
+	}
+	return KindOther
+}
+
+// Explain turns a kubectl failure into one plain sentence with what to do.
+func Explain(what string, err error) error {
+	switch Kind(err) {
+	case KindSignedOut:
+		return fmt.Errorf("could not read %s: your Nautilus sign-in has expired or is missing. Run `kubectl auth whoami` in a terminal to sign in again, then retry (nothing was changed): %w", what, err)
+	case KindForbidden:
+		return fmt.Errorf("could not read %s: Nautilus says you are not allowed to (check the namespace, or ask its admin to add you): %w", what, err)
+	case KindTimeout:
+		return fmt.Errorf("could not read %s: Nautilus did not answer in time. Retry in a minute (nothing was changed): %w", what, err)
+	}
+	return fmt.Errorf("could not read %s: %w", what, err)
+}
+
 // IsForbidden reports an RBAC refusal.
 func IsForbidden(err error) bool {
 	var ke *Error
@@ -156,6 +251,9 @@ func IsNotFound(err error) bool {
 
 func osExec(ctx context.Context, name string, args []string, stdin []byte) ([]byte, []byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	// If kubectl leaves a child (the sign-in plugin) holding its output, stop waiting
+	// shortly after the time limit instead of hanging.
+	cmd.WaitDelay = 5 * time.Second
 	var so, se bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &so, &se
 	if stdin != nil {

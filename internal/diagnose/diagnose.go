@@ -24,6 +24,11 @@ type Pod struct {
 	Created    time.Time // metadata.creationTimestamp
 	Scheduled  time.Time // PodScheduled condition lastTransitionTime
 	Now        time.Time // injected clock (ops sets time.Now())
+	// Owner is the kind of workload the pod belongs to: Job, ReplicaSet (a Deployment:
+	// web or session) or "" (a bare pod). It changes the slow-node advice.
+	Owner string
+	// Started is when the pod started running (status.startTime), for readiness checks.
+	Started time.Time
 }
 
 // Container status.
@@ -168,7 +173,11 @@ func explainPending(p Pod, f Finding) Finding {
 	if age > slowAfter {
 		f.State = "Slow node"
 		f.Explain = fmt.Sprintf("On %s for %d min with no progress; this node may be slow or unhealthy.", p.Node, n)
-		f.Fix = "Re-plan with avoid_node=" + p.Node + " in nrp_plan, then nrp_run (the old pod is replaced)."
+		if p.Owner == "Job" {
+			f.Fix = "Remove this run with nrp_cleanup run=<run id>, then plan again with avoid_node=" + p.Node + " and nrp_run (a Job is not moved in place)."
+		} else {
+			f.Fix = "Re-plan with avoid_node=" + p.Node + " in nrp_plan, then nrp_run: the web app or session moves in place and the old pod is replaced."
+		}
 		return f
 	}
 	// An init container that is Running is unpacking code (seconds). One that is still
@@ -216,6 +225,12 @@ func explain(p Pod) Finding {
 			f.Explain = fmt.Sprintf("Container %s ran out of memory: it used its whole memory limit and was killed.", c.Name)
 			f.Fix = "Raise memory by about 50% (memory=...) and run again, or process the data in smaller pieces."
 			return f
+		case (c.Waiting == "ImagePullBackOff" || c.Waiting == "ErrImagePull") &&
+			(strings.Contains(c.WaitingMsg, "toomanyrequests") || strings.Contains(c.WaitingMsg, "429") || evt("toomanyrequests") != nil):
+			f.State = "Image download limit"
+			f.Explain = "Docker Hub refused the download: too many downloads from Nautilus right now (its rate limit). Nothing is wrong with your code."
+			f.Fix = "Wait 15-30 minutes and Kubernetes retries by itself, or use an image from ghcr.io or quay.io instead of Docker Hub."
+			return f
 		case c.Waiting == "ImagePullBackOff" || c.Waiting == "ErrImagePull" || c.Waiting == "InvalidImageName":
 			f.State = c.Waiting
 			f.Explain = "Kubernetes cannot download the container image. " + firstLine(c.WaitingMsg)
@@ -242,10 +257,44 @@ func explain(p Pod) Finding {
 				f.Fix = "Read the last log lines below; fix the error and run again (nrp_plan with the same project)."
 			}
 			return f
+		case c.Waiting == "CreateContainerError":
+			f.State = c.Waiting
+			f.Explain = "The image downloaded, but the container could not be created: " + firstLine(c.WaitingMsg)
+			f.Fix = "Usually a wrong command or working folder for this image; check command= in nrp_plan, or try another image."
+			return f
 		case c.Waiting == "CreateContainerConfigError":
 			f.State = c.Waiting
 			f.Explain = "The container cannot start: " + firstLine(c.WaitingMsg)
 			f.Fix = "Usually a missing Secret or ConfigMap key; create it or fix the name."
+			return f
+		}
+	}
+	if p.Reason == "Evicted" || evt("Evicted") != nil {
+		msg := p.Message
+		if e := evt("Evicted"); e != nil && msg == "" {
+			msg = e.Message
+		}
+		f.State = "Evicted"
+		if strings.Contains(msg, "ephemeral") || strings.Contains(msg, "ephemeral-storage") || strings.Contains(msg, "disk") {
+			f.Explain = "Kubernetes removed the pod: it wrote more to its local disk than allowed. " + firstLine(msg)
+			f.Fix = "Write big files to a volume (data_volume=) or S3 results, not the container's own disk, or clean up temporary files as you go."
+		} else {
+			f.Explain = "Kubernetes removed the pod from its node (the node ran short of memory or disk). " + firstLine(msg)
+			f.Fix = "Run it again; a Job retries on another node by itself. If it keeps happening, raise memory a little."
+		}
+		return f
+	}
+	if p.Phase == "Running" && !p.Started.IsZero() && !p.Now.IsZero() && p.Now.Sub(p.Started) > 5*time.Minute && evt("Readiness probe failed") != nil {
+		allReady := true
+		for _, c := range p.Containers {
+			if !c.Init && !c.Ready {
+				allReady = false
+			}
+		}
+		if !allReady {
+			f.State = "Not ready"
+			f.Explain = "The app has been running for over 5 minutes but does not answer on its port. " + firstLine(evt("Readiness probe failed").Message)
+			f.Fix = "Make the app listen on 0.0.0.0 (all addresses), not 127.0.0.1 or localhost, and on the port you gave nrp_plan (port=)."
 			return f
 		}
 	}
@@ -258,6 +307,12 @@ func explain(p Pod) Finding {
 		case e != nil:
 			f.Explain = "Your namespace quota does not allow this request: " + firstLine(e.Message)
 			f.Fix = "For A100/H100/H200/GH200 use nvidia.com/gpu (any standard GPU) or priorityClassName opportunistic; A100 access can be requested from the NRP."
+			return f
+		}
+		if e := evt("denied the request"); e != nil {
+			f.State = "Refused by Nautilus"
+			f.Explain = "A Nautilus policy check refused the pod: " + firstLine(e.Message)
+			f.Fix = "Fix what the message names (often resources or a banned setting), then plan again; nrp_plan applies the NRP rules it knows."
 			return f
 		}
 		if e := evt("FailedScheduling"); e != nil {
@@ -308,4 +363,72 @@ func firstLine(s string) string {
 		s = s[:300] + "..."
 	}
 	return s
+}
+
+// Workload is the part of a Job or Deployment that diagnosis needs: conditions and the
+// controller's own events (quota or admission refusals happen there, before any pod).
+type Workload struct {
+	Kind       string // Job or Deployment
+	Name       string
+	Conditions []Condition
+	Events     []Event
+}
+
+// Condition is one status condition.
+type Condition struct {
+	Type    string
+	Status  string
+	Reason  string
+	Message string
+}
+
+// ExplainWorkload diagnoses the Job or Deployment itself. ok is false when there is
+// nothing to say beyond the pods.
+func ExplainWorkload(w Workload) (Finding, bool) {
+	f := Finding{Pod: w.Kind + "/" + w.Name}
+	for _, c := range w.Conditions {
+		if c.Status != "True" {
+			continue
+		}
+		switch {
+		case c.Type == "Failed" && c.Reason == "DeadlineExceeded":
+			f.State, f.Explain = "Time limit", "The Job hit its time limit and was stopped: "+firstLine(c.Message)
+			f.Fix = "Raise hours= in nrp_plan, or save progress (checkpoints) and resume in a new run."
+			return f, true
+		case c.Type == "Failed" && c.Reason == "BackoffLimitExceeded":
+			f.State, f.Explain = "Failed", "The Job failed and used up its retries: "+firstLine(c.Message)
+			f.Fix = "Read the logs below for the error, fix it, and plan again."
+			return f, true
+		case c.Type == "Failed":
+			f.State, f.Explain = "Failed", "The Job failed: "+firstLine(c.Reason+" "+c.Message)
+			return f, true
+		case c.Type == "ReplicaFailure":
+			f.State, f.Explain = "Cannot create pods", firstLine(c.Message)
+			f.Fix = fixForCreate(c.Message)
+			return f, true
+		}
+	}
+	for i := len(w.Events) - 1; i >= 0; i-- {
+		e := w.Events[i]
+		if e.Reason != "FailedCreate" && !strings.Contains(e.Message, "denied") && !strings.Contains(e.Message, "forbidden") {
+			continue
+		}
+		f.State = "Cannot create pods"
+		f.Explain = "Nautilus would not create the pod: " + firstLine(e.Message)
+		f.Fix = fixForCreate(e.Message)
+		return f, true
+	}
+	return f, false
+}
+
+func fixForCreate(msg string) string {
+	switch {
+	case strings.Contains(msg, "exceeded quota"):
+		return "Your namespace quota does not allow this. Ask for less (cpu, memory, GPUs), use nvidia.com/gpu or opportunistic for special GPUs, or wait until other runs finish."
+	case strings.Contains(msg, "denied the request") || strings.Contains(msg, "admission webhook"):
+		return "A Nautilus policy check refused it; fix what the message names and plan again."
+	case strings.Contains(msg, "forbidden"):
+		return "Your account is not allowed to create this in the namespace; ask the namespace admin."
+	}
+	return "Read the message, fix the cause and plan again."
 }

@@ -93,7 +93,10 @@ func PackDir(root string, o PackOptions) (*Pack, error) {
 			return nil
 		}
 		if d.IsDir() {
-			if strings.HasPrefix(low, ".") || skipDirNames[low] {
+			// Data and output folders are skipped at the top of the project; deeper down
+			// (src/data/loader.py) a folder with that name is usually code.
+			topOnly := map[string]bool{"data": true, "datasets": true, "results": true, "output": true, "outputs": true}
+			if strings.HasPrefix(low, ".") || (skipDirNames[low] && (!topOnly[low] || !strings.Contains(rel, "/"))) {
 				skip(rel+"/", "folder left out (hidden, installed packages, data or results)")
 				return filepath.SkipDir
 			}

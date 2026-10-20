@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -88,5 +89,70 @@ func TestRunCardPrivate(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join(dir, ".nrp", ".gitignore"))
 	if err != nil || !strings.Contains(string(b), "*") {
 		t.Fatalf(".nrp/.gitignore: %v %q", err, b)
+	}
+}
+
+func TestTokensSurviveTwoStoresAtOnce(t *testing.T) {
+	// Two Store values on one folder stand in for two nrp-mcp processes (two AI apps).
+	dir := t.TempDir()
+	a, _ := New(dir)
+	b, _ := New(dir)
+	p := &plan.Plan{ID: "p1", Goal: "job"}
+	p.Hash = plan.Hash(p)
+	const n = 20
+	toks := make([]string, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			st := a
+			if i%2 == 1 {
+				st = b
+			}
+			tok, _, err := st.Issue(p, "run")
+			if err != nil {
+				t.Error(err)
+			}
+			toks[i] = tok
+		}(i)
+	}
+	wg.Wait()
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			st := b
+			if i%2 == 1 {
+				st = a
+			}
+			if err := st.Redeem(toks[i], p, "run"); err != nil {
+				t.Errorf("token %d lost: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	for i := 0; i < n; i++ {
+		if err := a.Redeem(toks[i], p, "run"); err != ErrUsed {
+			t.Fatalf("token %d: used flag lost (got %v)", i, err)
+		}
+	}
+}
+
+func TestOldPlansArePruned(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := New(dir)
+	p := &plan.Plan{ID: "pold"}
+	if err := s.SavePlan(p); err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(dir, "plans", "pold.json")
+	old := time.Now().Add(-8 * 24 * time.Hour)
+	_ = os.Chtimes(f, old, old)
+	if _, err := New(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(f); !os.IsNotExist(err) {
+		t.Fatal("a plan older than 7 days was kept")
 	}
 }
