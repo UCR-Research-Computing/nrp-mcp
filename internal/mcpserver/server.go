@@ -268,6 +268,8 @@ func (s *Server) ruleCtx(ctx context.Context, ns string, p *plan.Plan) rules.Con
 	}
 	if qs, err := s.Ops.K.Quotas(ctx, ns); err == nil {
 		rc.GPUQuota = kube.GPUQuota(qs)
+	} else if kube.Kind(err) != kube.KindNotFound {
+		rc.QuotaUnknown = true
 	}
 	return rc
 }
@@ -341,12 +343,15 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 		facts = f
 		project = f.Root
 	}
-	owner := ""
-	if w, err := s.Ops.K.WhoAmI(ctx); err == nil {
-		owner = w.Username
-		if ns == "" && len(w.Namespaces) > 0 {
-			ns = w.Namespaces[0]
-		}
+	// Without a confirmed identity a plan would carry no owner label and skip quota
+	// checks, so no plan is made.
+	w, err := s.Ops.K.WhoAmI(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("no plan was made: %w", kube.Explain("who you are on Nautilus", err))
+	}
+	owner := w.Username
+	if ns == "" && len(w.Namespaces) > 0 {
+		ns = w.Namespaces[0]
 	}
 	req := plan.Request{Goal: in.Goal, Namespace: ns, Name: in.Name, Command: in.Command, Image: in.Image, GPU: in.GPU, GPUType: in.GPUType,
 		CPU: in.CPU, Memory: in.Memory, Hours: in.Hours, Count: in.Count, Parallel: in.Parallel, Host: in.Host, Port: in.Port,

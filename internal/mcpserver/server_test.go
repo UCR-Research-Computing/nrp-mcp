@@ -1004,3 +1004,31 @@ func TestDryRunRefusalKeepsTheApproval(t *testing.T) {
 		t.Fatalf("the token must still work after a dry-run refusal: %s", text)
 	}
 }
+
+func TestNoPlanWithoutIdentity(t *testing.T) {
+	cs, fk := setup(t)
+	fk.mu.Lock()
+	fk.fail = map[string]string{"auth whoami": "error: You must be logged in to the server (Unauthorized)"}
+	fk.mu.Unlock()
+	dir := project(t, map[string]string{"run.py": "print(1)\n"})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "discard_results": true})
+	if !isErr || m["plan_id"] != nil || !strings.Contains(text, "sign") {
+		t.Fatalf("no identity must mean no plan, with a sign-in hint: %s", text)
+	}
+}
+
+func TestSpecialGPURefusedWhenQuotaUnreadable(t *testing.T) {
+	cs, fk := setup(t)
+	fk.mu.Lock()
+	fk.fail = map[string]string{"get resourcequota": "Unable to connect to the server: i/o timeout"}
+	fk.mu.Unlock()
+	dir := project(t, map[string]string{"train.py": "import torch\ntorch.cuda.is_available()\n"})
+	m, _, _ := call(t, cs, "nrp_plan", map[string]any{"project": dir, "gpu": 1, "gpu_type": "a100", "discard_results": true})
+	if m["runnable"] == true || !strings.Contains(fmt.Sprint(m["refusals"]), "R6Q") {
+		t.Fatalf("an A100 plan with an unreadable quota must be refused with R6Q: %v", m["refusals"])
+	}
+	m, _, _ = call(t, cs, "nrp_plan", map[string]any{"project": dir, "gpu": 1, "discard_results": true})
+	if strings.Contains(fmt.Sprint(m["refusals"]), "R6Q") {
+		t.Fatalf("a standard GPU plan must not need the special-GPU quota: %v", m["refusals"])
+	}
+}

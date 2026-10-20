@@ -46,6 +46,9 @@ type Context struct {
 	SweepCount int
 	// Session is true for nrp_session plans (an interactive Deployment that may hold a GPU).
 	Session bool
+	// QuotaUnknown is true when the namespace quota could not be read: special GPUs are
+	// then refused (R6Q) instead of assumed free.
+	QuotaUnknown bool
 }
 
 // Sources (NRP documentation pages).
@@ -138,6 +141,12 @@ func Check(objs []k8s.Object, c Context) []Finding {
 			for _, sg := range SpecialGPUs {
 				want := k8s.ParseCount(ctr.Resources.Requests[sg]) + k8s.ParseCount(ctr.Resources.Limits[sg])
 				if want == 0 {
+					continue
+				}
+				if c.QuotaUnknown && !strings.HasPrefix(ps.PriorityClassName, "opportunistic") {
+					add(Finding{ID: "R6Q", Severity: Refuse, Object: cref, Source: srcGPU,
+						Message: fmt.Sprintf("nrp-mcp could not read your namespace's GPU quota, so it cannot tell whether %s is allowed.", sg),
+						Fix:     "Plan again when nrp_status works, or use nvidia.com/gpu (any standard GPU), or priorityClassName: opportunistic."})
 					continue
 				}
 				q, limited := c.GPUQuota[sg]
