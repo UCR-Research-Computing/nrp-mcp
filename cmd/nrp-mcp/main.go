@@ -17,12 +17,14 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"golang.org/x/term"
 
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/config"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/consent"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/kube"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/mcpserver"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/ops"
+	"github.com/UCR-Research-Computing/nrp-mcp/internal/results"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/setup"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/store"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/version"
@@ -38,6 +40,7 @@ Usage:
   nrp-mcp doctor     check kubectl, the NRP config and sign-in, and print your namespaces
   nrp-mcp init       write an example ~/.config/nrp-mcp/config.yaml (never overwrites)
   nrp-mcp approve    show the newest approval code (for when no notification appeared)
+  nrp-mcp s3 setup   save your NRP S3 keys (from https://nrp.ai/s3) so job results are kept
   nrp-mcp version
 
 Flags (serve, doctor, setup): --config PATH  --kubeconfig PATH  --context NAME  --namespace NS
@@ -59,6 +62,12 @@ func main() {
 		os.Exit(runInit())
 	case "approve":
 		os.Exit(runApprove())
+	case "s3":
+		if len(args) == 0 || args[0] != "setup" {
+			fmt.Fprintln(os.Stderr, "usage: nrp-mcp s3 setup")
+			os.Exit(2)
+		}
+		os.Exit(runS3Setup(config.Load(config.DefaultPath())))
 	case "serve", "doctor", "setup":
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 		cfgPath := fs.String("config", config.DefaultPath(), "config file")
@@ -176,6 +185,35 @@ func runDoctor(cfg config.Config) int {
 		return 1
 	}
 	fmt.Println("\nReady. Add nrp-mcp to your MCP client with args [\"serve\"].")
+	return 0
+}
+
+// runS3Setup asks for the NRP S3 keys without echoing the secret and saves them 0600.
+func runS3Setup(cfg config.Config) int {
+	fmt.Println("nrp-mcp keeps job results in your own NRP S3 bucket.")
+	fmt.Println("1. Open https://nrp.ai/s3 , sign in, and create an access key (it is free).")
+	fmt.Println("2. Paste the two values here. The secret is not shown while you type.")
+	fmt.Println("   They are saved only on this computer, in", cfg.S3KeysFile, "(readable only by you).")
+	fmt.Print("\nAccess key: ")
+	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	access := strings.TrimSpace(line)
+	fmt.Print("Secret key: ")
+	b, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "could not read the secret:", err)
+		return 1
+	}
+	secret := strings.TrimSpace(string(b))
+	if access == "" || secret == "" {
+		fmt.Println("Nothing saved: both values are needed.")
+		return 1
+	}
+	if err := results.SaveKeys(cfg.S3KeysFile, results.Keys{Access: access, Secret: secret}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Println("Saved. New job plans will keep everything your code writes to results/.")
 	return 0
 }
 

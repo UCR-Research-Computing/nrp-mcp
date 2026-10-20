@@ -29,6 +29,7 @@ import (
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/kube"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/ops"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/plan"
+	"github.com/UCR-Research-Computing/nrp-mcp/internal/results"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/rules"
 	nrpsetup "github.com/UCR-Research-Computing/nrp-mcp/internal/setup"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/store"
@@ -197,8 +198,9 @@ type sessionOut struct {
 }
 
 type dataIn struct {
-	Action       string `json:"action" jsonschema:"list (files in a volume), up (copy a small local file or folder into a volume), down (copy from a volume to this computer)"`
-	Volume       string `json:"volume" jsonschema:"volume (PVC) name"`
+	Action       string `json:"action" jsonschema:"list (files in a volume), up (copy a small local file or folder into a volume), down (copy from a volume, or a run's saved results with run=, to this computer)"`
+	Volume       string `json:"volume,omitempty" jsonschema:"volume (PVC) name"`
+	Run          string `json:"run,omitempty" jsonschema:"down: a run id; downloads that run's saved results (its results/ folder) from your NRP S3 bucket"`
 	Path         string `json:"path,omitempty" jsonschema:"path inside the volume (default /)"`
 	Local        string `json:"local,omitempty" jsonschema:"up/down: local file or folder"`
 	Namespace    string `json:"namespace,omitempty"`
@@ -388,6 +390,9 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 		}
 	}
 	var hostFinding *rules.Finding
+	if (p.Goal == plan.GoalJob || p.Goal == plan.GoalSweep || p.Goal == plan.GoalLLMBatch) && !p.Prebuilt && !p.NeedsBuild {
+		s.planResults(p)
+	}
 	if p.Goal == plan.GoalWeb && s.Ops != nil {
 		p.Suggested = s.availableHosts(ctx, p.Suggested)
 		if s.HTTP != nil && p.PublicURL != "" && req.Run == "" {
@@ -454,6 +459,61 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 	}
 	s.Store.Audit(map[string]any{"tool": "nrp_plan", "plan_id": p.ID, "goal": p.Goal, "namespace": ns, "runnable": out.Runnable, "refusals": len(out.Refusals)})
 	return nil, out, nil
+}
+
+// s3Client is the person's S3 client from config and keys.
+func (s *Server) s3Client(ctx context.Context) (*results.Client, error) {
+	k, err := results.LoadKeys(s.Cfg.S3KeysFile)
+	if err != nil {
+		return nil, err
+	}
+	bucket := s.Cfg.S3Bucket
+	if bucket == "" {
+		w, err := s.Ops.K.WhoAmI(ctx)
+		if err != nil {
+			return nil, err
+		}
+		bucket = results.BucketName(plan.OwnerID(w.Username))
+	}
+	return &results.Client{Endpoint: s.Cfg.S3Endpoint, Bucket: bucket, Keys: *k}, nil
+}
+
+// resultsForm makes sure the bucket exists and signs a one-run upload form that ends one
+// hour after the job's time limit.
+func (s *Server) resultsForm(ctx context.Context, p *plan.Plan) (*results.PostForm, error) {
+	c, err := s.s3Client(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.EnsureBucket(ctx); err != nil {
+		return nil, err
+	}
+	hours := 24
+	for i := range p.Objects {
+		if js := p.Objects[i].JobSpec; js != nil && js.ActiveDeadlineSeconds != nil {
+			hours = *js.ActiveDeadlineSeconds / 3600
+		}
+	}
+	now := time.Now()
+	return results.SignPost(s.Cfg.S3Internal, c.Bucket, "runs/"+p.Run+"/", c.Keys.Access, c.Keys.Secret, 5<<30, now.Add(time.Duration(hours+1)*time.Hour), now)
+}
+
+// planResults adds the results uploader to a job plan when S3 keys are set up, and says
+// plainly where output goes (or that it will be lost).
+func (s *Server) planResults(p *plan.Plan) {
+	if _, err := results.LoadKeys(s.Cfg.S3KeysFile); err != nil {
+		p.Decisions = append(p.Decisions, "Results are NOT saved: files the job writes disappear when it ends. To keep them, the person runs `nrp-mcp s3 setup` once (NRP S3 keys from https://nrp.ai/s3), then you plan again. ("+err.Error()+")")
+		return
+	}
+	for i := range p.Objects {
+		if p.Objects[i].Kind != "Job" {
+			continue
+		}
+		results.AttachUploader(p.Objects[i].PodSpecOf(), results.SecretName(p.Objects[i].Metadata.Name))
+		p.Extra["results_secret"] = results.SecretName(p.Objects[i].Metadata.Name)
+	}
+	p.Extra["results_prefix"] = "runs/" + p.Run + "/"
+	p.Decisions = append(p.Decisions, "Saves results: anything the code writes to results/ (the folder $RESULTS_DIR) is uploaded to your NRP S3 bucket under runs/"+p.Run+"/ when the job ends. Get it with nrp_data action=down run="+p.Run+". The pod never sees your S3 keys: it gets a one-run upload permission that ends at the job's time limit.")
 }
 
 // needsPersonOK reports whether running p needs the person's own approval: anything
@@ -622,7 +682,15 @@ func (s *Server) runTool(ctx context.Context, req *mcp.CallToolRequest, in runIn
 			return nil, nil, err
 		}
 	}
-	applied, err := s.Ops.Apply(ctx, p.Namespace, plan.FillSessionToken(p.Objects))
+	objs := plan.FillSessionToken(p.Objects)
+	if sec, _ := p.Extra["results_secret"].(string); sec != "" {
+		form, err := s.resultsForm(ctx, p)
+		if err != nil {
+			return nil, nil, fmt.Errorf("could not prepare results storage (nothing was started): %w", err)
+		}
+		objs = append([]k8s.Object{results.FormSecret(sec, p.Namespace, copyMap(p.Labels), form)}, objs...)
+	}
+	applied, err := s.Ops.Apply(ctx, p.Namespace, objs)
 	s.Store.Audit(map[string]any{"tool": "nrp_run", "plan_id": p.ID, "run_id": p.Run, "namespace": p.Namespace, "goal": p.Goal, "ok": err == nil, "public_url": p.PublicURL})
 	if err != nil {
 		return nil, nil, err
@@ -911,8 +979,11 @@ func decodeB64(s string) string {
 
 func (s *Server) dataTool(ctx context.Context, req *mcp.CallToolRequest, in dataIn) (*mcp.CallToolResult, *dataOut, error) {
 	ns := s.nsCtx(ctx, in.Namespace)
+	if in.Action == "down" && in.Run != "" {
+		return s.downloadResults(ctx, in)
+	}
 	if in.Volume == "" {
-		return nil, nil, errors.New("volume is required")
+		return nil, nil, errors.New("volume is required (or, for action=down, run=<run id> to get a run's saved results)")
 	}
 	path := "/data/" + strings.TrimPrefix(in.Path, "/")
 	if strings.Contains(in.Path, "..") {
@@ -998,6 +1069,31 @@ func uploadID(ns, volume, path, local string, size int64) (string, string) {
 	h := sha256.Sum256([]byte(fmt.Sprintf("%s|%s|%s|%s|%d", ns, volume, path, local, size)))
 	full := hex.EncodeToString(h[:])
 	return "up-" + full[:12], full
+}
+
+// downloadResults copies runs/<run>/ from the person's bucket to local (default
+// results/<run> in the current folder). It never overwrites.
+func (s *Server) downloadResults(ctx context.Context, in dataIn) (*mcp.CallToolResult, *dataOut, error) {
+	if !plan.ValidRun(in.Run) {
+		return nil, nil, fmt.Errorf("%q is not a run id", in.Run)
+	}
+	c, err := s.s3Client(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	dst := in.Local
+	if dst == "" {
+		dst = filepath.Join("results", in.Run)
+	}
+	n, size, err := c.Download(ctx, "runs/"+in.Run+"/", dst)
+	if err != nil {
+		return nil, nil, err
+	}
+	if n == 0 {
+		return nil, &dataOut{Summary: "No saved results for run " + in.Run + " yet. They upload when the job ends (check with nrp_watch), and only files written to results/ are kept."}, nil
+	}
+	abs, _ := filepath.Abs(dst)
+	return nil, &dataOut{Summary: fmt.Sprintf("Downloaded %d file(s), %d KB, from run %s to %s.", n, size>>10, in.Run, abs)}, nil
 }
 
 // ownVolume refuses a volume that nrp-mcp made for someone else (shared namespaces).

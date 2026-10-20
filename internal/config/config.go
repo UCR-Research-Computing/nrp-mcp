@@ -49,7 +49,7 @@ func DefaultPath() string {
 func Load(path string) Config {
 	c := Config{Context: "nautilus", Kubectl: "kubectl", PodsPerRun: 50, GPUsPerRun: 4, HoursPerRun: 48, TasksPerRun: 10000, UploadGB: 50, Path: path,
 		Consent: "ask", WebDays: 14, S3Endpoint: "https://s3-west.nrp-nautilus.io", S3Internal: "http://rook-ceph-rgw-nautiluss3.rook"}
-	c.S3KeysFile = filepath.Join(filepath.Dir(path), "s3.env")
+	c.S3KeysFile = filepath.Join(filepath.Dir(path), "s3.env") // missing file = results not set up
 	if f, err := os.Open(path); err == nil {
 		defer f.Close()
 		sc := bufio.NewScanner(f)

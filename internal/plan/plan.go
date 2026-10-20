@@ -160,6 +160,11 @@ func SuggestNames(f *inspect.Facts, goal string) []string {
 	return cands
 }
 
+var runRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{3,40}$`)
+
+// ValidRun reports whether s looks like a run id (letters, digits, dashes).
+func ValidRun(s string) bool { return runRe.MatchString(s) }
+
 // randInt is a uniform random int in [0, n) from crypto/rand.
 func randInt(n int) int {
 	v, err := rand.Int(rand.Reader, big.NewInt(int64(n)))

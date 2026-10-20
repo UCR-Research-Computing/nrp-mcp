@@ -79,6 +79,9 @@ type Container struct {
 	Resources      Resources `json:"resources"`
 	VolumeMounts   []Mount   `json:"volumeMounts,omitempty"`
 	ReadinessProbe *Probe    `json:"readinessProbe,omitempty"`
+	// RestartPolicy "Always" on an init container makes it a native sidecar (Kubernetes
+	// 1.29+; Nautilus runs 1.34): it starts before and is stopped after the main containers.
+	RestartPolicy string `json:"restartPolicy,omitempty"`
 }
 
 // Volume is a pod volume (PVC, emptyDir, ConfigMap or Secret).
@@ -122,6 +125,8 @@ type PodSpec struct {
 	Affinity          *Affinity   `json:"affinity,omitempty"`
 	// AutomountServiceAccountToken false keeps the namespace's API token out of the pod.
 	AutomountServiceAccountToken *bool `json:"automountServiceAccountToken,omitempty"`
+	// TerminationGracePeriodSeconds gives the results uploader time to finish.
+	TerminationGracePeriodSeconds *int `json:"terminationGracePeriodSeconds,omitempty"`
 }
 
 // Affinity holds scheduling rules; nrp-mcp only uses required node affinity.

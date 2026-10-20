@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +20,7 @@ import (
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/kube"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/ops"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/plan"
+	"github.com/UCR-Research-Computing/nrp-mcp/internal/results"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/store"
 )
 
@@ -774,5 +777,73 @@ func TestWebHostInUseRefused(t *testing.T) {
 	}
 	if !strings.Contains(fmt.Sprint(m["warnings"]), "R22") {
 		t.Fatalf("404 must be a 'could not confirm' warning: %v", m["warnings"])
+	}
+}
+
+func TestJobPlanSaysResultsNotSavedWithoutKeys(t *testing.T) {
+	cs, _ := setup(t)
+	dir := project(t, map[string]string{"run.py": "print(1)\n"})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir})
+	if isErr {
+		t.Fatal(text)
+	}
+	if !strings.Contains(fmt.Sprint(m["decisions"]), "Results are NOT saved") || strings.Contains(fmt.Sprint(m["manifests"]), "save-results") {
+		t.Fatalf("without keys the plan must say results are lost and add no uploader: %v", m["decisions"])
+	}
+}
+
+func TestJobResultsWithKeys(t *testing.T) {
+	var created bool
+	s3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			w.WriteHeader(403)
+			return
+		}
+		switch {
+		case r.Method == "HEAD":
+			w.WriteHeader(404)
+		case r.Method == "PUT":
+			created = true
+		}
+	}))
+	defer s3.Close()
+	keys := filepath.Join(t.TempDir(), "s3.env")
+	if err := results.SaveKeys(keys, results.Keys{Access: "AK", Secret: "VERYSECRET"}); err != nil {
+		t.Fatal(err)
+	}
+	fk := &fakeKube{}
+	k := kube.New(kube.Config{Context: "nautilus"})
+	k.Exec = fk.exec
+	st, _ := store.New(t.TempDir())
+	s := &Server{Cfg: config.Config{Context: "nautilus", PodsPerRun: 50, GPUsPerRun: 4, HoursPerRun: 48, Consent: "code",
+		S3KeysFile: keys, S3Endpoint: s3.URL, S3Internal: "http://rook-ceph-rgw-nautiluss3.rook"}, Ops: &ops.Ops{K: k}, Store: st,
+		Codes: testCodes(t), HTTP: func(string) (int, error) { return 404, nil }, Now: time.Now}
+	ct, stt := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	if _, err := New(s).Connect(ctx, stt, nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	dir := project(t, map[string]string{"run.py": "print(1)\n"})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir})
+	if isErr || !strings.Contains(fmt.Sprint(m["decisions"]), "Saves results") || !strings.Contains(fmt.Sprint(m["manifests"]), "save-results") {
+		t.Fatalf("plan: %s %v", text, m["decisions"])
+	}
+	out, isErr, text := call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"], "confirm_token": m["confirm_token"]})
+	if isErr || out["started"] != true || !created {
+		t.Fatalf("run: %v %s created=%v", out, text, created)
+	}
+	var applied string
+	for i, c := range fk.calls {
+		if strings.Contains(strings.Join(c, " "), "apply") {
+			applied = string(fk.stdins[i])
+		}
+	}
+	if !strings.Contains(applied, "-results") || !strings.Contains(applied, "x-amz-signature") || strings.Contains(applied, "VERYSECRET") {
+		t.Fatalf("applied objects must carry the signed form Secret and never the S3 secret key")
 	}
 }
