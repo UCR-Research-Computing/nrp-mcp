@@ -459,7 +459,23 @@ reports failures. (4) On macOS, copying a new binary over the old one
 made it die with "Killed: 9"; install by removing the old file first (install docs
 already build to a fresh path).
 
-0.9.1 (to be filled in after the live test, U10).
+Live 0.9.1, 2026-10-20 (real stdio clients driving the 0.9.1 binary, RC namespace
+ucr-research-computing, CPU only, no public objects). No working kubeconfig (an empty
+KUBECONFIG): nrp_status and nrp_cleanup are errors that name the fix (download the NRP
+config, nrp_setup); neither says "0 workloads". The cleanup message was raw kubectl text in
+the first run and was fixed to the same sign-in hint (test added). Plan-only: a Slurm script
+with `--time=1-12:00 --mem=16GB --cpus-per-task=2` and a for-loop became 129600 s (36 h),
+16Gi, 2 CPU, lines kept with set -e; memory "16" and gpu_type "a10" were refused with the
+new messages. `scripts/e2eresults`: the pod landed on yge-nrp-01.kreonet.net, nrp_watch
+reported the sidecar image (quay.io/curl/curl) downloading for about 2 min, then the result
+was saved, downloaded and cleaned up. E2E RESULTS OK. `scripts/e2e`, first try: the job
+pod sat on k8s-a6000-01.unm.edu downloading quay.io/curl/curl for over 12 minutes. 0.9.1's
+nrp_watch said "Slow node ... Remove this run with nrp_cleanup run=<run id>, then plan
+again with avoid_node=... (a Job is not moved in place)", where the 0.9.0 server still
+running in Hermes said "the old pod is replaced" (wrong for Jobs, fixed in U06). The run was
+cleaned up with the two-step token flow (0 workloads). Second try: CPU job, 3-task sweep and
+web plan-only refusal all passed. E2E OK. Note for 0.10.0 (images): the results sidecar adds
+a second image download per new node; pre-pulling or reusing the main image would remove it.
 
 ## 13. Change log
 
