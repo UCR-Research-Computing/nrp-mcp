@@ -42,6 +42,12 @@ func (f *fakeKube) exec(_ context.Context, _ string, args []string, stdin []byte
 	f.mu.Unlock()
 	j := strings.Join(args, " ")
 	for k, msg := range fail {
+		if k == "real-apply" {
+			if strings.Contains(j, "apply") && !strings.Contains(j, "--dry-run") {
+				return nil, []byte(msg), errors.New("exit status 1")
+			}
+			continue
+		}
 		if strings.Contains(j, k) {
 			return nil, []byte(msg), errors.New("exit status 1")
 		}
@@ -957,5 +963,44 @@ func TestKubectlFailuresAreNotEmpty(t *testing.T) {
 	fk.mu.Unlock()
 	if _, isErr, text = call(t, cs, "nrp_status", nil); isErr {
 		t.Fatalf("not-found must still read as empty: %s", text)
+	}
+}
+
+func TestPartialRunGivesRunIDAndCleanup(t *testing.T) {
+	cs, fk := setup(t)
+	dir := project(t, map[string]string{"run.py": "print(1)\n"})
+	m, _, _ := call(t, cs, "nrp_plan", map[string]any{"project": dir, "discard_results": true})
+	fk.mu.Lock()
+	fk.fail = map[string]string{"real-apply": `Error from server (Forbidden): error when creating "STDIN": jobs.batch is forbidden: exceeded quota`}
+	fk.mu.Unlock()
+	_, isErr, text := call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"], "confirm_token": m["confirm_token"]})
+	if !isErr || !strings.Contains(text, "nrp_cleanup run=") {
+		t.Fatalf("a failed apply must name the run and the cleanup step: %s", text)
+	}
+	cards, _ := filepath.Glob(filepath.Join(dir, ".nrp", "runs", "*.json"))
+	if len(cards) != 1 {
+		t.Fatalf("want one run card, got %v", cards)
+	}
+	b, _ := os.ReadFile(cards[0])
+	if !strings.Contains(string(b), `"status": "failed"`) {
+		t.Fatalf("run card must say failed: %s", b)
+	}
+}
+
+func TestDryRunRefusalKeepsTheApproval(t *testing.T) {
+	cs, fk := setup(t)
+	dir := project(t, map[string]string{"run.py": "print(1)\n"})
+	m, _, _ := call(t, cs, "nrp_plan", map[string]any{"project": dir, "discard_results": true})
+	fk.mu.Lock()
+	fk.fail = map[string]string{"--dry-run=server": `Error from server (Invalid): admission webhook denied the request`}
+	fk.mu.Unlock()
+	if _, isErr, _ := call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"], "confirm_token": m["confirm_token"]}); !isErr {
+		t.Fatal("dry run refusal must be an error")
+	}
+	fk.mu.Lock()
+	fk.fail = nil
+	fk.mu.Unlock()
+	if _, isErr, text := call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"], "confirm_token": m["confirm_token"]}); isErr || fk.applied() != 1 {
+		t.Fatalf("the token must still work after a dry-run refusal: %s", text)
 	}
 }

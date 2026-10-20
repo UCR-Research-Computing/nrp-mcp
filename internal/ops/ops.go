@@ -558,14 +558,23 @@ func AttachCode(objs []k8s.Object, cmName string) {
 	}
 }
 
-// Apply applies objects, dry-run first; returns kubectl's output lines.
+// DryRun asks Nautilus to validate objects without creating anything.
+func (o *Ops) DryRun(ctx context.Context, ns string, objs []k8s.Object) error {
+	b, err := k8s.List(objs)
+	if err != nil {
+		return err
+	}
+	if _, err := o.K.Apply(ctx, ns, b, "server"); err != nil {
+		return fmt.Errorf("Nautilus rejected the plan in a dry run (nothing was created): %w", err)
+	}
+	return nil
+}
+
+// Apply creates or updates objects (call DryRun first); returns kubectl's output lines.
 func (o *Ops) Apply(ctx context.Context, ns string, objs []k8s.Object) (string, error) {
 	b, err := k8s.List(objs)
 	if err != nil {
 		return "", err
-	}
-	if out, err := o.K.Apply(ctx, ns, b, "server"); err != nil {
-		return out, fmt.Errorf("Nautilus rejected the plan in a dry run (nothing was created): %w", err)
 	}
 	return o.K.Apply(ctx, ns, b, "")
 }
