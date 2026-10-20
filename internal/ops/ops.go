@@ -225,6 +225,9 @@ func shortUser(u string) string {
 	return u
 }
 
+// SignInHint turns a failed identity lookup into one sentence with what to do.
+func SignInHint(err error) error { return signInHint(err) }
+
 func signInHint(err error) error {
 	msg := err.Error()
 	switch {

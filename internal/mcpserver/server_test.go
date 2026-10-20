@@ -1061,3 +1061,14 @@ func TestWatchReadsJobAndScopedEvents(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanupSaysHowToSignIn(t *testing.T) {
+	cs, fk := setup(t)
+	fk.mu.Lock()
+	fk.fail = map[string]string{"auth whoami": `error: context "nautilus" does not exist`}
+	fk.mu.Unlock()
+	_, isErr, text := call(t, cs, "nrp_cleanup", map[string]any{})
+	if !isErr || !strings.Contains(text, "nrp_setup") {
+		t.Fatalf("cleanup without a working sign-in must say what to do: %s", text)
+	}
+}

@@ -915,7 +915,7 @@ func (s *Server) cleanupTool(ctx context.Context, req *mcp.CallToolRequest, in c
 func (s *Server) cleanupScope(ctx context.Context, ns string, everyone bool) (ops.Scope, string, error) {
 	w, err := s.Ops.K.WhoAmI(ctx)
 	if err != nil {
-		return ops.Scope{}, "", err
+		return ops.Scope{}, "", ops.SignInHint(err)
 	}
 	if everyone {
 		for _, a := range w.Admin {
