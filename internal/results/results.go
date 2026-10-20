@@ -198,8 +198,11 @@ func (c *Client) Download(ctx context.Context, prefix, dir string) (int, int64, 
 		if !strings.HasPrefix(dst, absDir+string(os.PathSeparator)) {
 			return n, total, fmt.Errorf("refusing %q: it would be written outside %s", o.Key, absDir)
 		}
-		if _, err := os.Stat(dst); err == nil {
-			return n, total, fmt.Errorf("%s already exists; not overwriting", dst)
+		if fi, err := os.Stat(dst); err == nil {
+			if fi.Size() == o.Size {
+				continue // already downloaded (an earlier, interrupted download)
+			}
+			return n, total, fmt.Errorf("%s already exists with different content; not overwriting (move it away and download again)", dst)
 		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return n, total, err
@@ -212,7 +215,10 @@ func (c *Client) Download(ctx context.Context, prefix, dir string) (int, int64, 
 			resp.Body.Close()
 			return n, total, fmt.Errorf("download %s failed (%d)", o.Key, resp.StatusCode)
 		}
-		f, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		// Write to a temporary name and rename, so an interrupted download never leaves a
+		// partial file that looks finished.
+		tmp := dst + ".part"
+		f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 		if err != nil {
 			resp.Body.Close()
 			return n, total, err
@@ -221,6 +227,10 @@ func (c *Client) Download(ctx context.Context, prefix, dir string) (int, int64, 
 		resp.Body.Close()
 		f.Close()
 		if err != nil {
+			os.Remove(tmp)
+			return n, total, err
+		}
+		if err := os.Rename(tmp, dst); err != nil {
 			return n, total, err
 		}
 		n++

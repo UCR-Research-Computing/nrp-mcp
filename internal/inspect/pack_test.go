@@ -112,3 +112,23 @@ func TestPackTooBig(t *testing.T) {
 		t.Fatalf("want too-big error, got %v", err)
 	}
 }
+
+func TestPackKeepsNestedCodeFoldersNamedData(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "train.py", "from src.data import loader\n")
+	write(t, dir, "src/data/loader.py", "def load(): pass\n")
+	write(t, dir, "src/results/report.py", "def report(): pass\n")
+	write(t, dir, "data/big.csv", "a,b\n")
+	write(t, dir, "results/old.txt", "x\n")
+	p, err := PackDir(dir, PackOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := packNames(p)
+	if !strings.Contains(names, "src/data/loader.py") || !strings.Contains(names, "src/results/report.py") {
+		t.Fatalf("nested code folders named data/results must be packed: %s", names)
+	}
+	if strings.Contains(names, "big.csv") || strings.Contains(names, "old.txt") || skipped(p, "data/") == "" || skipped(p, "results/") == "" {
+		t.Fatalf("top-level data/ and results/ must still be left out: %s %v", names, p.Skipped)
+	}
+}

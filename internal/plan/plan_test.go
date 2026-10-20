@@ -581,3 +581,17 @@ func TestSlurmTranslationFormats(t *testing.T) {
 		t.Errorf("a loop must stay line by line: %q", got)
 	}
 }
+
+func TestCleanupHashCoversTargetsAndScope(t *testing.T) {
+	a := Cleanup("ns", "r1", []string{"Job/a"})
+	b := Cleanup("ns", "r1", []string{"Job/a", "Pvc/data"})
+	if a.Hash == b.Hash {
+		t.Fatal("a cleanup with more targets must have a different hash")
+	}
+	c := Cleanup("ns", "r1", []string{"Job/a"})
+	c.Extra["owner_scope"] = ""
+	a.Extra["owner_scope"] = "me"
+	if Hash(a) == Hash(c) {
+		t.Fatal("widening the owner scope must change the hash")
+	}
+}

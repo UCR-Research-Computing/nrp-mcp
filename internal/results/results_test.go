@@ -60,8 +60,20 @@ func TestDownloadStaysInsideAndNeverOverwrites(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(dir, "task-0", "a.csv")); string(b) != "ok" {
 		t.Fatalf("file %q", b)
 	}
+	// A second download (after an interruption) skips files that are already there.
+	if n, _, err := c.Download(context.Background(), "runs/r1/", dir); err != nil || n != 0 {
+		t.Fatalf("resume: %d %v", n, err)
+	}
+	// A local file with different content is never overwritten.
+	_ = os.WriteFile(filepath.Join(dir, "out.txt"), []byte("mine, edited"), 0o644)
 	if _, _, err := c.Download(context.Background(), "runs/r1/", dir); err == nil || !strings.Contains(err.Error(), "not overwriting") {
 		t.Fatalf("overwrote: %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "out.txt")); string(b) != "mine, edited" {
+		t.Fatalf("local file changed: %q", b)
+	}
+	if m, _ := filepath.Glob(filepath.Join(dir, "*.part")); len(m) != 0 {
+		t.Fatalf("partial files left: %v", m)
 	}
 }
 

@@ -296,13 +296,20 @@ func applyAvoid(ps *k8s.PodSpec, nodes []string) {
 
 // Hash is the sha256 of what would be applied (objects + goal + public URL).
 func Hash(p *Plan) string {
-	b, _ := json.Marshal(struct {
+	v := struct {
 		O []k8s.Object
 		G string
 		U string
 		N string
 		R string
-	}{p.Objects, p.Goal, p.PublicURL, p.Namespace, p.Run})
+		T any `json:",omitempty"`
+		S any `json:",omitempty"`
+	}{O: p.Objects, G: p.Goal, U: p.PublicURL, N: p.Namespace, R: p.Run}
+	if p.Goal == GoalCleanup {
+		// What gets deleted, and whose: changing either needs a new approval.
+		v.T, v.S = p.Extra["targets"], p.Extra["owner_scope"]
+	}
+	b, _ := json.Marshal(v)
 	s := sha256.Sum256(b)
 	return hex.EncodeToString(s[:])
 }
