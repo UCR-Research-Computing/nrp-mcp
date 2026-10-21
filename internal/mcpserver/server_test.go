@@ -489,7 +489,7 @@ func TestCleanupEveryoneNeedsAdmin(t *testing.T) {
 func TestPlanLabelsOwner(t *testing.T) {
 	cs, _ := setup(t)
 	dir := project(t, map[string]string{"run.py": "print(1)\n"})
-	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "show_manifests": true})
 	if isErr {
 		t.Fatal(text)
 	}
@@ -577,7 +577,7 @@ func TestWatchPendingOnNode(t *testing.T) {
 func TestPlanAvoidNode(t *testing.T) {
 	cs, _ := setup(t)
 	dir := project(t, map[string]string{"app.py": "import streamlit as st\nst.write('hi')\n", "requirements.txt": "streamlit\n"})
-	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "goal": "web", "avoid_node": "k8s-haosu-20.sdsc.optiputer.net"})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "goal": "web", "avoid_node": "k8s-haosu-20.sdsc.optiputer.net", "show_manifests": true})
 	if isErr {
 		t.Fatal(text)
 	}
@@ -706,7 +706,7 @@ func TestSetupFixNeedsPersonApproval(t *testing.T) {
 func TestPlanPacksSafelyAndRedacts(t *testing.T) {
 	cs, _ := setup(t)
 	dir := project(t, map[string]string{"run.py": "print(1)\n", "id_rsa": "-----BEGIN OPENSSH PRIVATE KEY-----\nx\n", "tokenizer.py": "x = 1\n"})
-	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "show_manifests": true})
 	if isErr {
 		t.Fatal(text)
 	}
@@ -808,7 +808,7 @@ func TestWebHostInUseRefused(t *testing.T) {
 func TestJobPlanSaysResultsNotSavedWithoutKeys(t *testing.T) {
 	cs, _ := setup(t)
 	dir := project(t, map[string]string{"run.py": "print(1)\n"})
-	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "show_manifests": true})
 	if isErr {
 		t.Fatal(text)
 	}
@@ -854,7 +854,7 @@ func TestJobResultsWithKeys(t *testing.T) {
 	}
 	defer cs.Close()
 	dir := project(t, map[string]string{"run.py": "print(1)\n"})
-	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "show_manifests": true})
 	if isErr || !strings.Contains(fmt.Sprint(m["decisions"]), "Saves results") || !strings.Contains(fmt.Sprint(m["manifests"]), "RESULTS_DIR") || strings.Contains(fmt.Sprint(m["manifests"]), "save-results") {
 		t.Fatalf("plan: %s %v", text, m["decisions"])
 	}
@@ -1157,7 +1157,7 @@ func TestPlainAppsGuidedQuestionsAndRPackagesViaMCP(t *testing.T) {
 	webDir := project(t, map[string]string{
 		"app.py": "from http.server import HTTPServer, BaseHTTPRequestHandler\nHTTPServer(('0.0.0.0', 8080), BaseHTTPRequestHandler).serve_forever()\n",
 	})
-	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": webDir, "goal": "web"})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": webDir, "goal": "web", "show_manifests": true})
 	if isErr || m["runnable"] != true {
 		t.Fatalf("plain http.server web plan must be runnable without command=: isErr=%v text=%s m=%v", isErr, text, m)
 	}
@@ -1182,12 +1182,92 @@ func TestPlainAppsGuidedQuestionsAndRPackagesViaMCP(t *testing.T) {
 		"sim.R":     "print(1)\n",
 		"install.R": "install.packages('jsonlite', repos='https://cloud.r-project.org')\n",
 	})
-	m, isErr, text = call(t, cs, "nrp_plan", map[string]any{"project": rDir, "discard_results": true})
+	m, isErr, text = call(t, cs, "nrp_plan", map[string]any{"project": rDir, "discard_results": true, "show_manifests": true})
 	if isErr || m["runnable"] != true {
 		t.Fatalf("R script with install.R must be runnable: isErr=%v text=%s m=%v", isErr, text, m)
 	}
 	mb, _ = json.Marshal(m["manifests"])
 	if !strings.Contains(string(mb), "Rscript install.R") || !strings.Contains(string(mb), "Rscript sim.R") {
 		t.Fatalf("R manifest missing Rscript install.R or Rscript sim.R: %s", mb)
+	}
+}
+
+func TestSmallerPlanAndToolDescriptions(t *testing.T) {
+	cs, _ := setup(t)
+	// P5: Typical web plan result is under 6 KB, omits manifests unless show_manifests=true,
+	// and returns summary, decisions, refusals, warnings, code_files, skipped_files, resources.
+	webDir := project(t, map[string]string{
+		"app.py":           "import streamlit as st\nst.title('Leaf area explorer')\n",
+		"requirements.txt": "streamlit\n",
+		".env":             "SECRET=123\n",
+	})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": webDir, "goal": "web"})
+	if isErr {
+		t.Fatal(text)
+	}
+	if len(text) >= 6*1024 {
+		t.Fatalf("typical web plan result is %d bytes, want < 6 KB (6144 bytes)", len(text))
+	}
+	if m["manifests"] != nil {
+		t.Fatalf("manifests must be omitted unless show_manifests=true, got %v", m["manifests"])
+	}
+	for _, field := range []string{"summary", "decisions", "refusals", "warnings", "code_files", "skipped_files", "resources"} {
+		if m[field] == nil {
+			t.Fatalf("plan result missing %s: %v", field, m)
+		}
+	}
+	resList, _ := m["resources"].([]any)
+	if len(resList) == 0 {
+		t.Fatalf("resources empty: %v", m["resources"])
+	}
+	rb, _ := json.Marshal(resList)
+	for _, want := range []string{`"kind":"Deployment"`, `"cpu":"1"`, `"memory":"2Gi"`, `"kind":"Service"`, `"kind":"Ingress"`} {
+		if !strings.Contains(string(rb), want) {
+			t.Fatalf("resources missing %s: %s", want, rb)
+		}
+	}
+	// Job with GPU and hours reports cpu, memory, gpu, hours in resources.
+	jobDir := project(t, map[string]string{"train.py": "import torch\ntorch.cuda.is_available()\n"})
+	jm, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": jobDir, "gpu": 1, "hours": 6, "discard_results": true})
+	if isErr {
+		t.Fatal(text)
+	}
+	jrb, _ := json.Marshal(jm["resources"])
+	for _, want := range []string{`"kind":"Job"`, `"cpu":"4"`, `"memory":"16Gi"`, `"gpu":1`, `"hours":6`} {
+		if !strings.Contains(string(jrb), want) {
+			t.Fatalf("job resources missing %s: %s", want, jrb)
+		}
+	}
+	// With show_manifests=true, full manifests are returned.
+	withM, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": webDir, "goal": "web", "show_manifests": true})
+	if isErr {
+		t.Fatal(text)
+	}
+	if withM["manifests"] == nil {
+		t.Fatal("show_manifests=true did not include manifests")
+	}
+
+	// P6: nrp_plan, nrp_run, nrp_watch descriptions each under 600 chars and ending with what to tell the person.
+	lt, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := map[string]bool{}
+	for _, tl := range lt.Tools {
+		switch tl.Name {
+		case "nrp_plan", "nrp_run", "nrp_watch":
+			checked[tl.Name] = true
+			if len(tl.Description) == 0 || len(tl.Description) >= 600 {
+				t.Errorf("%s description is %d chars, want < 600: %q", tl.Name, len(tl.Description), tl.Description)
+			}
+			sentences := strings.Split(strings.TrimSuffix(tl.Description, "."), ". ")
+			last := sentences[len(sentences)-1]
+			if !strings.HasPrefix(last, "Tell the person") {
+				t.Errorf("%s description must end with what to tell the person, got last sentence %q", tl.Name, last)
+			}
+		}
+	}
+	if len(checked) != 3 {
+		t.Fatalf("checked %v, want nrp_plan, nrp_run, nrp_watch", checked)
 	}
 }
