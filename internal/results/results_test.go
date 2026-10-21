@@ -106,11 +106,16 @@ func TestAttachUploader(t *testing.T) {
 			t.Fatal("secret in env literal")
 		}
 	}
-	// Unknown custom images fall back to the native sidecar.
+	// Unknown custom images (and R/Julia images that lack curl/python) fall back to the native sidecar.
 	ps2 := &k8s.PodSpec{Containers: []k8s.Container{{Name: "main", Image: "custom/tool:1.0", Command: []string{"bash", "-c", "set -e; cd /work; ./tool"}}}}
 	AttachUploader(ps2, "job-results")
 	if len(ps2.InitContainers) != 1 || ps2.InitContainers[0].RestartPolicy != "Always" || ps2.InitContainers[0].Image != UploaderImage {
 		t.Fatalf("sidecar fallback %+v", ps2.InitContainers)
+	}
+	psR := &k8s.PodSpec{Containers: []k8s.Container{{Name: "main", Image: "rocker/r-ver:4.4.2", Command: []string{"bash", "-c", "set -e; cd /work; Rscript analysis.R"}}}}
+	AttachUploader(psR, "job-results")
+	if len(psR.InitContainers) != 1 || psR.InitContainers[0].Image != UploaderImage {
+		t.Fatalf("rocker/r-ver must use sidecar uploader (no curl or python in image): %+v", psR.InitContainers)
 	}
 }
 

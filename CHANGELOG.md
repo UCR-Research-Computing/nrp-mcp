@@ -3,6 +3,43 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before 1.0
 minor versions may change behavior.
 
+## [0.10.0] - 2026-10-20
+
+### Changed
+
+- GPU sessions (`goal=session` with `gpu > 0`) now run as a `batch/v1 Job` with a time limit
+  (`activeDeadlineSeconds`, default 6 hours, max 12 hours, config `gpu_session_hours`) and a
+  Service for `kubectl port-forward`; CPU sessions stay Deployments. Deployments requesting
+  GPUs are always refused (R8). `nrp_session` connects to both Deployment and Job sessions.
+- Every default image is pinned to a tested tag (no `:latest`). Code is unpacked from the
+  read-only `/code` ConfigMap inside the main container, and images with `curl` or `python`
+  upload `results/` on exit without a second container or image pull.
+- `nrp_plan` returns compact `resources` per object (`cpu`, `memory`, `scratch`, `storage`,
+  `gpu`, `gpu_type`, `hours`, `tasks`) and omits full Kubernetes `manifests` unless
+  `show_manifests=true` is passed (typical web plan result under 6 KB).
+- Rewrote `nrp_plan`, `nrp_run` and `nrp_watch` tool descriptions so each is under 600
+  characters and ends with what the AI assistant should tell the person.
+
+### Added
+
+- Every container sets `ephemeral-storage` request and limit (default `10Gi`, configurable per
+  plan with `scratch=` between `1Gi` and `50Gi`); R2 enforces `ephemeral-storage` alongside
+  `cpu` and `memory`.
+- CPU-only sweeps add required `nodeAffinity` keeping pods off GPU nodes (`nvidia.com/gpu.present
+  NotIn [true]`) and note that `opportunistic=true` is available.
+- `nrp_plan region=us-west|us-central|us-east` matches volume storage classes
+  (`rook-cephfs-west`, `-central`, `-east`) and compute node affinity to the chosen region.
+- Per-namespace running-GPU cap (`namespace_gpus`, default 8): `nrp_plan` and `nrp_run` count
+  GPUs in Running pods in the namespace and refuse with R14 when the run would go over the cap.
+- H100, H200 and GH200 plans without `opportunistic` are refused (R6) when the namespace quota
+  has no entry for that GPU (their default quota is 0 and is not requestable).
+- Plain Python web apps (`HTTPServer`, `serve_forever`, `http.server`, `app.run`) start
+  without `command=` using the port in the file. Folders with several scripts or notebooks
+  return a single guided question in `next` ("Which file starts the app: a.py or b.py?")
+  instead of an error.
+- R package installation from `install.R`, `DESCRIPTION` (`Imports:`) or `renv.lock` for R
+  jobs, sweeps and Shiny apps, and in `nrp_build` Dockerfiles.
+
 ## [0.9.1] - 2026-10-20
 
 ### Fixed

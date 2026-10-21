@@ -315,8 +315,8 @@ const exitUploadBody = `_nrp_up() {
   _rc=$?
   trap - EXIT TERM INT
   set +e
-  if [ ! -d /work/results ]; then
-    echo "nrp-results: no /work/results folder, nothing to save"
+  if [ ! -d /work/results ] || [ -z "$(find /work/results -type f -print -quit 2>/dev/null)" ]; then
+    echo "nrp-results: no /work/results files, nothing to save"
     exit "$_rc"
   fi
   if command -v curl >/dev/null 2>&1; then
@@ -360,7 +360,7 @@ func canInlineUpload(c k8s.Container) bool {
 		return false
 	}
 	img := strings.ToLower(c.Image)
-	for _, k := range []string{"python", "pytorch", "tensorflow", "jax", "jupyter", "scipy", "rocker/", "julia", "curl", "node:"} {
+	for _, k := range []string{"python", "pytorch", "tensorflow", "jax", "jupyter", "scipy", "curl", "node:"} {
 		if strings.Contains(img, k) {
 			return true
 		}

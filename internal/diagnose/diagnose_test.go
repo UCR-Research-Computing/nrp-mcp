@@ -142,6 +142,21 @@ func TestPendingCases(t *testing.T) {
 			node:    "n2",
 		},
 		{
+			name: "d scheduled pod ignores earlier FailedScheduling",
+			pod: Pod{Name: "p", Phase: "Pending", Node: "k8s-haosu-12", Scheduled: ago(3), Now: pendNow,
+				Containers: []Container{{Name: "session", Image: "quay.io/jupyter/pytorch-notebook:cuda12-python-3.13", Waiting: "ContainerCreating"}},
+				Events: []Event{
+					{Type: "Warning", Reason: "FailedScheduling", Message: "0/500 nodes are available: 300 Insufficient nvidia.com/gpu."},
+					{Type: "Normal", Reason: "Scheduled", Message: "Successfully assigned ns/p to k8s-haosu-12"},
+					{Type: "Normal", Reason: "Pulling", Message: `Pulling image "quay.io/jupyter/pytorch-notebook:cuda12-python-3.13"`},
+				}},
+			state:   "Pulling image",
+			explain: []string{"On k8s-haosu-12, downloading quay.io/jupyter/pytorch-notebook:cuda12-python-3.13 for 3 min."},
+			fix:     "Don't redeploy",
+			ageMin:  3,
+			node:    "k8s-haosu-12",
+		},
+		{
 			name:      "d no info, no image text",
 			pod:       Pod{Name: "p", Phase: "Pending", Node: "n3", Scheduled: pendNow.Add(time.Minute), Now: pendNow},
 			state:     "Pulling image",

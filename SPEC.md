@@ -1,6 +1,6 @@
 # nrp-mcp SPEC
 
-Version 0.9.1 (2026-10-20; code 0.9.1). Owner: UCR Research Computing.
+Version 0.10.0 (2026-10-20; code 0.10.0). Owner: UCR Research Computing.
 Repo: `UCR-Research-Computing/nrp-mcp`. License: MIT.
 
 ## 1. What it is
@@ -75,12 +75,13 @@ kubeconfig: ~/.kube/config     # the NRP config from https://nrp.ai/config
 context: nautilus
 namespace: ucr-example         # default; tools take a namespace argument too
 kubectl: kubectl               # path if not on PATH
-caps:
-  pods_per_run: 50       # pods running at the same time (a sweep's parallel)
-  gpus_per_run: 4        # GPUs in use at the same time
-  tasks_per_run: 10000   # total tasks in one sweep
-  hours_per_run: 48
-  upload_gb_per_run: 50
+pods_per_run: 50               # pods running at the same time (a sweep's parallel)
+gpus_per_run: 4                # GPUs in use at the same time
+namespace_gpus: 8              # max GPUs in running pods across the namespace
+tasks_per_run: 10000           # total tasks in one sweep
+hours_per_run: 48
+gpu_session_hours: 6           # GPU sessions run as Jobs and stop after this many hours (max 12)
+upload_gb_per_run: 50
 ```
 
 `nrp-mcp doctor` checks: kubectl present, oidc-login plugin present, kubeconfig readable,
@@ -95,12 +96,12 @@ useful the `kubectl` equivalent so people learn. Errors are explanations, not st
 |---|---|---|---|
 | `nrp_setup` | only with `fix=true` | the model asks the user; CLI `nrp-mcp setup` asks [y/N] | laptop readiness: kubectl (version vs the cluster's public /version, verified against the kubeconfig CA), kubelogin, NRP config, sign-in. Fix: official kubectl (dl.k8s.io, matched to the cluster's minor line via stable-X.Y.txt) and kubelogin (GitHub latest release) into the user bin folder, SHA256 verified against the published files, atomic install with a dated backup of any old copy; downloaded NRP config copied to ~/.kube/config (0600), or merged with `kubectl config view --flatten` after a dated backup when a non-NRP config exists. Never needs admin rights; never reads the sign-in token |
 | `nrp_status` | no | - | who am I, namespaces, quotas, limit ranges, running workloads and their use, policy warnings, public URLs, upcoming purges/expiries |
-| `nrp_plan` | no | - | inspect a project + goal; return summary, manifests, rules applied, warnings, refusals, suggested names (web), `plan_id`, and, when runnable, a `confirm_token` (low-risk) or `needs_person_approval` (web, GPU). No plan when the caller's identity cannot be confirmed |
+| `nrp_plan` | no | - | inspect a project + goal; return summary, decisions, `resources`, rules applied, warnings, refusals, `code_files`, `skipped_files`, suggested names (web), `plan_id`, and, when runnable, a `confirm_token` (low-risk) or `needs_person_approval` (web, GPU). Full manifests only with `show_manifests=true`. No plan when the caller's identity cannot be confirmed |
 | `nrp_build` | no | no | containerize: suggests a Dockerfile and a GitHub Actions workflow (`target=github`, default; image `ghcr.io/<owner>/<repo>` from the git remote) or a `.gitlab-ci.yml` (`target=gitlab`), plus steps and public/private image guidance; writes nothing |
 | `nrp_run` | yes | the person (web, GPU; 5.2) or token (low-risk) | apply an approved plan; label; secrets; TTL; run card |
 | `nrp_watch` | no | - | progress, logs (tail/grep), plain-language diagnosis with a suggested fix; per pod: node, minutes waiting (Pending), containers (image and state) and the last 5 events |
 | `nrp_data` | yes for uploads | the person + `data_is_p1` for up | list / up (under 100 MB, kubectl cp through a small labelled helper pod) / down, and `down run=<id>` for a job's saved results (5.4); bigger data is pointed to `nrp_plan goal=pull` or NRP S3 |
-| `nrp_session` | no | - | connect to a session created by `nrp_plan goal=session` + `nrp_run` (which carry the token): readiness, port-forward command, local URL and sign-in token; or point to the hosted JupyterHub |
+| `nrp_session` | no | - | connect to a session created by `nrp_plan goal=session` + `nrp_run` (CPU Deployment or GPU Job, which carry the token): readiness, port-forward command, local URL and sign-in token; or point to the hosted JupyterHub |
 | `nrp_cleanup` | yes | the person (step 2) | list and delete the caller's own nrp-mcp runs (objects labelled with their owner id); a namespace admin can pass `everyone=true` for all runs in the namespace |
 
 ### 5.1 `nrp_plan` goals
@@ -108,27 +109,27 @@ useful the `kubectl` equivalent so people learn. Errors are explanations, not st
 | Goal | Workload | Notes |
 |---|---|---|
 | `job` | `batch/v1 Job` | default; one run to completion |
-| `sweep` | Indexed Job | `count` tasks, `parallel` at a time; task index in `JOB_COMPLETION_INDEX`, plus `SLURM_ARRAY_TASK_ID` (the Slurm `--array` id when translated from a script, else the index); >100 tasks forces limits = requests |
-| `web` | Deployment + Service + Ingress | app type detection (Shiny 3838, Streamlit 8501, Dash 8050, Gradio 7860, FastAPI 8000, Flask 5000 incl. Flask with a mounted Dash app, static nginx 8080, Node 3000), readiness probe, no GPU, TLS, suggested hosts; a prebuilt image takes its port from the Dockerfile's `EXPOSE`; same name and owner = update in place |
-| `session` | Deployment (1 replica) | used by `nrp_session` |
+| `sweep` | Indexed Job | `count` tasks, `parallel` at a time; task index in `JOB_COMPLETION_INDEX`, plus `SLURM_ARRAY_TASK_ID` (the Slurm `--array` id when translated from a script, else the index); >100 tasks forces limits = requests; CPU-only sweeps add required `nodeAffinity` away from GPU nodes (`nvidia.com/gpu.present NotIn [true]`) and offer `opportunistic=true` |
+| `web` | Deployment + Service + Ingress | app type detection (Shiny 3838, Streamlit 8501, Dash 8050, Gradio 7860, FastAPI 8000, Flask 5000 incl. Flask with a mounted Dash app, plain Python `HTTPServer`/`serve_forever`/`http.server`/`app.run` with port from the code, static nginx 8080, Node 3000), readiness probe, no GPU, TLS, suggested hosts; a prebuilt image takes its port from the Dockerfile's `EXPOSE`; same name and owner = update in place |
+| `session` | Deployment (CPU) or Job + Service (GPU) | used by `nrp_session`; GPU sessions run as a `batch/v1 Job` with `activeDeadlineSeconds` (default 6 h, max 12 h, config `gpu_session_hours`) and a Service for port-forward |
 | `llm-batch` | Job | LLM token in a Secret; script retries with backoff; `cache_salt` advice |
 
-Inputs: `project` (path), `goal`, `command` (what to run; inferred if omitted), `gpu` (0..n
-or a type), `cpu`, `memory`, `count`/`parallel` (sweep), `image` (override), `name`,
+Inputs: `project` (path), `goal`, `command` (what to run; inferred if omitted; when a folder has several scripts or notebooks, `next` asks a single guided question instead of failing), `gpu` (0..n
+or a type), `cpu`, `memory`, `scratch` (ephemeral-storage, default `10Gi`, 1Gi..50Gi), `region` (`us-west`, `us-central`, `us-east`), `count`/`parallel` (sweep), `image` (override), `name`,
 `namespace`, `host` (web), `port` (web), `data_volume`, `pull_secret` (private image),
 `avoid_node` (comma list, at most 5: keeps job, sweep, llm-batch, web and session pods off
 those nodes with a required node anti-affinity on `kubernetes.io/hostname`; it is in the
 manifests, so the plan hash and confirm token cover it),
-`llm_secret`, `size`/`urls`/`subdir`/`data_is_p1` (volume, pull), `session`, `opportunistic`.
+`llm_secret`, `size`/`urls`/`subdir`/`data_is_p1` (volume, pull), `session`, `opportunistic`, `discard_results`, `show_manifests`.
 
 Image choice order: user `image` (with a Dockerfile or no project: run as built, port from
 `EXPOSE`, no code copy or install); project Dockerfile without `image` (needs a build first;
 suggests `ghcr.io/<owner>/<repo>:latest`); detected stack
--> known public image (PyTorch -> `pytorch/pytorch`, TensorFlow ->
-`tensorflow/tensorflow:latest-gpu`, Jupyter/data science ->
-`quay.io/jupyter/scipy-notebook`, R -> `rocker/r-ver`, Shiny -> `rocker/shiny`, Python ->
-`python:3.12-slim`); requirements installed at start only for small projects, otherwise a
-build is recommended. `pull_secret` names a docker-registry Secret for a private image
+-> pinned public image (PyTorch -> `pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime`, TensorFlow ->
+`tensorflow/tensorflow:2.18.0-gpu`, JAX -> `nvcr.io/nvidia/jax:24.10-py3`, Jupyter/data science ->
+`quay.io/jupyter/scipy-notebook:python-3.13` or `quay.io/jupyter/pytorch-notebook:cuda12-python-3.13`, VS Code -> `codercom/code-server:4.96.4`, R -> `rocker/r-ver:4.4.2`, Shiny -> `rocker/shiny:4.4.2`, Julia -> `julia:1.11-bookworm`, Node -> `node:22-bookworm-slim`, static web -> `nginxinc/nginx-unprivileged:1.27-alpine`, Python ->
+`python:3.12-slim-bookworm`); requirements (`requirements.txt`, `package.json`, `install.R`, `DESCRIPTION` `Imports:`, `renv.lock`) installed at start only for small projects, otherwise a
+build is recommended. The code ConfigMap is mounted read-only at `/code` and unpacked in the main container (no `busybox` init container). `pull_secret` names a docker-registry Secret for a private image
 (added as `imagePullSecrets`); without it, a ghcr.io or NRP GitLab image gets a note that a
 private image needs one or must be made public.
 
@@ -173,12 +174,14 @@ on mismatch, expiry or reuse.
 - Pods never get keys. `nrp_run` signs an S3 POST policy limited to the run's prefix, 5 GiB
   per file, expiring at the job deadline + 1 h, and stores the form fields in a run-time
   Secret `<job>-results`.
-- A native sidecar (initContainer with restartPolicy Always, image
-  quay.io/curl/curl:8.23.0, 100m CPU / 64 MiB taken out of the main container's share so the
-  pod total stays as planned) uploads everything under /work/results when it gets SIGTERM,
-  after the main container ends or at the deadline (300 s grace). Form values are sent
-  literally and files are streamed, so any file name works; a failed upload is logged as
-  "nrp-results: FAILED <key> (HTTP n)" and the sidecar exits non-zero.
+- For images that have `curl` or `python` (all default images), an `EXIT` trap on the main
+  container's shell uploads `/work/results` when the container exits (no second container or
+  image pull). Custom unknown images fall back to a native sidecar (initContainer with
+  restartPolicy Always, image quay.io/curl/curl:8.23.0, 100m CPU / 64 MiB taken out of the
+  main container's share so the pod total stays as planned) that uploads everything under
+  /work/results when it gets SIGTERM, after the main container ends or at the deadline (300 s
+  grace). Form values are sent literally and files are streamed, so any file name works; a
+  failed upload is logged as "nrp-results: FAILED <key> (HTTP n)" and exits non-zero.
 - No keys: job and sweep plans are refused (R23) until the person says "yes, discard
   results" and the assistant plans again with `discard_results=true`.
 - `nrp_data action=down run=<id>` downloads to `<project>/results/<run>/` and never
@@ -192,20 +195,20 @@ pure function `Check(manifests, ctx) -> []Finding`; refusals block the token.
 | Id | Rule | Severity | Source |
 |---|---|---|---|
 | R1 | A Job's command must not be (or end with) `sleep` / `sleep infinity` / `tail -f /dev/null` | refuse | NRP Cluster Policies |
-| R2 | Every container sets cpu and memory requests and limits | refuse | Cluster Policies (resource allocation) |
+| R2 | Every container sets cpu, memory and ephemeral-storage requests and limits | refuse | Cluster Policies (resource allocation) |
 | R3 | Limits within 20% of requests (cpu, memory, ephemeral-storage) | refuse | Cluster Policies |
 | R4 | > 100 pods (sweep count, counted on the total, conservatively) requires limit = request | refuse | Cluster Policies |
 | R5 | No banned `priorityClassName` (only unset, `armada-default`, `owner-no-preempt`, `opportunistic`, `opportunistic2`) | refuse | Opportunistic Use page |
-| R6 | Special GPU (`nvidia.com/a100`, `h100`, `h200`, `gh200`) needs quota > 0 or `opportunistic` | refuse | GPU Pods page + live quota |
+| R6 | Special GPU (`nvidia.com/a100`, `h100`, `h200`, `gh200`) needs quota > 0 or `opportunistic` (missing H100/H200/GH200 quota entry counts as 0) | refuse | GPU Pods page + live quota |
 | R6Q | Special GPU when the namespace quota cannot be read (not opportunistic) | refuse | nrp-mcp 0.9.1 |
 | R7 | GPUs per pod: at most 8 for Jobs, 2 for bare pods/interactive | refuse | GPU Pods page |
-| R8 | Deployments (web/session idle) must not request GPUs, except `session` with an explicit GPU and a confirm | refuse/warn | Long Idle Pods page |
+| R8 | Deployments must not request GPUs (`goal=session` with `gpu>0` runs as a Job with `activeDeadlineSeconds`) | refuse | Long Idle Pods page |
 | R9 | No bare Pod for batch work (use a Job) | refuse | Cluster Policies |
 | R10 | Storage class `ceph-rbd` not allowed (never provisions) | refuse | tested 2026-10-05 |
 | R11 | No secret-looking literal env values (keys, tokens, passwords) in specs; use Secrets | refuse | Scheduling page (specs visible) |
 | R12 | Ingress: class `haproxy`, TLS host listed, HTTP only, host under `nrp-nautilus.io` or user domain with certificate | refuse | Exposing HTTP page |
 | R13 | Web/publish needs the person's approval (5.2); with consent token, `public_ack` equal to the plan's URL | refuse (at run) | RC 2026-10-06; revised 2026-10-20 |
-| R14 | Caps (config): pods and GPUs running at the same time (a Job counts min(parallelism, completions); Kubernetes defaults parallelism to 1), total tasks per sweep, hours per run | refuse | nrp-mcp config |
+| R14 | Caps (config): pods and GPUs running at the same time (a Job counts min(parallelism, completions); Kubernetes defaults parallelism to 1), running GPUs across the namespace (`namespace_gpus`, default 8), total tasks per sweep, hours per run | refuse | nrp-mcp config |
 | R15 | Jobs get `ttlSecondsAfterFinished` and `backoffLimit` | auto-fix | good citizen |
 | R16 | Requests over 1 CPU / 2 GiB are subject to usage-violation checks (GPU < 40%, CPU outside 20-200%, RAM outside 20-150%) | warn | Cluster Policies |
 | R17 | Deployments are removed after 2 weeks unless the namespace is on the exceptions list | warn | Long Idle Pods page |
@@ -307,6 +310,8 @@ Prompts: `first_run`, `port_slurm_script`, `parameter_sweep`, `my_job_failed`,
 | P6c | 0.6.2-0.6.4 | client compatibility and sweep fixes: single-typed tool schemas (Gemini), Slurm array ids inside scripts, caps count what runs at once | done 2026-10-06; Hermes Agent, Gemini CLI and OpenCode tested live |
 | P5b | 0.7.0 | GitHub image path: GitHub Actions -> ghcr.io (default, built-in token), prebuilt image runs, `pull_secret`, in-place web updates; NRP GitLab as `target=gitlab` | done; live-tested 2026-10-07 (section 12). Not yet live-tested: the `pull_secret` path with a real token, and `target=gitlab` |
 | P6d | 0.8.0 | honest Pending diagnosis (node, pull, age, events) and `avoid_node` | done 2026-10-15; live test in section 12 |
+| P6e | 0.9.0-0.9.1 | person approval (question or 6-char code), per-person S3 results, safe packing, web hardening, kubectl error handling and watch conditions | done 2026-10-20; live test in section 12 |
+| P6f | 0.10.0 | GPU sessions as Jobs, pinned images with single-container unpack/upload, policy (ephemeral-storage, CPU sweep affinity, region storage, namespace_gpus, H100/H200/GH200 quota), plain apps and R packages, compact plans (< 6 KB) and operator tool descriptions | done 2026-10-20; live test in section 12 |
 | P7 | 1.0.0 | pilot with RC and a first lab workshop; browser sign-in on macOS and Windows checked by hand | next |
 
 ## 12. Testing
@@ -477,6 +482,40 @@ cleaned up with the two-step token flow (0 workloads). Second try: CPU job, 3-ta
 web plan-only refusal all passed. E2E OK. Note for 0.10.0 (images): the results sidecar adds
 a second image download per new node; pre-pulling or reusing the main image would remove it.
 
+Live 0.10.0, 2026-10-20 (`scripts/e2e010` and `scripts/e2eresults`, real stdio clients
+driving the 0.10.0 binary with `NRP_CONSENT=code`, RC namespace `ucr-research-computing`,
+synthetic P1 data only, public host and 1-GPU session approved by the namespace admin):
+(1) 20-task CPU sweep with `opportunistic=true` (`python:3.12-slim-bookworm`, 10 parallel,
+1 CPU / 1Gi / 10Gi ephemeral-storage, required `nodeAffinity` `nvidia.com/gpu.present NotIn
+[true]`, `priorityClassName: opportunistic`): reached 20 Succeeded in 66 s (SWEEP 20 OK) and
+was cleaned up.
+(2) R script with `install.R` (`rocker/r-ver:4.4.2`): installed `jsonlite` from CRAN via
+`Rscript install.R` at start and ran `Rscript analysis.R` to Succeeded in 52 s on
+`pas.sacr.net.internet2.edu`, then cleaned up (R INSTALL.R OK).
+(3) Plain `http.server` web app with NO `command=` and NO `port=` on host
+`nrp010-plain-test`: `nrp_plan` detected `python server.py` on port 8080, returned a
+2,893-byte result (< 6 KB, `manifests` omitted), waited for the person's approval code,
+answered HTTP 200 at `https://nrp010-plain-test.nrp-nautilus.io/` on
+`k8s-haosu-20.sdsc.optiputer.net` in 20 s, and was removed with two-step code cleanup
+(PLAIN WEB OK).
+(4) 1-GPU session (`nvidia.com/gpu`, `hours=1`, `quay.io/jupyter/pytorch-notebook:cuda12-python-3.13`):
+planned as a `batch/v1 Job` (`activeDeadlineSeconds: 3600`) + `Service` (never a Deployment),
+started after the person's approval code, came up Ready on `k8s-haosu-12.sdsc.optiputer.net`
+with `nrp_session` returning `kubectl --context nautilus -n ucr-research-computing
+port-forward svc/e2e010-gpusess 8888:8888`, and was ended immediately with `nrp_cleanup`
+(GPU SESSION OK).
+(5) `scripts/e2eresults` (`python:3.12-slim-bookworm`, single-container inline Python EXIT
+uploader, no `busybox` or `quay.io/curl/curl` sidecar image pull): ran on
+`dtn-crispie.njedge.net`, logged `nrp-results: saved runs/1021-0030-mtvfm4/hello.txt`,
+downloaded `hello.txt` (`results ok`) via `nrp_data action=down`, and cleaned up
+(E2E RESULTS OK). Final `nrp_status`: 0 workloads (0 active), 0 volumes, 0 public URLs.
+Found and fixed during the live test: (1) `rocker/r-ver:4.4.2` has neither `curl` nor
+`python` installed by default, so R/Julia images now use the `quay.io/curl/curl:8.23.0`
+sidecar uploader and `exitUploadBody` skips the upload when `/work/results` has no files
+(test added); (2) a pod that had an earlier `FailedScheduling` warning before being assigned
+to a node was still diagnosed from `FailedScheduling` while its image downloaded on the node;
+`diagnose.Explain` now checks `FailedScheduling` only when `p.Node == ""` (test added).
+
 ## 13. Change log
 
 | Version | Date | Change |
@@ -493,3 +532,4 @@ a second image download per new node; pre-pulling or reusing the main image woul
 | 0.8.0 | 2026-10-15 | Code 0.8.0: `nrp_watch` Pending diagnosis (node, preparing, downloading, slow node; node, age, containers, events in the result); `nrp_plan avoid_node`; gauntlet ASCII check portable; slow-node incident and live test recorded |
 | 0.9.0 | 2026-10-20 | Code 0.9.0: person approval (elicitation or code) for risky steps; safe packing with packed/skipped lists; results to a per-person NRP S3 bucket; web hardening (R20-R22, no API token, 14-day expiry); untrusted text and owner checks; D3 revised, D9-D11 added |
 | 0.9.1 | 2026-10-20 | Code 0.9.1: kubectl errors are errors; dry run before approval and run card first; no plan without identity, R6Q; per-command time limits; locked token/approval stores; nrp_watch Job conditions, scoped events and new diagnoses; input validation and Slurm fixes; 0.9.0 review leftovers |
+| 0.10.0 | 2026-10-20 | Code 0.10.0: GPU sessions as Jobs (`gpu_session_hours`); pinned images with single-container unpack and exit results upload; policy (`ephemeral-storage` 10Gi default + R2, CPU-only sweep anti-GPU nodeAffinity + `opportunistic`, `region` storage classes, `namespace_gpus` running-GPU cap, missing H100/H200/GH200 quota = 0); plain Python web apps without `command=`, guided entry questions, R package install steps; compact plans (`resources`, `show_manifests=true`, < 6 KB) and < 600-char tool descriptions; live test recorded |

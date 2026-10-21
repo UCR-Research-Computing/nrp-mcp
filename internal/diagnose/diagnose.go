@@ -315,20 +315,22 @@ func explain(p Pod) Finding {
 			f.Fix = "Fix what the message names (often resources or a banned setting), then plan again; nrp_plan applies the NRP rules it knows."
 			return f
 		}
-		if e := evt("FailedScheduling"); e != nil {
-			msg := e.Message
-			f.Explain = "No node can take the pod right now: " + firstLine(msg)
-			switch {
-			case strings.Contains(msg, "nvidia.com"):
-				f.Fix = "No free GPU of that type fits. Ask for a standard GPU (nvidia.com/gpu), fewer GPUs, or wait; nrp_status shows what you asked for."
-			case strings.Contains(msg, "Insufficient memory") || strings.Contains(msg, "Insufficient cpu"):
-				f.Fix = "Lower cpu/memory, or wait for a larger node to free up."
-			case strings.Contains(msg, "persistentvolumeclaim") || strings.Contains(msg, "volume node affinity"):
-				f.Fix = "The volume is in another region than the free nodes; keep compute in the volume's region or use S3."
-			default:
-				f.Fix = "Wait a few minutes, or loosen the request."
+		if p.Node == "" {
+			if e := evt("FailedScheduling"); e != nil {
+				msg := e.Message
+				f.Explain = "No node can take the pod right now: " + firstLine(msg)
+				switch {
+				case strings.Contains(msg, "nvidia.com"):
+					f.Fix = "No free GPU of that type fits. Ask for a standard GPU (nvidia.com/gpu), fewer GPUs, or wait; nrp_status shows what you asked for."
+				case strings.Contains(msg, "Insufficient memory") || strings.Contains(msg, "Insufficient cpu"):
+					f.Fix = "Lower cpu/memory, or wait for a larger node to free up."
+				case strings.Contains(msg, "persistentvolumeclaim") || strings.Contains(msg, "volume node affinity"):
+					f.Fix = "The volume is in another region than the free nodes; keep compute in the volume's region or use S3."
+				default:
+					f.Fix = "Wait a few minutes, or loosen the request."
+				}
+				return f
 			}
-			return f
 		}
 		if e := evt("FailedMount"); e != nil {
 			f.State = "ContainerCreating"
