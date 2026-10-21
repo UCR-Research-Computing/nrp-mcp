@@ -3,6 +3,47 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before 1.0
 minor versions may change behavior.
 
+## [1.0.0] - 2026-10-20
+
+### Added
+
+- `nrp-mcp client <name>` configures user-scope MCP settings with the absolute binary path,
+  `["serve"]` (and optional `--namespace <ns>`), a `.bak` backup of any existing file, and a
+  restart reminder for 7 AI clients: `claude-desktop`, `claude-code`, `vscode` (top-level
+  `"servers"`), `cursor`, `gemini`, `opencode`, and `hermes`.
+- `scripts/install.ps1` for Windows PowerShell (`amd64` and `arm64`): downloads to
+  `%LOCALAPPDATA%\Programs\nrp-mcp`, verifies `SHA256SUMS`, runs `Unblock-File`, updates the
+  User `Path` via `[Environment]::SetEnvironmentVariable("Path", ..., "User")` (never `setx`),
+  and prints the full binary path.
+- `scripts/install.sh` now resolves the latest release via the `releases/latest` redirect first
+  (avoiding campus NAT GitHub API rate limits), clears `com.apple.quarantine` on macOS, detects
+  the user's shell (`zsh` -> `~/.zprofile`, `bash` -> `~/.bashrc`), asks before adding
+  `~/.local/bin` to `PATH`, and prints the full binary path at the end.
+- `nrp-mcp kubectl ...` runs the installed or configured `kubectl` with the NRP kubeconfig,
+  context, and user bin folder on `PATH`. All hints across `setup`, `doctor`, `nrp_session`,
+  and `nrp_build` use `nrp-mcp kubectl` or the full `kubectl` path instead of bare `kubectl`.
+- Release update check: `nrp-mcp version`, `nrp-mcp doctor`, and `nrp_status` report when a
+  newer GitHub release is available (3-second timeout, cached for 24 hours in
+  `update-check.json`, skipped offline).
+- `docs/START-HERE.md`: one-page novice guide covering NRP access and namespace requests,
+  per-OS downloads, macOS Gatekeeper and Windows SmartScreen steps, `nrp-mcp client`, first
+  run, approval codes, S3 results, cleanup, the 14-day rule, and a plain-language jargon table
+  (`pod`, `namespace`, `volume`, `public URL`, `P1`). All 20 `docs/examples/*.md` refreshed to
+  1.0 behavior.
+
+### Changed
+
+- `nrp-mcp doctor` now ends every `FAIL` line with `-> <exact next command or person to ask>`,
+  treats 0 namespaces as `FAIL` (`Not ready`), splits multi-file `KUBECONFIG` values (`:` or
+  `;`), and reports consent mode, S3 keys present (`yes`/`no`, never key values), and the
+  newest release.
+- Supply chain hardening: release archives and `SHA256SUMS` are signed with GitHub build
+  provenance attestations (`actions/attest-build-provenance`); `kubelogin` is pinned to
+  `v1.36.4` with per-platform SHA-256 digests embedded at build time; all GitHub Actions
+  workflows pin every `uses:` step to a 40-character commit SHA; `ci.yml` sets
+  `permissions: contents: read` and runs installer end-to-end checks on Linux, macOS, and
+  Windows.
+
 ## [0.10.0] - 2026-10-20
 
 ### Changed

@@ -1,6 +1,6 @@
 # nrp-mcp SPEC
 
-Version 0.10.0 (2026-10-20; code 0.10.0). Owner: UCR Research Computing.
+Version 1.0.0 (2026-10-20; code 1.0.0). Owner: UCR Research Computing.
 Repo: `UCR-Research-Computing/nrp-mcp`. License: MIT.
 
 ## 1. What it is
@@ -44,9 +44,10 @@ nrp-mcp serve
    |-- internal/kube        kubectl runner (context, namespace, JSON in/out, apply/delete)
    |-- internal/knowledge   policy digest, GPU table, storage chooser, KB links (resources)
    |-- internal/setup       laptop readiness: kubectl, kubelogin, NRP config, sign-in
+   |-- internal/client      write user-scope MCP config for 7 AI clients (keeps .bak)
    |-- internal/diagnose    plain-language explanations of pod states
    |-- internal/ops         cluster work behind the tools (status, watch, apply, cleanup)
-   `-- internal/version
+   `-- internal/version     version and 24-hour GitHub release update check
 ```
 
 **Why kubectl and not client-go:** NRP sign-in is the `oidc-login` exec plugin, which the
@@ -84,8 +85,17 @@ gpu_session_hours: 6           # GPU sessions run as Jobs and stop after this ma
 upload_gb_per_run: 50
 ```
 
-`nrp-mcp doctor` checks: kubectl present, oidc-login plugin present, kubeconfig readable,
-`auth whoami` works, namespace reachable, `auth can-i create jobs`.
+`nrp-mcp doctor` checks: kubeconfig readable (splitting multi-file `KUBECONFIG` on `:` or
+`;`), kubectl present, consent mode (`ask|code|token`), S3 keys present (`yes/no`, never
+values), newest release from the GitHub releases API (3 s timeout, skipped offline),
+`auth whoami` works, at least one namespace reachable (0 namespaces = not ready), and quota.
+Every `FAIL` line ends with `-> <exact next command or person to ask>`. `nrp-mcp version`
+and `nrp_status` also report when a newer release exists (cached for 24 hours in
+`update-check.json`, skipped offline). `nrp-mcp client <name>` writes user-scope MCP
+configuration with the absolute binary path and `["serve"]` (keeping a `.bak` copy) for
+`claude-desktop`, `claude-code`, `vscode` (`"servers"`), `cursor`, `gemini`, `opencode`, and
+`hermes`. `nrp-mcp kubectl ...` runs the installed `kubectl` with the NRP kubeconfig and
+context and the user bin folder on `PATH`.
 
 ## 5. Tools
 
@@ -312,7 +322,7 @@ Prompts: `first_run`, `port_slurm_script`, `parameter_sweep`, `my_job_failed`,
 | P6d | 0.8.0 | honest Pending diagnosis (node, pull, age, events) and `avoid_node` | done 2026-10-15; live test in section 12 |
 | P6e | 0.9.0-0.9.1 | person approval (question or 6-char code), per-person S3 results, safe packing, web hardening, kubectl error handling and watch conditions | done 2026-10-20; live test in section 12 |
 | P6f | 0.10.0 | GPU sessions as Jobs, pinned images with single-container unpack/upload, policy (ephemeral-storage, CPU sweep affinity, region storage, namespace_gpus, H100/H200/GH200 quota), plain apps and R packages, compact plans (< 6 KB) and operator tool descriptions | done 2026-10-20; live test in section 12 |
-| P7 | 1.0.0 | pilot with RC and a first lab workshop; browser sign-in on macOS and Windows checked by hand | next |
+| P7 | 1.0.0 | Onboarding, support and supply chain: `install.sh` (shell PATH offer, full path) and `install.ps1` (Windows User `Path`, `Unblock-File`), `nrp-mcp kubectl`, `nrp-mcp client <name>` (7 clients, user scope, `.bak`), `nrp-mcp doctor` actionable `FAIL ->` steps + 0-namespace fail + S3/consent/release checks, 24h update check in `version` and `nrp_status`, `docs/START-HERE.md` + jargon table + 20 examples refreshed, pinned workflow SHAs + `kubelogin` v1.36.4 SHA256 + GitHub artifact attestations, and novice dry-run kit | done 2026-10-20; live test in section 12 |
 
 ## 12. Testing
 
@@ -516,6 +526,29 @@ sidecar uploader and `exitUploadBody` skips the upload when `/work/results` has 
 to a node was still diagnosed from `FailedScheduling` while its image downloaded on the node;
 `diagnose.Explain` now checks `FailedScheduling` only when `p.Node == ""` (test added).
 
+Live 1.0.0, 2026-10-20 (1.0.0 binary installed to `~/.local/bin/nrp-mcp`, RC namespace
+`ucr-research-computing`, synthetic P1 data only, public host `nrp100-approve-test` approved
+by the namespace admin and removed at the end):
+(1) `nrp-mcp client hermes` against a temporary `HOME`: wrote `$HOME/.hermes/config.yaml`
+(`mcp_servers.nrp` with `command: "/Users/charlesforsyth/.local/bin/nrp-mcp"` and
+`args: ["serve"]`) and printed the restart instruction.
+(2) `nrp-mcp doctor --namespace ucr-research-computing`: reported `nrp-mcp 1.0.0 doctor` with
+all checks `ok` (`kubeconfig`, `kubectl`, `consent ask`, `s3-keys yes` without printing
+values, `release v1.0.0 (up to date; newest is v0.10.0)`, `sign-in`, `namespaces
+[ucr-research-computing]`, `quota`) and `Ready`.
+(3) `scripts/e2e` (`NRP_CONSENT=token`): CPU job (`e2e-hello-dbngdv`, `python:3.12-slim-bookworm`,
+1 Succeeded, cleaned up), 3-task CPU sweep (`1021-0139-9825qp`, 3 Succeeded, cleaned up), and
+web plan-only refusal without `public_ack` all passed (`E2E OK`).
+(4) `scripts/e2eresults`: single-container inline Python EXIT uploader saved
+`runs/1021-0140-3fjtsh/hello.txt` (`e2e-results-3fjtsh-94vnf`), `nrp_data action=down`
+downloaded `hello.txt` (`results ok`), and two-step cleanup left 0 workloads (`E2E RESULTS OK`).
+(5) `scripts/e2eapprove` on host `nrp100-approve-test` (`NRP_CONSENT=code`): web plan returned
+`needs_person_approval` with no confirm token, first `nrp_run` returned `NOT STARTED` and
+waited for the person's 6-character code, second `nrp_run` with the code started run
+`1021-0143-533agy` on `dtn-crispie.njedge.net`, `https://nrp100-approve-test.nrp-nautilus.io/`
+answered HTTP 200 in 31 s, and three-step code cleanup deleted all 4 objects and left
+`0 workloads (0 active), 0 volumes, 0 public URLs` (`E2E APPROVE OK`).
+
 ## 13. Change log
 
 | Version | Date | Change |
@@ -533,3 +566,4 @@ to a node was still diagnosed from `FailedScheduling` while its image downloaded
 | 0.9.0 | 2026-10-20 | Code 0.9.0: person approval (elicitation or code) for risky steps; safe packing with packed/skipped lists; results to a per-person NRP S3 bucket; web hardening (R20-R22, no API token, 14-day expiry); untrusted text and owner checks; D3 revised, D9-D11 added |
 | 0.9.1 | 2026-10-20 | Code 0.9.1: kubectl errors are errors; dry run before approval and run card first; no plan without identity, R6Q; per-command time limits; locked token/approval stores; nrp_watch Job conditions, scoped events and new diagnoses; input validation and Slurm fixes; 0.9.0 review leftovers |
 | 0.10.0 | 2026-10-20 | Code 0.10.0: GPU sessions as Jobs (`gpu_session_hours`); pinned images with single-container unpack and exit results upload; policy (`ephemeral-storage` 10Gi default + R2, CPU-only sweep anti-GPU nodeAffinity + `opportunistic`, `region` storage classes, `namespace_gpus` running-GPU cap, missing H100/H200/GH200 quota = 0); plain Python web apps without `command=`, guided entry questions, R package install steps; compact plans (`resources`, `show_manifests=true`, < 6 KB) and < 600-char tool descriptions; live test recorded |
+| 1.0.0 | 2026-10-20 | Code 1.0.0: `install.sh` (shell PATH offer, full path) and `install.ps1` (Windows User `Path`, `Unblock-File`, no `setx`); `nrp-mcp kubectl` passthrough and no bare `kubectl` hints; `nrp-mcp client <name>` for 7 clients (user scope, `.bak`, VS Code `"servers"`); `nrp-mcp doctor` actionable `FAIL ->` steps, 0-namespace failure, multi-file `KUBECONFIG`, consent/S3/release checks; 24-hour update check in `version` and `nrp_status`; `docs/START-HERE.md`, jargon table, and all 20 examples refreshed to 1.0; supply chain pinning (commit SHAs, `kubelogin` v1.36.4 SHA256, GitHub build provenance attestations); live test recorded |
