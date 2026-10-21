@@ -3,6 +3,19 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before 1.0
 minor versions may change behavior.
 
+## [1.1.1] - 2026-10-21
+
+### Fixed
+
+- AI apps that show MCP questions only as a plain yes/no (Hermes Agent does this) now work
+  with approvals and the details form. Such an app answers "accept" with nothing filled in;
+  nrp-mcp used to treat that as "not approved" (approval) or a failed call (form). Now an
+  empty accept, a decline, or a question the app could not show falls back to an approval
+  code shown only to the person, and the details form falls back to the chat question. The
+  session then uses codes and chat questions for the rest of its life.
+- The approval question and the details form no longer mark fields as required, so an
+  answer with missing fields cannot fail the whole tool call.
+
 ## [1.1.0] - 2026-10-21
 
 ### Added

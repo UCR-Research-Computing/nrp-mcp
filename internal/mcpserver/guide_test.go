@@ -179,7 +179,7 @@ func TestPlanFormDeclinedFallsBack(t *testing.T) {
 		return &mcp.ElicitResult{Action: "decline"}, nil
 	})
 	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir})
-	if isErr || m["runnable"] == true || !strings.Contains(fmt.Sprint(m["decisions"]), "skipped the details form") {
+	if isErr || m["runnable"] == true || !strings.Contains(fmt.Sprint(m["decisions"]), "form was skipped") {
 		t.Fatalf("%v %s", m, text)
 	}
 }
@@ -271,5 +271,24 @@ func TestWalkMeThroughPrompt(t *testing.T) {
 	txt := r.Messages[0].Content.(*mcp.TextContent).Text
 	if !strings.Contains(txt, "nrp_guide") || !strings.Contains(txt, "one question at a time") {
 		t.Fatal(txt)
+	}
+}
+
+// An app that accepts the details form with nothing filled in (yes/no only) gets the text
+// question, and nrp-mcp stops sending it forms.
+func TestEmptyFormAnswerFallsBackToChat(t *testing.T) {
+	asked := 0
+	dir := project(t, map[string]string{"prep.py": "print(1)\n", "fit.py": "print(2)\n"})
+	cs := guideServer(t, &fakeKube{}, true, true, func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		asked++
+		return &mcp.ElicitResult{Action: "accept", Content: map[string]any{}}, nil
+	})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir})
+	if isErr || m["runnable"] == true || !strings.Contains(fmt.Sprint(m["next"]), "Which file") || !strings.Contains(fmt.Sprint(m["decisions"]), "cannot fill in") {
+		t.Fatalf("%v %s", m, text)
+	}
+	m, _, _ = call(t, cs, "nrp_plan", map[string]any{"project": dir})
+	if asked != 1 {
+		t.Fatalf("second plan should not send another form: asked=%d", asked)
 	}
 }

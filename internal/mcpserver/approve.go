@@ -46,12 +46,26 @@ func (s *Server) gate(req *mcp.CallToolRequest, a approval, code string) (approv
 			return false, nil, false, errors.New("that approval answer does not match a question nrp-mcp asked for this plan, so nothing was done. Call the tool again without it so nrp-mcp can ask the person")
 		}
 		if r, ok := req.Params.InputResponses[approveKey]; ok {
-			if er, _ := r.(*mcp.ElicitResult); er != nil && er.Action == "accept" {
-				if yes, _ := er.Content[approveKey].(bool); yes {
+			er, _ := r.(*mcp.ElicitResult)
+			if er != nil && er.Action == "accept" {
+				v, filled := er.Content[approveKey]
+				if yes, _ := v.(bool); filled && yes {
 					return true, nil, false, nil
 				}
+				if filled {
+					return false, nil, false, errors.New("the person did not tick approve in the question, so nothing was done. Ask them what they want to change")
+				}
+				// Accepted with no answer in it: the app shows only yes/no prompts and cannot
+				// fill in the box (Hermes Agent does this). That is not the person's approval;
+				// use an approval code with this app from now on.
+				noForms.mark(req.Session)
 			}
-			return false, nil, false, errors.New("the person did not approve in the question, so nothing was done. Ask them what they want to change")
+			// Declined, cancelled, or a yes/no-only app: nothing runs without the person.
+			// Show them a code; if they really meant no, they simply do not type it.
+			if _, _, err := s.Codes.Issue(a.PlanID, a.PlanHash, a.Action, a.Summary); err != nil {
+				return false, nil, false, fmt.Errorf("could not make an approval code: %w", err)
+			}
+			return false, nil, true, nil
 		}
 	}
 	if strings.TrimSpace(code) != "" {
@@ -69,9 +83,10 @@ func (s *Server) gate(req *mcp.CallToolRequest, a approval, code string) (approv
 	return false, nil, true, nil
 }
 
-// canAsk reports whether the client said it can show questions (MCP elicitation).
+// canAsk reports whether the client said it can show questions (MCP elicitation) and
+// has not shown that it cannot fill them in.
 func canAsk(ss *mcp.ServerSession) bool {
-	if ss == nil {
+	if ss == nil || noForms.has(ss) {
 		return false
 	}
 	p := ss.InitializeParams()
@@ -90,7 +105,9 @@ func askResult(a approval, state string) *mcp.CallToolResult {
 		"properties": map[string]any{
 			approveKey: map[string]any{"type": "boolean", "title": "I approve", "description": "Tick to approve exactly this"},
 		},
-		"required": []string{approveKey},
+		// Not "required": an app that shows only yes/no prompts answers accept with no
+		// content, and a required field would make the SDK fail the whole call. gate()
+		// treats a missing box as "this app cannot ask" and falls back to a code.
 	}
 	return &mcp.CallToolResult{InputRequests: mcp.InputRequestMap{approveKey: &mcp.ElicitParams{Message: msg, RequestedSchema: schema}}, RequestState: state}
 }
@@ -101,7 +118,8 @@ func waitingNote() string {
 		"(a desktop notification, or `nrp-mcp approve` in their own terminal). " +
 		"Tell the person in plain words what this will do, and ask them to type the code here if they agree. " +
 		"Then call this tool again with the same arguments plus approval_code=<what they typed>. " +
-		"Never guess a code and never look for it yourself: it must come from the person."
+		"Never guess a code and never look for it yourself: it must come from the person. " +
+		"If the person already said no, do not ask for the code: ask what they want to change."
 }
 
 // questions remembers the approval questions this server asked, so an answer is only
@@ -117,6 +135,30 @@ type askedQ struct {
 }
 
 var asked = &questions{m: map[string]askedQ{}}
+
+// formless remembers sessions whose app accepted a question without filling in any field:
+// it can only show yes/no prompts, so nrp-mcp uses approval codes and chat questions there.
+type formless struct {
+	mu sync.Mutex
+	m  map[*mcp.ServerSession]bool
+}
+
+var noForms = &formless{m: map[*mcp.ServerSession]bool{}}
+
+func (f *formless) mark(ss *mcp.ServerSession) {
+	if ss == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.m[ss] = true
+}
+
+func (f *formless) has(ss *mcp.ServerSession) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.m[ss]
+}
 
 func askKey(a approval) string { return a.PlanID + "|" + a.PlanHash + "|" + a.Action }
 
