@@ -13,10 +13,10 @@ Compute is the bottleneck twice over. Student laptops differ wildly, so the firs
 | | A. NRP hosted JupyterHub | B. A private nrp session per student | C. The instructor runs batch jobs |
 |---|---|---|---|
 | Student needs | A browser, the UCR sign-in, namespace membership | nrp-mcp, kubectl, kubelogin, an AI client, membership | Nothing |
-| Where it runs | https://jupyterhub-west.nrp-nautilus.io, in the NRP's own namespace | A Deployment per student in the class namespace, reached by port-forward | Jobs and sweeps in the class namespace |
+| Where it runs | https://jupyterhub-west.nrp-nautilus.io, in the NRP's own namespace | A CPU Deployment or a GPU Job (6-12 h) per student in the class namespace, reached by port-forward | Jobs and sweeps in the class namespace |
 | Shared class volume | No (use Git and public downloads) | Yes, /data | Yes, /data |
-| GPU per student | Chosen at spawn | Yes, explicit GPU and confirm | Not per student |
-| Lifetime | Stops 1 h after the browser disconnects; 5 GB home persists | Removed after 2 weeks; recreate per lab | Runs to completion |
+| GPU per student | Chosen at spawn | Yes, as a Job with activeDeadlineSeconds (default 6 h, max 12 h) + Service | Not per student |
+| Lifetime | Stops 1 h after the browser disconnects; 5 GB home persists | GPU sessions stop at their deadline (6-12 h); CPU Deployments are removed after 2 weeks | Runs to completion |
 | Best for | Almost every course | Courses on clusters and agents; advanced students | Preparing checkpoints, data, demos |
 
 **For most courses, use A.** Nothing to install, and KB030 covers it step by step. B gives each student a private notebook on the class volume, but installing an AI client, kubectl and nrp-mcp for 40 students costs the first week. C is where nrp-mcp helps the instructor most. Do not run graded submissions on Nautilus: graded work is a student record.
@@ -61,7 +61,7 @@ None of these groups use nrp-mcp today; this is an illustration.
 
 > **Instructor:** Students on the hosted hub can't mount that volume, right?
 
-> **Assistant:** Correct. [nrp_data down path=/data/checkpoints] brings the 45 MB checkpoint to your laptop; publish it so the notebook can download it. To dry-run the student notebook: [nrp_plan goal=session gpu=1 cpu=4 memory=16Gi], a private Jupyter. A GPU session must be used actively, and Deployments are removed after 2 weeks. Confirm?
+> **Assistant:** Correct. [nrp_data down path=/data/checkpoints] brings the 45 MB checkpoint to your laptop; publish it so the notebook can download it. To dry-run the student notebook: [nrp_plan goal=session gpu=1 cpu=4 memory=16Gi], a private Jupyter. Because NRP policy (R8) forbids Deployments from requesting GPUs, a GPU session runs as a Job with a 6 h time limit (`activeDeadlineSeconds`, configurable up to 12 h via `gpu_session_hours`) plus a Service for port-forward, and must be used actively (>= 40% GPU utilization). Approve?
 
 > **Instructor:** Confirm, and pin it to an A40 so the timings match my slides.
 
@@ -78,7 +78,7 @@ None of these groups use nrp-mcp today; this is an illustration.
 | Class storage | `volume` | PVC, rook-cephfs-central, RWX | 50Gi |
 | Public dataset | `pull` | Job | 1 CPU, 2Gi, minutes |
 | Reference model | `job` | Job | 1 GPU, 4 CPU / 16Gi, under 1 h |
-| Dry run of a lab | `session` | Deployment (1 replica) + port-forward | 1 GPU, 4 CPU / 16Gi, an hour |
+| Dry run of a lab | `session` | Job (6 h deadline) + Service + port-forward | 1 GPU, 4 CPU / 16Gi, an hour |
 | Course image (optional) | `nrp_build` | none (Dockerfile + GitLab CI; builds in NRP GitLab) | - |
 | Students' notebooks | hosted JupyterHub (not nrp) | NRP's namespace | chosen at spawn |
 | End of term | `nrp_cleanup everyone=true` | deletes labelled objects | - |
@@ -97,7 +97,7 @@ Assumptions: 40 students, 10 weeks, CPU labs of about 2 hours a week on 1-2 core
 - **No reserved capacity.** A class asking for GPUs at once can leave students Pending. Stagger GPU labs, pair students, keep a CPU path.
 - **Join links last at most 90 days.** Semester courses add students directly.
 - **The hosted hub cannot mount the class volume** (per KB030; to be confirmed with the NRP). Distribute data by Git or public URLs; public NRP S3 objects work too, but S3 is not yet tested by UCR RC.
-- **Per-student nrp sessions** are Deployments: removed after 2 weeks, and a GPU session must stay above 40% utilization or the namespace is flagged.
+- **Per-student nrp sessions:** GPU sessions run as Jobs with `activeDeadlineSeconds` (default 6 h, max 12 h) because NRP policy forbids Deployments from holding GPUs, and must stay above 40% GPU utilization or the namespace is flagged. CPU-only sessions are Deployments and are removed after 2 weeks.
 - **5 GB home folders** on the hub fill fast with model weights.
 - **Instructor responsibility.** Teach the day-one rules in KB030 section 10 (no `sleep` jobs, limits within 20% of requests, give GPUs back, no secrets in specs).
 - **Your own course JupyterHub** is possible with Helm but needs a 2-week exception and upkeep; nrp-mcp does not deploy it.

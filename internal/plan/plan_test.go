@@ -43,7 +43,7 @@ func TestGPUJobPlanPassesRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Goal != GoalJob || p.Image != "pytorch/pytorch:latest" || len(p.Objects) != 1 {
+	if p.Goal != GoalJob || p.Image != "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime" || len(p.Objects) != 1 {
 		t.Fatalf("plan %+v", p)
 	}
 	c := p.Objects[0].JobSpec.Template.Spec.Containers[0]
@@ -156,17 +156,35 @@ func TestSlurmTranslation(t *testing.T) {
 }
 
 func TestSessionPlan(t *testing.T) {
+	// GPU session: Job with activeDeadlineSeconds (default 6 h, max 12 h) + Service + Secret.
 	p, err := Build(nil, Request{Namespace: "ucr-example", Goal: GoalSession, GPU: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(p.Objects) != 2 || p.Objects[0].Kind != "Secret" {
+	if len(p.Objects) != 3 || p.Objects[0].Kind != "Secret" || p.Objects[1].Kind != "Job" || p.Objects[2].Kind != "Service" {
 		t.Fatalf("objects %+v", p.Objects)
+	}
+	if *p.Objects[1].JobSpec.ActiveDeadlineSeconds != 6*3600 {
+		t.Fatalf("deadline %d, want 6h", *p.Objects[1].JobSpec.ActiveDeadlineSeconds)
 	}
 	cx := ctx()
 	cx.Session = true
 	if rules.Blocking(rules.Check(p.Objects, cx)) {
 		t.Fatalf("session refused: %+v", rules.Check(p.Objects, cx))
+	}
+	// Custom and capped hours.
+	p2, err := Build(nil, Request{Namespace: "ucr-example", Goal: GoalSession, GPU: 1, GPUSessionHours: 8})
+	if err != nil || *p2.Objects[1].JobSpec.ActiveDeadlineSeconds != 8*3600 {
+		t.Fatalf("gpu_session_hours 8: %v %+v", err, p2)
+	}
+	p3, err := Build(nil, Request{Namespace: "ucr-example", Goal: GoalSession, GPU: 1, Hours: 20})
+	if err != nil || *p3.Objects[1].JobSpec.ActiveDeadlineSeconds != 12*3600 {
+		t.Fatalf("capped at 12h: %v %+v", err, p3)
+	}
+	// CPU session stays a Deployment.
+	cpuSess, err := Build(nil, Request{Namespace: "ucr-example", Goal: GoalSession, GPU: 0})
+	if err != nil || len(cpuSess.Objects) != 2 || cpuSess.Objects[1].Kind != "Deployment" {
+		t.Fatalf("CPU session must stay a Deployment: %v %+v", err, cpuSess)
 	}
 	if _, err := Build(nil, Request{Namespace: "x", Goal: GoalSession, GPU: 3}); err == nil {
 		t.Fatal("3-GPU session allowed")
@@ -324,14 +342,16 @@ func hostnameNotIn(t *testing.T, ps *k8s.PodSpec) []string {
 		t.Fatalf("no required node affinity: %+v", ps.Affinity)
 	}
 	terms := ps.Affinity.NodeAffinity.Required.NodeSelectorTerms
-	if len(terms) != 1 || len(terms[0].MatchExpressions) != 1 {
+	if len(terms) != 1 || len(terms[0].MatchExpressions) < 1 {
 		t.Fatalf("terms %+v", terms)
 	}
-	e := terms[0].MatchExpressions[0]
-	if e.Key != "kubernetes.io/hostname" || e.Operator != "NotIn" {
-		t.Fatalf("expression %+v", e)
+	for _, e := range terms[0].MatchExpressions {
+		if e.Key == "kubernetes.io/hostname" && e.Operator == "NotIn" {
+			return e.Values
+		}
 	}
-	return e.Values
+	t.Fatalf("no hostname NotIn expression in %+v", terms)
+	return nil
 }
 
 func TestAvoidNodesWeb(t *testing.T) {
@@ -382,9 +402,10 @@ func TestAvoidNodesJobAndSession(t *testing.T) {
 }
 
 // goldenWebDigest is the masked manifest digest of the web plan below (fixed clock).
-// Plans without avoid_node must not change. 0.9.0 re-pinned it on purpose: web pods now
-// carry automountServiceAccountToken false and the nrp-mcp/expires annotation.
-const goldenWebDigest = "ebacc7ac13537842ccdb15b6cbe3aeb733c0da6eeba079c720a880cec11ee9ed"
+// Plans without avoid_node must not change. 0.10.0 re-pinned it on purpose: default
+// images are now pinned to tags (python:3.12-slim-bookworm) and containers set
+// ephemeral-storage (10Gi).
+const goldenWebDigest = "fd413240aa899051e8376ab6838781089dd8624eb02a16c520452d5dc36b6604"
 
 func TestNoAvoidNodesManifestsUnchanged(t *testing.T) {
 	f := avoidFacts(t)
@@ -593,5 +614,294 @@ func TestCleanupHashCoversTargetsAndScope(t *testing.T) {
 	a.Extra["owner_scope"] = "me"
 	if Hash(a) == Hash(c) {
 		t.Fatal("widening the owner scope must change the hash")
+	}
+}
+
+func TestNoLatestTagsInDefaultImages(t *testing.T) {
+	b, err := os.ReadFile("plan.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), ":latest") {
+		t.Fatalf("plan.go still contains :latest")
+	}
+	for _, tc := range []struct {
+		f    *inspect.Facts
+		r    Request
+		want string
+	}{
+		{nil, Request{Namespace: "x", Goal: GoalSession, Session: "vscode"}, "codercom/code-server:4.96.4"},
+		{nil, Request{Namespace: "x", Goal: GoalSession, GPU: 1}, "quay.io/jupyter/pytorch-notebook:cuda12-python-3.13"},
+		{nil, Request{Namespace: "x", Goal: GoalSession, GPU: 0}, "quay.io/jupyter/scipy-notebook:python-3.13"},
+		{&inspect.Facts{Name: "a", Entry: "app.R", WebApp: "shiny", Languages: []string{"r"}}, Request{Namespace: "x", Goal: GoalWeb}, "rocker/shiny:4.4.2"},
+		{&inspect.Facts{Name: "a", WebApp: "static"}, Request{Namespace: "x", Goal: GoalWeb}, "nginxinc/nginx-unprivileged:1.27-alpine"},
+		{&inspect.Facts{Name: "a", WebApp: "node"}, Request{Namespace: "x", Goal: GoalWeb}, "node:22-bookworm-slim"},
+		{&inspect.Facts{Name: "a", Entry: "a.py", Framework: "pytorch"}, Request{Namespace: "x", Goal: GoalJob}, "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime"},
+		{&inspect.Facts{Name: "a", Entry: "a.py", Framework: "tensorflow"}, Request{Namespace: "x", Goal: GoalJob}, "tensorflow/tensorflow:2.18.0-gpu"},
+		{&inspect.Facts{Name: "a", Entry: "a.py", Framework: "jax"}, Request{Namespace: "x", Goal: GoalJob}, "nvcr.io/nvidia/jax:24.10-py3"},
+		{&inspect.Facts{Name: "a", Entry: "a.R", Languages: []string{"r"}}, Request{Namespace: "x", Goal: GoalJob}, "rocker/r-ver:4.4.2"},
+		{&inspect.Facts{Name: "a", Entry: "a.jl", Languages: []string{"julia"}}, Request{Namespace: "x", Goal: GoalJob}, "julia:1.11-bookworm"},
+		{&inspect.Facts{Name: "a", Entry: "a.py"}, Request{Namespace: "x", Goal: GoalJob}, "python:3.12-slim-bookworm"},
+		{nil, Request{Namespace: "x", Goal: GoalPull, DataIsP1: true, DataPVC: "v", URLs: []string{"https://example.com/a.txt"}}, "quay.io/curl/curl:8.23.0"},
+	} {
+		p, err := Build(tc.f, tc.r)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.want, err)
+		}
+		if p.Image != tc.want || strings.HasSuffix(p.Image, ":latest") || !strings.Contains(p.Image, ":") {
+			t.Fatalf("got image %q, want %q", p.Image, tc.want)
+		}
+	}
+}
+
+func TestEphemeralStorageDefaultOnEveryContainer(t *testing.T) {
+	f := proj(t, map[string]string{"app.py": "import streamlit as st\nst.title('hi')\n"})
+	for _, r := range []Request{
+		{Namespace: "ucr-example", Goal: GoalJob, Command: "python app.py"},
+		{Namespace: "ucr-example", Goal: GoalSweep, Count: 4, Command: "python app.py"},
+		{Namespace: "ucr-example", Goal: GoalWeb},
+		{Namespace: "ucr-example", Goal: GoalSession, GPU: 0},
+		{Namespace: "ucr-example", Goal: GoalSession, GPU: 1},
+		{Namespace: "ucr-example", Goal: GoalPull, DataIsP1: true, DataPVC: "v", URLs: []string{"https://example.com/a.txt"}},
+	} {
+		p, err := Build(f, r)
+		if err != nil {
+			t.Fatalf("%s: %v", r.Goal, err)
+		}
+		for _, o := range p.Objects {
+			ps := o.PodSpecOf()
+			if ps == nil {
+				continue
+			}
+			for _, c := range append(append([]k8s.Container{}, ps.InitContainers...), ps.Containers...) {
+				if c.Resources.Requests["ephemeral-storage"] != "10Gi" || c.Resources.Limits["ephemeral-storage"] != "10Gi" {
+					t.Fatalf("%s %s: ephemeral-storage = %+v", r.Goal, c.Name, c.Resources)
+				}
+			}
+		}
+		cx := ctx()
+		cx.Session = r.Goal == GoalSession
+		if fs := rules.Check(p.Objects, cx); rules.Blocking(fs) {
+			t.Fatalf("%s refused: %+v", r.Goal, fs)
+		}
+	}
+	// Custom scratch= size.
+	p, err := Build(f, Request{Namespace: "ucr-example", Goal: GoalJob, Command: "python app.py", Scratch: "25Gi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := p.Objects[0].PodSpecOf().Containers[0]
+	if c.Resources.Requests["ephemeral-storage"] != "25Gi" || c.Resources.Limits["ephemeral-storage"] != "25Gi" {
+		t.Fatalf("custom scratch %+v", c.Resources)
+	}
+}
+
+func TestCPUSweepAvoidsGPUNodesAndOffersOpportunistic(t *testing.T) {
+	f := proj(t, map[string]string{"run.py": "print(1)\n"})
+	p, err := Build(f, Request{Namespace: "ucr-example", Goal: GoalSweep, Count: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps := p.Objects[0].PodSpecOf()
+	if ps.Affinity == nil || ps.Affinity.NodeAffinity == nil || ps.Affinity.NodeAffinity.Required == nil {
+		t.Fatalf("missing nodeAffinity on CPU sweep: %+v", ps.Affinity)
+	}
+	foundAntiGPU := false
+	for _, term := range ps.Affinity.NodeAffinity.Required.NodeSelectorTerms {
+		for _, e := range term.MatchExpressions {
+			if e.Key == "nvidia.com/gpu.present" && e.Operator == "NotIn" && len(e.Values) == 1 && e.Values[0] == "true" {
+				foundAntiGPU = true
+			}
+		}
+	}
+	if !foundAntiGPU {
+		t.Fatalf("CPU sweep missing nvidia.com/gpu.present NotIn true: %+v", ps.Affinity.NodeAffinity.Required)
+	}
+	if !strings.Contains(strings.Join(p.Decisions, " "), "opportunistic") {
+		t.Fatalf("CPU sweep decisions must offer opportunistic: %v", p.Decisions)
+	}
+	// GPU sweeps must NOT get the anti-GPU affinity.
+	gp, err := Build(f, Request{Namespace: "ucr-example", Goal: GoalSweep, Count: 4, GPU: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gps := gp.Objects[0].PodSpecOf(); gps.Affinity != nil {
+		t.Fatalf("GPU sweep must not have anti-GPU affinity: %+v", gps.Affinity)
+	}
+}
+
+func TestVolumeStorageClassFollowsRegion(t *testing.T) {
+	for _, tc := range []struct {
+		region string
+		wantSC string
+	}{
+		{"", "rook-cephfs-central"},
+		{"us-central", "rook-cephfs-central"},
+		{"central", "rook-cephfs-central"},
+		{"us-west", "rook-cephfs-west"},
+		{"west", "rook-cephfs-west"},
+		{"us-east", "rook-cephfs-east"},
+		{"east", "rook-cephfs-east"},
+	} {
+		p, err := Build(nil, Request{Namespace: "ucr-example", Goal: GoalVolume, DataIsP1: true, Region: tc.region})
+		if err != nil {
+			t.Fatalf("region %q: %v", tc.region, err)
+		}
+		if got := p.Objects[0].PVCSpec.StorageClassName; got != tc.wantSC {
+			t.Fatalf("region %q: storageClassName=%q, want %q", tc.region, got, tc.wantSC)
+		}
+	}
+	// Compute workload with region= gets topology.kubernetes.io/region affinity.
+	jp, err := Build(nil, Request{Namespace: "ucr-example", Goal: GoalJob, Command: "echo hi", Region: "us-west"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terms := jp.Objects[0].PodSpecOf().Affinity.NodeAffinity.Required.NodeSelectorTerms
+	if len(terms) != 1 || terms[0].MatchExpressions[0].Key != "topology.kubernetes.io/region" || terms[0].MatchExpressions[0].Values[0] != "us-west" {
+		t.Fatalf("region affinity %+v", terms)
+	}
+}
+
+func TestPlainAppsAndRPackagesTable(t *testing.T) {
+	cases := []struct {
+		name         string
+		files        map[string]string
+		req          Request
+		wantGoal     string
+		wantPort     int
+		wantCmdSub   []string
+		wantDecision string
+		wantQuestion string
+	}{
+		{
+			name:         "plain_httpserver_web_no_command",
+			files:        map[string]string{"app.py": "from http.server import HTTPServer, BaseHTTPRequestHandler\nHTTPServer(('0.0.0.0', 8080), BaseHTTPRequestHandler).serve_forever()\n"},
+			req:          Request{Namespace: "ucr-example", Goal: GoalWeb},
+			wantGoal:     GoalWeb,
+			wantPort:     8080,
+			wantCmdSub:   []string{"python app.py"},
+			wantDecision: "Runs: python app.py on port 8080",
+		},
+		{
+			name:         "plain_serve_forever_8000_auto_goal_web",
+			files:        map[string]string{"server.py": "import socketserver\nPORT = 8000\nwith socketserver.TCPServer(('', PORT), None) as httpd:\n    httpd.serve_forever()\n"},
+			req:          Request{Namespace: "ucr-example"},
+			wantGoal:     GoalWeb,
+			wantPort:     8000,
+			wantCmdSub:   []string{"python server.py"},
+			wantDecision: "Runs: python server.py on port 8000",
+		},
+		{
+			name:         "plain_app_run_port_kw",
+			files:        map[string]string{"web.py": "from bottle import Bottle\napp = Bottle()\napp.run(host='0.0.0.0', port=8000)\n"},
+			req:          Request{Namespace: "ucr-example", Goal: GoalWeb},
+			wantGoal:     GoalWeb,
+			wantPort:     8000,
+			wantCmdSub:   []string{"python web.py"},
+			wantDecision: "Runs: python web.py on port 8000",
+		},
+		{
+			name:         "two_py_scripts_web_guided_question",
+			files:        map[string]string{"a.py": "print(1)\n", "b.py": "print(2)\n"},
+			req:          Request{Namespace: "ucr-example", Goal: GoalWeb},
+			wantGoal:     GoalWeb,
+			wantQuestion: "Which file starts the app: a.py or b.py?",
+		},
+		{
+			name:         "two_r_scripts_job_guided_question",
+			files:        map[string]string{"model.R": "print(1)\n", "helpers.R": "x <- 1\n"},
+			req:          Request{Namespace: "ucr-example", Goal: GoalJob},
+			wantGoal:     GoalJob,
+			wantQuestion: "Which file runs the project: helpers.R or model.R?",
+		},
+		{
+			name:         "notebook_folder_guided_question",
+			files:        map[string]string{"analysis.ipynb": "{\"cells\":[]}\n"},
+			req:          Request{Namespace: "ucr-example", Goal: GoalJob},
+			wantGoal:     GoalJob,
+			wantQuestion: "Found notebook analysis.ipynb: should this open an interactive Jupyter session (goal=session) or execute the notebook",
+		},
+		{
+			name: "r_job_with_install_r",
+			files: map[string]string{
+				"sim.R":     "library(sandwich)\nprint(1)\n",
+				"install.R": "install.packages('sandwich', repos='https://cloud.r-project.org')\n",
+			},
+			req:          Request{Namespace: "ucr-example", Goal: GoalJob},
+			wantGoal:     GoalJob,
+			wantCmdSub:   []string{"Rscript install.R && Rscript sim.R"},
+			wantDecision: "Installs install.R at start",
+		},
+		{
+			name: "r_job_with_description_imports",
+			files: map[string]string{
+				"main.R":      "library(dplyr)\n",
+				"DESCRIPTION": "Package: x\nImports:\n    dplyr (>= 1.0),\n    sandwich\n",
+			},
+			req:          Request{Namespace: "ucr-example", Goal: GoalJob},
+			wantGoal:     GoalJob,
+			wantCmdSub:   []string{`Rscript -e "install.packages(c('dplyr', 'sandwich')`, "Rscript main.R"},
+			wantDecision: "DESCRIPTION Imports (dplyr, sandwich)",
+		},
+		{
+			name: "r_job_with_renv_lock",
+			files: map[string]string{
+				"main.R":    "print(1)\n",
+				"renv.lock": `{"R":{"Version":"4.4.2"},"Packages":{}}`,
+			},
+			req:          Request{Namespace: "ucr-example", Goal: GoalJob},
+			wantGoal:     GoalJob,
+			wantCmdSub:   []string{"renv::restore(prompt=FALSE)", "Rscript main.R"},
+			wantDecision: "Installs renv.lock at start",
+		},
+		{
+			name: "r_shiny_with_install_r",
+			files: map[string]string{
+				"app.R":     "library(shiny)\nshinyApp(ui, server)\n",
+				"install.R": "install.packages('leaflet', repos='https://cloud.r-project.org')\n",
+			},
+			req:          Request{Namespace: "ucr-example", Goal: GoalWeb},
+			wantGoal:     GoalWeb,
+			wantPort:     3838,
+			wantCmdSub:   []string{"Rscript install.R && cp -r /work/. /srv/shiny-server/ && exec /init"},
+			wantDecision: "Installs install.R at start",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := proj(t, tc.files)
+			p, err := Build(f, tc.req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if p.Goal != tc.wantGoal {
+				t.Fatalf("goal got %q, want %q", p.Goal, tc.wantGoal)
+			}
+			if tc.wantQuestion != "" {
+				if !strings.Contains(p.NeedsCommand, tc.wantQuestion) || len(p.Objects) != 0 {
+					t.Fatalf("got NeedsCommand=%q objects=%d, want substring %q and 0 objects", p.NeedsCommand, len(p.Objects), tc.wantQuestion)
+				}
+				return
+			}
+			if p.NeedsCommand != "" {
+				t.Fatalf("unexpected NeedsCommand: %q", p.NeedsCommand)
+			}
+			c := p.Objects[0].PodSpecOf().Containers[0]
+			if tc.wantPort != 0 && (len(c.Ports) == 0 || c.Ports[0].ContainerPort != tc.wantPort) {
+				t.Fatalf("ports got %+v, want %d", c.Ports, tc.wantPort)
+			}
+			cmdStr := strings.Join(c.Command, " ")
+			for _, sub := range tc.wantCmdSub {
+				if !strings.Contains(cmdStr, sub) {
+					t.Fatalf("command %q missing %q", cmdStr, sub)
+				}
+			}
+			if tc.wantDecision != "" && !strings.Contains(strings.Join(p.Decisions, " | "), tc.wantDecision) {
+				t.Fatalf("decisions %v missing %q", p.Decisions, tc.wantDecision)
+			}
+			if fs := rules.Check(p.Objects, ctx()); rules.Blocking(fs) {
+				t.Fatalf("plan refused by rules: %+v", fs)
+			}
+		})
 	}
 }

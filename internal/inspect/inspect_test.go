@@ -3,6 +3,7 @@ package inspect
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -91,5 +92,105 @@ func TestFlaskWithDashIsFlask(t *testing.T) {
 	}
 	if f.WebApp != "flask" || f.WebPort != 5000 {
 		t.Fatalf("got %s:%d, want flask:5000", f.WebApp, f.WebPort)
+	}
+}
+
+func TestPlainWebAndCandidateDetectionTable(t *testing.T) {
+	cases := []struct {
+		name      string
+		files     map[string]string
+		single    string
+		wantApp   string
+		wantPort  int
+		wantEntry string
+		wantCands []string
+		wantRPkgs []string
+		wantDeps  []string
+	}{
+		{
+			name:      "httpserver_8080",
+			files:     map[string]string{"app.py": "from http.server import HTTPServer, BaseHTTPRequestHandler\nHTTPServer(('0.0.0.0', 8080), BaseHTTPRequestHandler).serve_forever()\n"},
+			wantApp:   "python",
+			wantPort:  8080,
+			wantEntry: "app.py",
+		},
+		{
+			name:      "serve_forever_8000",
+			files:     map[string]string{"server.py": "import socketserver\nPORT = 8000\nwith socketserver.TCPServer(('', PORT), None) as httpd:\n    httpd.serve_forever()\n"},
+			wantApp:   "python",
+			wantPort:  8000,
+			wantEntry: "server.py",
+		},
+		{
+			name:      "app_run_port_kw",
+			files:     map[string]string{"web.py": "from bottle import Bottle\napp = Bottle()\napp.run(host='0.0.0.0', port=8080)\n"},
+			wantApp:   "python",
+			wantPort:  8080,
+			wantEntry: "web.py",
+		},
+		{
+			name:      "single_file_httpserver",
+			files:     map[string]string{"app.py": "from http.server import HTTPServer\nHTTPServer(('', 8000), None).serve_forever()\n", "other.py": "print(1)\n"},
+			single:    "app.py",
+			wantApp:   "python",
+			wantPort:  8000,
+			wantEntry: "app.py",
+		},
+		{
+			name:      "two_python_scripts_candidates",
+			files:     map[string]string{"a.py": "if __name__ == '__main__':\n    print(1)\n", "b.py": "if __name__ == '__main__':\n    print(2)\n"},
+			wantCands: []string{"a.py", "b.py"},
+		},
+		{
+			name:      "multi_r_scripts_with_install_r",
+			files:     map[string]string{"model.R": "print(1)\n", "helpers.R": "x <- 1\n", "install.R": "install.packages('sandwich')\n"},
+			wantCands: []string{"helpers.R", "model.R"},
+			wantDeps:  []string{"install.R"},
+		},
+		{
+			name:      "single_r_script_with_install_r",
+			files:     map[string]string{"sim.R": "library(sandwich)\n", "install.R": "install.packages('sandwich')\n"},
+			wantEntry: "sim.R",
+			wantDeps:  []string{"install.R"},
+		},
+		{
+			name: "r_description_imports",
+			files: map[string]string{
+				"main.R":      "library(dplyr)\n",
+				"DESCRIPTION": "Package: myproj\nVersion: 0.1.0\nImports:\n    dplyr (>= 1.1.0),\n    sandwich,\n    ggplot2\nSuggests:\n    testthat\n",
+			},
+			wantEntry: "main.R",
+			wantRPkgs: []string{"dplyr", "ggplot2", "sandwich"},
+			wantDeps:  []string{"DESCRIPTION"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := t.TempDir()
+			for k, v := range tc.files {
+				write(t, d, k, v)
+			}
+			target := d
+			if tc.single != "" {
+				target = filepath.Join(d, tc.single)
+			}
+			f, err := Dir(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f.WebApp != tc.wantApp || f.WebPort != tc.wantPort || f.Entry != tc.wantEntry {
+				t.Fatalf("got app=%q port=%d entry=%q, want app=%q port=%d entry=%q",
+					f.WebApp, f.WebPort, f.Entry, tc.wantApp, tc.wantPort, tc.wantEntry)
+			}
+			if strings.Join(f.Candidates, ",") != strings.Join(tc.wantCands, ",") {
+				t.Fatalf("candidates got %v, want %v", f.Candidates, tc.wantCands)
+			}
+			if strings.Join(f.RPackages, ",") != strings.Join(tc.wantRPkgs, ",") {
+				t.Fatalf("r_packages got %v, want %v", f.RPackages, tc.wantRPkgs)
+			}
+			if len(tc.wantDeps) > 0 && strings.Join(f.DepFiles, ",") != strings.Join(tc.wantDeps, ",") {
+				t.Fatalf("dep_files got %v, want %v", f.DepFiles, tc.wantDeps)
+			}
+		})
 	}
 }

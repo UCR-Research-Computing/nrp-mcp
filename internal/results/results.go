@@ -271,30 +271,141 @@ trap up TERM INT
 echo "nrp-results: waiting for the job to finish"
 while true; do sleep 5 & wait $!; done`
 
+// uploaderPy is the inline Python 3 uploader used when the main container image has no
+// curl (such as python:3.12-slim-bookworm).
+const uploaderPy = `import os,sys,urllib.request,urllib.error,uuid
+d="/work/results"
+if not os.path.isdir(d):
+ print("nrp-results: no /work/results folder, nothing to save",flush=True);sys.exit(0)
+os.chdir(d)
+idx=os.environ.get("JOB_COMPLETION_INDEX","")
+sub=("task-"+idx+"/") if idx else ""
+url=os.environ["S3_URL"]
+flds=[("policy",os.environ["S3_POLICY"]),("x-amz-algorithm",os.environ["S3_ALG"]),("x-amz-credential",os.environ["S3_CRED"]),("x-amz-date",os.environ["S3_DATE"]),("x-amz-signature",os.environ["S3_SIG"])]
+fails=[]
+for root,_,files in sorted(os.walk(".")):
+ for name in sorted(files):
+  p=os.path.join(root,name)
+  if not os.path.isfile(p): continue
+  rel=os.path.relpath(p,".").replace(os.sep,"/")
+  k=os.environ["S3_PREFIX"]+sub+rel
+  b=uuid.uuid4().hex.encode()
+  parts=[]
+  for fn,fv in [("key",k)]+flds:
+   parts.append(b"--"+b+b"\r\nContent-Disposition: form-data; name=\""+fn.encode()+b"\"\r\n\r\n"+fv.encode()+b"\r\n")
+  with open(p,"rb") as fp: data=fp.read()
+  parts.append(b"--"+b+b"\r\nContent-Disposition: form-data; name=\"file\"; filename=\"blob\"\r\nContent-Type: application/octet-stream\r\n\r\n"+data+b"\r\n--"+b+b"--\r\n")
+  body=b"".join(parts);code=None
+  for _ in range(3):
+   req=urllib.request.Request(url,data=body,headers={"Content-Type":"multipart/form-data; boundary="+b.decode()},method="POST")
+   try:
+    with urllib.request.urlopen(req,timeout=60) as r: code=r.status;break
+   except urllib.error.HTTPError as e:
+    code=e.code
+    if code<500: break
+   except Exception: pass
+  if code and 200<=code<300: print("nrp-results: saved "+k,flush=True)
+  else: print("nrp-results: FAILED "+k+" (HTTP "+str(code or "none")+")",flush=True);fails.append(k)
+if fails: print("nrp-results: "+str(len(fails))+" file(s) FAILED to save",flush=True);sys.exit(1)
+`
+
+// exitUploadBody uploads /work/results from the main container's own shell on EXIT (using
+// curl when present, or python3), so no second sidecar image has to be pulled on the node.
+const exitUploadBody = `_nrp_up() {
+  _rc=$?
+  trap - EXIT TERM INT
+  set +e
+  if [ ! -d /work/results ] || [ -z "$(find /work/results -type f -print -quit 2>/dev/null)" ]; then
+    echo "nrp-results: no /work/results files, nothing to save"
+    exit "$_rc"
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    cd /work/results || exit "$_rc"
+    sub=""
+    if [ -n "${JOB_COMPLETION_INDEX:-}" ]; then sub="task-${JOB_COMPLETION_INDEX}/"; fi
+    fails=/work/.nrp-results-failed
+    rm -f "$fails"
+    find . -type f | while IFS= read -r f; do
+      k="${S3_PREFIX}${sub}${f#./}"
+      code=$(curl -sS --retry 3 -o /dev/null -w "%{http_code}" -X POST "$S3_URL" \
+        --form-string "key=${k}" --form-string "policy=${S3_POLICY}" --form-string "x-amz-algorithm=${S3_ALG}" \
+        --form-string "x-amz-credential=${S3_CRED}" --form-string "x-amz-date=${S3_DATE}" \
+        --form-string "x-amz-signature=${S3_SIG}" -F "file=@-" < "$f")
+      case "$code" in
+        20*) echo "nrp-results: saved ${k}" ;;
+        *) echo "nrp-results: FAILED ${k} (HTTP ${code:-none})"; echo "$k" >> "$fails" ;;
+      esac
+    done
+    if [ -s "$fails" ]; then echo "nrp-results: $(wc -l < "$fails" | tr -d ' ') file(s) FAILED to save"; exit 1; fi
+    exit "$_rc"
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c '` + uploaderPy + `' || exit 1
+    exit "$_rc"
+  fi
+  if command -v python >/dev/null 2>&1; then
+    python -c '` + uploaderPy + `' || exit 1
+    exit "$_rc"
+  fi
+  echo "nrp-results: FAILED (neither curl nor python found in container)"
+  exit 1
+}
+trap _nrp_up EXIT TERM INT; mkdir -p /work/results; `
+
+// canInlineUpload reports whether c is a shell-wrapped container whose image has curl or
+// python (or is one of nrp-mcp's default language images), so it can upload results at
+// exit without pulling the quay.io/curl/curl sidecar image.
+func canInlineUpload(c k8s.Container) bool {
+	if len(c.Command) != 3 || (c.Command[0] != "bash" && c.Command[0] != "sh") || c.Command[1] != "-c" {
+		return false
+	}
+	img := strings.ToLower(c.Image)
+	for _, k := range []string{"python", "pytorch", "tensorflow", "jax", "jupyter", "scipy", "curl", "node:"} {
+		if strings.Contains(img, k) {
+			return true
+		}
+	}
+	return false
+}
+
 // SecretName is the per-run Secret that carries the signed upload form.
 func SecretName(jobName string) string { return jobName + "-results" }
 
-// AttachUploader adds /work/results and the uploader sidecar (a native sidecar: an init
-// container with restartPolicy Always, which Kubernetes stops after the main container
-// ends, sending it SIGTERM). The signed form comes from Secret secretName at run time.
-func AttachUploader(ps *k8s.PodSpec, secretName string) {
+// uploaderEnv builds the S3 form env vars from secretName plus JOB_COMPLETION_INDEX.
+func uploaderEnv(secretName string) []k8s.EnvVar {
 	env := []k8s.EnvVar{}
-	for _, kv := range [][2]string{{"S3_URL", "url"}, {"S3_PREFIX", "prefix"}, {"S3_POLICY", "policy"}, {"S3_ALG", "x-amz-algorithm"},
-		{"S3_CRED", "x-amz-credential"}, {"S3_DATE", "x-amz-date"}, {"S3_SIG", "x-amz-signature"}} {
+	for _, kv := range [][2]string{{"S3_URL", "url"}, {"S3_PREFIX", "prefix"}, {"S3_ALG", "x-amz-algorithm"},
+		{"S3_CRED", "x-amz-credential"}, {"S3_DATE", "x-amz-date"}, {"S3_POLICY", "policy"}, {"S3_SIG", "x-amz-signature"}} {
 		env = append(env, k8s.EnvVar{Name: kv[0], ValueFrom: &k8s.EnvVarSource{SecretKeyRef: &k8s.KeyRef{Name: secretName, Key: kv[1]}}})
 	}
 	env = append(env, k8s.EnvVar{Name: "JOB_COMPLETION_INDEX", ValueFrom: &k8s.EnvVarSource{FieldRef: &k8s.FieldRef{FieldPath: "metadata.annotations['batch.kubernetes.io/job-completion-index']"}}})
-	always := "Always"
-	ps.InitContainers = append(ps.InitContainers, k8s.Container{Name: "save-results", Image: UploaderImage, RestartPolicy: always,
-		Command: []string{"sh", "-c", uploaderScript},
-		Env:     env,
-		Resources: k8s.Resources{Requests: map[string]string{"cpu": fmt.Sprintf("%dm", uploaderMilliCPU), "memory": fmt.Sprintf("%dMi", uploaderBytes>>20)},
-			Limits: map[string]string{"cpu": fmt.Sprintf("%dm", uploaderMilliCPU), "memory": fmt.Sprintf("%dMi", uploaderBytes>>20)}},
-		VolumeMounts: []k8s.Mount{{Name: "code", MountPath: "/work"}}})
+	return env
+}
+
+// AttachUploader configures the pod to upload /work/results when the job ends. When the
+// main container has curl or python (all nrp-mcp default images), it uploads from the
+// main container's own shell on EXIT and drops the sidecar image (avoiding a second image
+// pull per node). Otherwise it attaches the native sidecar (quay.io/curl/curl:8.23.0).
+func AttachUploader(ps *k8s.PodSpec, secretName string) {
+	env := uploaderEnv(secretName)
 	if ps.TerminationGracePeriodSeconds == nil {
 		g := 300
 		ps.TerminationGracePeriodSeconds = &g
 	}
+	if len(ps.Containers) == 1 && canInlineUpload(ps.Containers[0]) {
+		c := &ps.Containers[0]
+		c.Env = append(c.Env, k8s.EnvVar{Name: "RESULTS_DIR", Value: "/work/results"})
+		c.Env = append(c.Env, env...)
+		c.Command[2] = exitUploadBody + c.Command[2]
+		return
+	}
+	always := "Always"
+	ps.InitContainers = append(ps.InitContainers, k8s.Container{Name: "save-results", Image: UploaderImage, RestartPolicy: always,
+		Command: []string{"sh", "-c", uploaderScript},
+		Env:     env,
+		Resources: k8s.Resources{Requests: map[string]string{"cpu": fmt.Sprintf("%dm", uploaderMilliCPU), "memory": fmt.Sprintf("%dMi", uploaderBytes>>20), "ephemeral-storage": "1Gi"},
+			Limits: map[string]string{"cpu": fmt.Sprintf("%dm", uploaderMilliCPU), "memory": fmt.Sprintf("%dMi", uploaderBytes>>20), "ephemeral-storage": "1Gi"}},
+		VolumeMounts: []k8s.Mount{{Name: "code", MountPath: "/work"}}})
 	for i := range ps.Containers {
 		carve(&ps.Containers[i].Resources)
 		ps.Containers[i].Env = append(ps.Containers[i].Env, k8s.EnvVar{Name: "RESULTS_DIR", Value: "/work/results"})

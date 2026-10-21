@@ -3,7 +3,7 @@
 package knowledge
 
 // Reviewed is when this digest was last checked against the NRP docs.
-const Reviewed = "2026-10-06"
+const Reviewed = "2026-10-20"
 
 // Policy is the NRP rule digest.
 const Policy = `# NRP Nautilus rules nrp-mcp enforces (reviewed ` + Reviewed + `)
@@ -17,14 +17,19 @@ Source: https://nrp.ai/documentation/userdocs/start/policies/ unless noted.
   with sleep) gets the user banned.
 - Bare pods count as interactive: deleted after 6 hours; at most 2 GPUs, 32 GB RAM, 16 cores.
 - Deployments (long-running services) are removed after 2 weeks unless the namespace is on
-  the exceptions list, and idle Deployments cannot request GPUs.
+  the exceptions list, and Deployments cannot request GPUs (GPU sessions run as Jobs with a
+  time limit, default 6 hours, max 12 hours).
   (https://nrp.ai/documentation/userdocs/running/long-idle/)
-- Limits must be within 20% of requests; with more than 100 pods, limit = request.
+- Every container must set cpu, memory and ephemeral-storage requests and limits (default
+  scratch 10Gi); limits must be within 20% of requests; with more than 100 pods, limit = request.
+- CPU-only sweeps keep off GPU nodes (nodeAffinity NotIn nvidia.com/gpu.present=true) and
+  may use opportunistic priority.
 - Usage checks: a user may not run more than 4 pods with GPU use under 40%, CPU outside
   20-200% or memory outside 20-150% of the request (pods at 1 CPU / 2 GB are exempt).
-- GPUs: up to 8 per pod in Jobs, 2 in bare pods. A100/H100/H200/GH200 are quota-gated
-  (default 0). A100 access is requestable; the others are not. priorityClassName
-  opportunistic bypasses the GPU quota but can be preempted at any time.
+- GPUs: up to 8 per pod in Jobs, 2 in bare pods, and at most namespace_gpus (default 8)
+  running at once in a namespace. A100/H100/H200/GH200 are quota-gated (default 0). A100
+  access is requestable; the others are not. priorityClassName opportunistic bypasses the GPU
+  quota but can be preempted at any time.
   (https://nrp.ai/documentation/userdocs/running/gpu-pods/,
   https://nrp.ai/documentation/userdocs/running/priority-classes/)
 - Allowed priorityClassName: unset, armada-default, owner-no-preempt, opportunistic,
@@ -69,8 +74,8 @@ const Storage = `# Storage chooser (reviewed ` + Reviewed + `)
 
 | Need | Use | Notes |
 |---|---|---|
-| Temporary files during a job | container scratch (ephemeral) | default limit 50Gi per container |
-| Shared files across pods, checkpoints | PVC, storageClass rook-cephfs-central (ReadWriteMany) | ~86 MiB/s per writer in a UCR test; not for pip/conda installs or many small files |
+| Temporary files during a job | container scratch (ephemeral-storage) | nrp-mcp sets 10Gi default (up to 50Gi with scratch=) |
+| Shared files across pods, checkpoints | PVC, storageClass rook-cephfs-central (or -west / -east matching region=; ReadWriteMany) | ~86 MiB/s per writer in a UCR test; not for pip/conda installs or many small files |
 | One pod's database or small files | PVC, rook-ceph-block-central (ReadWriteOnce) | slow in tests (~5 MB/s write) |
 | Datasets in and out, sharing | S3: https://s3-west.nrp-nautilus.io (default), s3-central, s3-east; in-cluster http://rook-ceph-rgw-nautiluss3.rook | keys from the NRP portal (User, then S3 Tokens); ObjectBucketClaims are forbidden for namespace users |
 | Never | ceph-rbd | never provisions |

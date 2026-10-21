@@ -57,6 +57,7 @@ func main() {
 			"cpu": "1", "memory": "512Mi", "gpu": 0, "port": *port, "host": *host}
 		if avoid != "" {
 			a["avoid_node"] = avoid
+			a["show_manifests"] = true
 		}
 		return a
 	}

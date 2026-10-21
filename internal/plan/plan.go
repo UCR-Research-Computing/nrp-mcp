@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -33,62 +34,66 @@ const (
 
 // Request is what the user asked for.
 type Request struct {
-	Goal       string
-	Namespace  string
-	Name       string // optional; suggested if empty
-	Command    string // shell command; inferred if empty
-	Image      string // override
-	GPU        int
-	GPUType    string // e.g. a100, a40; empty = any standard GPU
-	CPU        string
-	Memory     string
-	Hours      int
-	Count      int // sweep tasks
-	Parallel   int // sweep parallelism
-	Host       string
-	Port       int
-	DataPVC    string // existing PVC to mount at /data
-	Owner      string
-	Session    string // jupyter | vscode
-	LLMSecret  string // Secret holding the LLM token (key "token")
-	Opportun   bool
-	Size       string   // volume size, e.g. 50Gi
-	URLs       []string // pull: files to download
-	Subdir     string   // pull: folder inside the volume
-	DataIsP1   bool     // pull/volume: user confirmed the data is P1 (non-sensitive)
-	ArrayIDs   []int    // sweep from a Slurm --array: the task ids, in order
-	PullSecret string   // docker-registry Secret for a private image
-	Run        string   // reuse a run id (update a running web app in place)
-	AvoidNodes []string // node names the pod must not run on (required node anti-affinity)
-	WebDays    int      // web: days until the app is marked expired (default 14)
-	Now        time.Time
+	Goal            string
+	Namespace       string
+	Name            string // optional; suggested if empty
+	Command         string // shell command; inferred if empty
+	Image           string // override
+	GPU             int
+	GPUType         string // e.g. a100, a40; empty = any standard GPU
+	CPU             string
+	Memory          string
+	Hours           int
+	Count           int // sweep tasks
+	Parallel        int // sweep parallelism
+	Host            string
+	Port            int
+	DataPVC         string // existing PVC to mount at /data
+	Owner           string
+	Session         string // jupyter | vscode
+	LLMSecret       string // Secret holding the LLM token (key "token")
+	Opportun        bool
+	Size            string   // volume size, e.g. 50Gi
+	Region          string   // compute/storage region, e.g. us-west, us-central, us-east
+	Scratch         string   // ephemeral-storage request/limit per container (default 10Gi)
+	URLs            []string // pull: files to download
+	Subdir          string   // pull: folder inside the volume
+	DataIsP1        bool     // pull/volume: user confirmed the data is P1 (non-sensitive)
+	ArrayIDs        []int    // sweep from a Slurm --array: the task ids, in order
+	PullSecret      string   // docker-registry Secret for a private image
+	Run             string   // reuse a run id (update a running web app in place)
+	AvoidNodes      []string // node names the pod must not run on (required node anti-affinity)
+	WebDays         int      // web: days until the app is marked expired (default 14)
+	GPUSessionHours int      // session with gpu>0: default hours before the Job stops (default 6, max 12)
+	Now             time.Time
 }
 
 // Plan is the reviewed result.
 type Plan struct {
-	ID         string            `json:"plan_id"`
-	Created    time.Time         `json:"created"`
-	Goal       string            `json:"goal"`
-	Namespace  string            `json:"namespace"`
-	Name       string            `json:"name"`
-	Summary    string            `json:"summary"`
-	Image      string            `json:"image"`
-	ImageWhy   string            `json:"image_reason"`
-	NeedsBuild bool              `json:"needs_build"`
-	Prebuilt   bool              `json:"prebuilt,omitempty"` // runs a built image as is: no code copy, no install
-	Decisions  []string          `json:"decisions"`
-	PublicURL  string            `json:"public_url,omitempty"`
-	Suggested  []string          `json:"suggested_names,omitempty"`
-	Objects    []k8s.Object      `json:"objects"`
-	Facts      *inspect.Facts    `json:"facts,omitempty"`
-	Slurm      []SlurmMapping    `json:"slurm_mapping,omitempty"`
-	Kubectl    []string          `json:"kubectl_equivalent"`
-	Extra      map[string]any    `json:"extra,omitempty"`
-	Hash       string            `json:"plan_hash"`
-	Run        string            `json:"run_id"`
-	Request    map[string]any    `json:"request"`
-	Cleanup    string            `json:"cleanup"`
-	Labels     map[string]string `json:"labels"`
+	ID           string            `json:"plan_id"`
+	Created      time.Time         `json:"created"`
+	Goal         string            `json:"goal"`
+	Namespace    string            `json:"namespace"`
+	Name         string            `json:"name"`
+	Summary      string            `json:"summary"`
+	Image        string            `json:"image"`
+	ImageWhy     string            `json:"image_reason"`
+	NeedsBuild   bool              `json:"needs_build"`
+	NeedsCommand string            `json:"needs_command,omitempty"` // guided question when several candidate entry files exist
+	Prebuilt     bool              `json:"prebuilt,omitempty"`      // runs a built image as is: no code copy, no install
+	Decisions    []string          `json:"decisions"`
+	PublicURL    string            `json:"public_url,omitempty"`
+	Suggested    []string          `json:"suggested_names,omitempty"`
+	Objects      []k8s.Object      `json:"objects"`
+	Facts        *inspect.Facts    `json:"facts,omitempty"`
+	Slurm        []SlurmMapping    `json:"slurm_mapping,omitempty"`
+	Kubectl      []string          `json:"kubectl_equivalent"`
+	Extra        map[string]any    `json:"extra,omitempty"`
+	Hash         string            `json:"plan_hash"`
+	Run          string            `json:"run_id"`
+	Request      map[string]any    `json:"request"`
+	Cleanup      string            `json:"cleanup"`
+	Labels       map[string]string `json:"labels"`
 }
 
 // SlurmMapping shows how one #SBATCH line was translated.
@@ -149,7 +154,7 @@ func SuggestNames(f *inspect.Facts, goal string) []string {
 		}
 		if f.WebApp != "" && f.Name != "" {
 			add(f.Name + "-" + map[string]string{"shiny": "app", "streamlit": "viewer", "dash": "dashboard", "gradio": "demo",
-				"fastapi": "api", "flask": "web", "node": "web", "static": "site"}[f.WebApp])
+				"fastapi": "api", "flask": "web", "python": "web", "node": "web", "static": "site"}[f.WebApp])
 		}
 	}
 	if len(cands) == 0 {
@@ -283,15 +288,78 @@ func cleanAvoid(in []string) ([]string, error) {
 	return out, nil
 }
 
+// addNodeRequirement appends req to ps's required node affinity, creating it if needed.
+func addNodeRequirement(ps *k8s.PodSpec, req k8s.NodeSelectorRequirement) {
+	if ps.Affinity == nil {
+		ps.Affinity = &k8s.Affinity{}
+	}
+	if ps.Affinity.NodeAffinity == nil {
+		ps.Affinity.NodeAffinity = &k8s.NodeAffinity{}
+	}
+	if ps.Affinity.NodeAffinity.Required == nil || len(ps.Affinity.NodeAffinity.Required.NodeSelectorTerms) == 0 {
+		ps.Affinity.NodeAffinity.Required = &k8s.NodeSelector{NodeSelectorTerms: []k8s.NodeSelectorTerm{{MatchExpressions: []k8s.NodeSelectorRequirement{req}}}}
+		return
+	}
+	for i := range ps.Affinity.NodeAffinity.Required.NodeSelectorTerms {
+		ps.Affinity.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions = append(ps.Affinity.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions, req)
+	}
+}
+
 // applyAvoid keeps the pod off the named nodes with a required node anti-affinity.
 // With no nodes it leaves the spec untouched, so other plans do not change.
 func applyAvoid(ps *k8s.PodSpec, nodes []string) {
 	if len(nodes) == 0 {
 		return
 	}
-	ps.Affinity = &k8s.Affinity{NodeAffinity: &k8s.NodeAffinity{Required: &k8s.NodeSelector{NodeSelectorTerms: []k8s.NodeSelectorTerm{{
-		MatchExpressions: []k8s.NodeSelectorRequirement{{Key: "kubernetes.io/hostname", Operator: "NotIn", Values: append([]string(nil), nodes...)}},
-	}}}}}
+	addNodeRequirement(ps, k8s.NodeSelectorRequirement{Key: "kubernetes.io/hostname", Operator: "NotIn", Values: append([]string(nil), nodes...)})
+}
+
+func applyRegion(ps *k8s.PodSpec, region string, p *Plan) {
+	reg, label := normalizeRegion(region)
+	if reg == "" {
+		return
+	}
+	addNodeRequirement(ps, k8s.NodeSelectorRequirement{Key: "topology.kubernetes.io/region", Operator: "In", Values: []string{reg}})
+	p.Decisions = append(p.Decisions, fmt.Sprintf("Schedules in the %s (%s) compute region (topology.kubernetes.io/region=%s).", label, reg, reg))
+}
+
+func normalizeRegion(r string) (reg, label string) {
+	switch strings.ToLower(strings.TrimSpace(r)) {
+	case "":
+		return "", ""
+	case "us-west", "west":
+		return "us-west", "west"
+	case "us-central", "central":
+		return "us-central", "central"
+	case "us-east", "east":
+		return "us-east", "east"
+	default:
+		return strings.ToLower(strings.TrimSpace(r)), strings.ToLower(strings.TrimSpace(r))
+	}
+}
+
+func volumeStorageClass(region string) (class, label string) {
+	reg, lbl := normalizeRegion(region)
+	switch reg {
+	case "us-west":
+		return "rook-cephfs-west", lbl
+	case "us-east":
+		return "rook-cephfs-east", lbl
+	case "us-central", "":
+		return "rook-cephfs-central", "central"
+	default:
+		return "rook-cephfs-" + strings.TrimPrefix(reg, "us-"), lbl
+	}
+}
+
+// defaultEphemeralStorage is the default per-container scratch request and limit.
+const defaultEphemeralStorage = "10Gi"
+
+func scratchSize(r Request) string {
+	if strings.TrimSpace(r.Scratch) != "" {
+		return strings.TrimSpace(r.Scratch)
+	}
+	return defaultEphemeralStorage
 }
 
 // Hash is the sha256 of what would be applied (objects + goal + public URL).
@@ -323,38 +391,38 @@ func pickImage(f *inspect.Facts, r *Request, p *Plan) {
 			p.ImageWhy = "the image you named, run as built (its own start command; no code copied in)"
 		}
 	case f != nil && f.Dockerfile:
-		p.Image = "ghcr.io/<you>/" + p.Name + ":latest"
+		p.Image = "ghcr.io/<you>/" + p.Name + ":v1"
 		if f.GitHubRepo != "" {
-			p.Image = "ghcr.io/" + f.GitHubRepo + ":latest"
+			p.Image = "ghcr.io/" + f.GitHubRepo + ":v1"
 		}
 		p.ImageWhy = "your project has a Dockerfile; build it first (nrp_build gives a GitHub Actions file), then plan again with image="
 		p.NeedsBuild = true
 	case r.Goal == GoalSession && r.Session == "vscode":
-		p.Image, p.ImageWhy = "codercom/code-server:latest", "VS Code in the browser (code-server)"
+		p.Image, p.ImageWhy = "codercom/code-server:4.96.4", "VS Code in the browser (code-server)"
 	case r.Goal == GoalSession:
 		if r.GPU > 0 {
-			p.Image, p.ImageWhy = "quay.io/jupyter/pytorch-notebook:cuda12-latest", "JupyterLab with PyTorch + CUDA (tested on Nautilus 2026-10-06)"
+			p.Image, p.ImageWhy = "quay.io/jupyter/pytorch-notebook:cuda12-python-3.13", "JupyterLab with PyTorch + CUDA (tested on Nautilus 2026-10-06)"
 		} else {
-			p.Image, p.ImageWhy = "quay.io/jupyter/scipy-notebook:latest", "JupyterLab with the scientific Python stack"
+			p.Image, p.ImageWhy = "quay.io/jupyter/scipy-notebook:python-3.13", "JupyterLab with the scientific Python stack"
 		}
 	case f != nil && f.WebApp == "shiny":
-		p.Image, p.ImageWhy = "rocker/shiny:latest", "R Shiny Server (serves /srv/shiny-server on 3838)"
+		p.Image, p.ImageWhy = "rocker/shiny:4.4.2", "R Shiny Server (serves /srv/shiny-server on 3838)"
 	case f != nil && f.WebApp == "static":
-		p.Image, p.ImageWhy = "nginxinc/nginx-unprivileged:stable", "static site served by nginx"
+		p.Image, p.ImageWhy = "nginxinc/nginx-unprivileged:1.27-alpine", "static site served by nginx"
 	case f != nil && f.WebApp == "node":
-		p.Image, p.ImageWhy = "node:22-slim", "Node.js app"
+		p.Image, p.ImageWhy = "node:22-bookworm-slim", "Node.js app"
 	case f != nil && f.Framework == "pytorch":
-		p.Image, p.ImageWhy = "pytorch/pytorch:latest", "PyTorch with CUDA (torch import found)"
+		p.Image, p.ImageWhy = "pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime", "PyTorch with CUDA (torch import found)"
 	case f != nil && f.Framework == "tensorflow":
-		p.Image, p.ImageWhy = "tensorflow/tensorflow:latest-gpu", "TensorFlow with GPU support (tensorflow import found)"
+		p.Image, p.ImageWhy = "tensorflow/tensorflow:2.18.0-gpu", "TensorFlow with GPU support (tensorflow import found)"
 	case f != nil && f.Framework == "jax":
-		p.Image, p.ImageWhy = "nvcr.io/nvidia/jax:latest", "JAX with CUDA"
+		p.Image, p.ImageWhy = "nvcr.io/nvidia/jax:24.10-py3", "JAX with CUDA"
 	case f != nil && contains(f.Languages, "r"):
-		p.Image, p.ImageWhy = "rocker/r-ver:latest", "R (rocker); packages install at start"
+		p.Image, p.ImageWhy = "rocker/r-ver:4.4.2", "R (rocker); packages install at start"
 	case f != nil && contains(f.Languages, "julia"):
-		p.Image, p.ImageWhy = "julia:latest", "Julia"
+		p.Image, p.ImageWhy = "julia:1.11-bookworm", "Julia"
 	default:
-		p.Image, p.ImageWhy = "python:3.12-slim", "plain Python"
+		p.Image, p.ImageWhy = "python:3.12-slim-bookworm", "plain Python"
 	}
 }
 
@@ -384,6 +452,24 @@ func validateInputs(r *Request) error {
 	if r.CPU != "" {
 		if c, err := k8s.ParseCPU(r.CPU); err != nil || c <= 0 {
 			return fmt.Errorf("cpu %q is not a number of cores; use e.g. 4, 0.5 or 500m", r.CPU)
+		}
+	}
+	if r.Scratch != "" {
+		b, err := k8s.ParseBytes(r.Scratch)
+		switch {
+		case err != nil:
+			return fmt.Errorf("scratch %q is not a size; use a number with a unit, e.g. 10Gi or 50Gi", r.Scratch)
+		case strings.Trim(r.Scratch, "0123456789.") == "":
+			return fmt.Errorf("scratch %q has no unit; add one, e.g. %sGi", r.Scratch, r.Scratch)
+		case b < 1<<30 || b > 50<<30:
+			return fmt.Errorf("scratch %q must be between 1Gi and 50Gi (NRP evicts pods above 50Gi of local scratch)", r.Scratch)
+		}
+	}
+	if r.Region != "" {
+		switch reg, _ := normalizeRegion(r.Region); reg {
+		case "us-west", "us-central", "us-east":
+		default:
+			return fmt.Errorf("region %q is not a Nautilus region; use us-west, us-central or us-east", r.Region)
 		}
 	}
 	if t := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(r.GPUType)), "nvidia.com/"); t != "" && t != "any" && t != "gpu" {
@@ -444,13 +530,77 @@ func installStep(f *inspect.Facts, p *Plan) string {
 	if f == nil || p.NeedsBuild || p.Prebuilt {
 		return ""
 	}
+	var steps []string
+	var notes []string
+	var hasInstallR, hasRenv, hasDesc bool
+	var installRPath string
 	for _, d := range f.DepFiles {
-		switch strings.ToLower(d) {
+		switch strings.ToLower(filepath.Base(d)) {
 		case "requirements.txt":
-			return "pip install --quiet --no-cache-dir -r requirements.txt && "
+			steps = append(steps, "pip install --quiet --no-cache-dir -r "+d+" && ")
+			notes = append(notes, "requirements.txt")
+		case "install.r":
+			hasInstallR = true
+			installRPath = d
+		case "renv.lock":
+			hasRenv = true
+		case "description":
+			hasDesc = true
 		}
 	}
+	switch {
+	case hasInstallR:
+		steps = append(steps, "Rscript "+installRPath+" && ")
+		notes = append(notes, installRPath)
+	case hasRenv:
+		steps = append(steps, `Rscript -e "if (!requireNamespace('renv', quietly=TRUE)) install.packages('renv', repos='https://cloud.r-project.org'); renv::restore(prompt=FALSE)" && `)
+		notes = append(notes, "renv.lock")
+	case hasDesc && len(f.RPackages) > 0:
+		quoted := make([]string, len(f.RPackages))
+		for i, pkg := range f.RPackages {
+			quoted[i] = "'" + pkg + "'"
+		}
+		steps = append(steps, fmt.Sprintf(`Rscript -e "install.packages(c(%s), repos='https://cloud.r-project.org')" && `, strings.Join(quoted, ", ")))
+		notes = append(notes, "DESCRIPTION Imports ("+strings.Join(f.RPackages, ", ")+")")
+	}
+	if len(notes) > 0 {
+		p.Decisions = append(p.Decisions, "Installs "+strings.Join(notes, ", ")+" at start (fine for small projects; for big ones build an image with nrp_build).")
+	}
+	return strings.Join(steps, "")
+}
+
+func candidateQuestion(f *inspect.Facts, goal string) string {
+	if f == nil {
+		return ""
+	}
+	if len(f.Candidates) > 1 {
+		verb := "runs the project"
+		if goal == GoalWeb {
+			verb = "starts the app"
+		}
+		return fmt.Sprintf("Which file %s: %s? Ask the person and call nrp_plan again with command=.", verb, orList(f.Candidates))
+	}
+	if len(f.Notebooks) > 0 {
+		nb := f.Notebooks[0]
+		if len(f.Notebooks) == 1 {
+			return fmt.Sprintf("Found notebook %s: should this open an interactive Jupyter session (goal=session) or execute the notebook from start to finish (command=\"jupyter nbconvert --to notebook --execute --inplace %s\")? Ask the person and call nrp_plan again.", nb, nb)
+		}
+		return fmt.Sprintf("Which notebook should run: %s? Ask the person whether to open an interactive session (goal=session) or run one with command=\"jupyter nbconvert --to notebook --execute --inplace <file>\".", orList(f.Notebooks))
+	}
 	return ""
+}
+
+func orList(xs []string) string {
+	switch len(xs) {
+	case 0:
+		return ""
+	case 1:
+		return xs[0]
+	case 2:
+		return xs[0] + " or " + xs[1]
+	default:
+		return strings.Join(xs[:len(xs)-1], ", ") + " or " + xs[len(xs)-1]
+	}
 }
 
 func inferCommand(f *inspect.Facts, r Request) (string, string) {
@@ -479,6 +629,12 @@ func buildJob(f *inspect.Facts, r Request, p *Plan) error {
 		cmd, why = r.Command, "the command you gave"
 	}
 	if cmd == "" && !p.Prebuilt {
+		if q := candidateQuestion(f, r.Goal); q != "" {
+			p.NeedsCommand = q
+			p.Summary = q
+			p.Decisions = append(p.Decisions, q)
+			return nil
+		}
 		return fmt.Errorf("I could not tell what to run: pass command (for example \"python train.py --epochs 10\")")
 	}
 	if cmd != "" {
@@ -492,8 +648,12 @@ func buildJob(f *inspect.Facts, r Request, p *Plan) error {
 		p.Decisions = append(p.Decisions, "1 GPU because the code uses one ("+f.GPUReason+"). Pass gpu=0 to run on CPU only.")
 	}
 	cpu, mem, swhy := sizing(r, f, gpu)
-	p.Decisions = append(p.Decisions, "Size: "+swhy+"; limits equal requests (the NRP asks for limits within 20%).")
-	res := k8s.Resources{Requests: map[string]string{"cpu": cpu, "memory": mem}, Limits: map[string]string{"cpu": cpu, "memory": mem}}
+	scratch := scratchSize(r)
+	p.Decisions = append(p.Decisions, "Size: "+swhy+"; "+scratch+" ephemeral-storage; limits equal requests (the NRP asks for limits within 20%).")
+	res := k8s.Resources{
+		Requests: map[string]string{"cpu": cpu, "memory": mem, "ephemeral-storage": scratch},
+		Limits:   map[string]string{"cpu": cpu, "memory": mem, "ephemeral-storage": scratch},
+	}
 	if gpu > 0 {
 		g := gpuResource(r)
 		res.Requests[g], res.Limits[g] = strconv.Itoa(gpu), strconv.Itoa(gpu)
@@ -504,9 +664,6 @@ func buildJob(f *inspect.Facts, r Request, p *Plan) error {
 		}
 	}
 	install := installStep(f, p)
-	if install != "" {
-		p.Decisions = append(p.Decisions, "Installs requirements.txt at start (fine for small projects; for big ones build an image with nrp_build).")
-	}
 	script := "set -e; cd /work; " + install + cmd
 	if r.Goal == GoalSweep && r.Count > 0 {
 		script = "set -e; cd /work; " + arrayEnv(r.ArrayIDs, r.Count) + install + cmd
@@ -548,6 +705,15 @@ func buildJob(f *inspect.Facts, r Request, p *Plan) error {
 	}
 	pod := k8s.PodSpec{RestartPolicy: "Never", Containers: []k8s.Container{ctr}, Volumes: vols, ImagePullSecrets: pullSecrets(r, p), AutomountServiceAccountToken: k8s.BoolPtr(false)}
 	applyAvoid(&pod, r.AvoidNodes)
+	applyRegion(&pod, r.Region, p)
+	if r.Goal == GoalSweep && gpu == 0 {
+		addNodeRequirement(&pod, k8s.NodeSelectorRequirement{Key: "nvidia.com/gpu.present", Operator: "NotIn", Values: []string{"true"}})
+		if !r.Opportun {
+			p.Decisions = append(p.Decisions, "CPU-only sweep: keeps pods off GPU nodes (nvidia.com/gpu.present NotIn true) so GPUs stay free. You can also pass opportunistic=true to run on idle capacity across the cluster (checkpoint your tasks in case a pod is preempted).")
+		} else {
+			p.Decisions = append(p.Decisions, "CPU-only sweep: keeps pods off GPU nodes (nvidia.com/gpu.present NotIn true).")
+		}
+	}
 	if r.Opportun || (gpu > 0 && isSpecial(gpuResource(r)) && r.Opportun) {
 		pod.PriorityClassName = "opportunistic"
 		p.Decisions = append(p.Decisions, "priorityClassName opportunistic: bypasses the special-GPU quota, but the pod can be preempted at any time. Checkpoint your work.")
@@ -678,6 +844,9 @@ func buildWeb(f *inspect.Facts, r Request, p *Plan) error {
 	case app == "flask":
 		mod := strings.TrimSuffix(strings.ReplaceAll(f.Entry, "/", "."), ".py")
 		cmd = fmt.Sprintf("pip install --quiet gunicorn && gunicorn -b 0.0.0.0:%d %s:app", port, mod)
+	case app == "python":
+		cmd = "python " + f.Entry
+		p.Decisions = append(p.Decisions, fmt.Sprintf("Runs: %s on port %d (%s).", cmd, port, f.EntryReason))
 	case app == "shiny":
 		cmd = "cp -r /work/. /srv/shiny-server/ && exec /init"
 	case app == "static":
@@ -686,13 +855,26 @@ func buildWeb(f *inspect.Facts, r Request, p *Plan) error {
 	case app == "node":
 		cmd = "npm install --omit=dev && npm start"
 	default:
+		if f != nil && f.Entry != "" {
+			if ic, why := inferCommand(f, r); ic != "" {
+				cmd = ic
+				p.Decisions = append(p.Decisions, fmt.Sprintf("Runs: %s on port %d (%s).", cmd, port, why))
+				break
+			}
+		}
+		if q := candidateQuestion(f, GoalWeb); q != "" {
+			p.NeedsCommand = q
+			p.Summary = q
+			p.Decisions = append(p.Decisions, q)
+			return nil
+		}
 		return fmt.Errorf("I could not tell how to start the web app: pass command (for example \"python app.py\") and port")
 	}
 	if app == "static" {
 		p.Decisions = append(p.Decisions, "nginx-unprivileged listens on 8080.")
 	}
 	install := installStep(f, p)
-	if app == "shiny" || app == "static" || app == "node" {
+	if app == "static" || app == "node" {
 		install = ""
 	}
 	cpu, mem := r.CPU, r.Memory
@@ -722,16 +904,20 @@ func buildWeb(f *inspect.Facts, r Request, p *Plan) error {
 	}
 	labels := copyLabels(p.Labels)
 	sel := map[string]string{"nrp-mcp/name": p.Name, "nrp-mcp/run": p.Run}
+	scratch := scratchSize(r)
 	ctr := k8s.Container{Name: "web", Image: p.Image, Command: []string{"bash", "-c", "set -e; cd /work; " + install + cmd}, WorkingDir: "/work",
 		Ports:          []k8s.Port{{ContainerPort: port, Name: "http"}},
-		Resources:      k8s.Resources{Requests: map[string]string{"cpu": cpu, "memory": mem}, Limits: map[string]string{"cpu": cpu, "memory": mem}},
+		Resources:      k8s.Resources{Requests: map[string]string{"cpu": cpu, "memory": mem, "ephemeral-storage": scratch}, Limits: map[string]string{"cpu": cpu, "memory": mem, "ephemeral-storage": scratch}},
 		VolumeMounts:   []k8s.Mount{{Name: "code", MountPath: "/work"}},
 		ReadinessProbe: &k8s.Probe{HTTPGet: &k8s.HTTPGet{Path: "/", Port: port}, InitialDelaySeconds: 10, PeriodSeconds: 10}}
 	if app == "static" {
 		ctr.Command = []string{"sh", "-c", "cp -r /work/. /usr/share/nginx/html/ && exec nginx -g 'daemon off;'"}
 	}
 	if app == "shiny" {
-		ctr.Command = []string{"sh", "-c", "cp -r /work/. /srv/shiny-server/ && exec /init"}
+		ctr.Command = []string{"sh", "-c", "cd /work && " + install + "cp -r /work/. /srv/shiny-server/ && exec /init"}
+		if install == "" {
+			ctr.Command = []string{"sh", "-c", "cp -r /work/. /srv/shiny-server/ && exec /init"}
+		}
 	}
 	vols := []k8s.Volume{{Name: "code", EmptyDir: &k8s.EmptyDir{}}}
 	if p.Prebuilt {
@@ -746,6 +932,7 @@ func buildWeb(f *inspect.Facts, r Request, p *Plan) error {
 	ctr.Env = append(ctr.Env, k8s.EnvVar{Name: "NRP_RUN", Value: p.Run})
 	webPod := k8s.PodSpec{Containers: []k8s.Container{ctr}, Volumes: vols, ImagePullSecrets: pullSecrets(r, p), AutomountServiceAccountToken: k8s.BoolPtr(false)}
 	applyAvoid(&webPod, r.AvoidNodes)
+	applyRegion(&webPod, r.Region, p)
 	days := r.WebDays
 	if days <= 0 || days > 14 {
 		days = 14
@@ -812,9 +999,11 @@ func buildSession(r Request, p *Plan) error {
 	} else {
 		cmd = []string{"start-notebook.py", "--IdentityProvider.token=$(NRP_SESSION_TOKEN)"}
 	}
-	res := k8s.Resources{Requests: map[string]string{"cpu": cpu, "memory": mem}, Limits: map[string]string{"cpu": cpu, "memory": mem}}
+	scratch := scratchSize(r)
+	res := k8s.Resources{Requests: map[string]string{"cpu": cpu, "memory": mem, "ephemeral-storage": scratch}, Limits: map[string]string{"cpu": cpu, "memory": mem, "ephemeral-storage": scratch}}
 	if gpu > 0 {
-		res.Requests["nvidia.com/gpu"], res.Limits["nvidia.com/gpu"] = strconv.Itoa(gpu), strconv.Itoa(gpu)
+		g := gpuResource(r)
+		res.Requests[g], res.Limits[g] = strconv.Itoa(gpu), strconv.Itoa(gpu)
 	}
 	ctr := k8s.Container{Name: "session", Image: p.Image, Command: cmd, Ports: []k8s.Port{{ContainerPort: port}}, Resources: res,
 		Env: []k8s.EnvVar{{Name: "NRP_SESSION_TOKEN", ValueFrom: &k8s.EnvVarSource{SecretKeyRef: &k8s.KeyRef{Name: p.Name + "-session", Key: "token"}}},
@@ -827,25 +1016,57 @@ func buildSession(r Request, p *Plan) error {
 		spec.Volumes = []k8s.Volume{{Name: "data", PersistentVolumeClaim: &k8s.PVCSource{ClaimName: r.DataPVC}}}
 	}
 	applyAvoid(&spec, r.AvoidNodes)
+	applyRegion(&spec, r.Region, p)
 	labels := copyLabels(p.Labels)
 	labels["nrp-mcp/session"] = "true"
+	sel := map[string]string{"nrp-mcp/name": p.Name, "nrp-mcp/run": p.Run}
 	// The token value is made by nrp_run at run time (FillSessionToken), so it is never in
 	// the plan, the plan file or the plan output.
 	sec := k8s.Object{APIVersion: "v1", Kind: "Secret", Metadata: k8s.Meta{Name: p.Name + "-session", Namespace: r.Namespace, Labels: copyLabels(labels)}, StringData: map[string]string{"token": SessionTokenPlaceholder}}
-	dep := k8s.Object{APIVersion: "apps/v1", Kind: "Deployment", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: labels, Annotations: owner(r)},
-		DeploymentSpec: &k8s.DeploymentSpec{Replicas: 1, Selector: k8s.LabelSelector{MatchLabels: map[string]string{"nrp-mcp/name": p.Name, "nrp-mcp/run": p.Run}},
-			Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: labels}, Spec: spec}}}
-	p.Objects = []k8s.Object{sec, dep}
-	p.Extra["session_port"] = port
-	p.Extra["session_token_secret"] = p.Name + "-session"
 	kind := "Jupyter"
 	if r.Session == "vscode" {
 		kind = "VS Code"
 	}
-	gs := "no GPU"
 	if gpu > 0 {
-		gs = fmt.Sprintf("%d GPU", gpu)
+		hours := r.Hours
+		if hours <= 0 {
+			hours = r.GPUSessionHours
+		}
+		if hours <= 0 {
+			hours = 6
+		}
+		if hours > 12 {
+			hours = 12
+		}
+		spec.RestartPolicy = "Never"
+		if r.Opportun || (isSpecial(gpuResource(r)) && r.Opportun) {
+			spec.PriorityClassName = "opportunistic"
+		}
+		job := k8s.Object{APIVersion: "batch/v1", Kind: "Job", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: labels, Annotations: owner(r)},
+			JobSpec: &k8s.JobSpec{BackoffLimit: k8s.IntPtr(1), TTLSecondsAfterFinished: k8s.IntPtr(3600), ActiveDeadlineSeconds: k8s.IntPtr(hours * 3600),
+				Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: labels}, Spec: spec}}}
+		svc := k8s.Object{APIVersion: "v1", Kind: "Service", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: copyLabels(labels)},
+			ServiceSpec: &k8s.ServiceSpec{Selector: sel, Ports: []k8s.ServicePort{{Port: port, TargetPort: port}}, Type: "ClusterIP"}}
+		p.Objects = []k8s.Object{sec, job, svc}
+		p.Extra["session_port"] = port
+		p.Extra["session_token_secret"] = p.Name + "-session"
+		gs := fmt.Sprintf("%d GPU", gpu)
+		p.Decisions = append(p.Decisions,
+			fmt.Sprintf("%s GPU session as a Job with a %d h time limit (%s CPU, %s, %s; NRP rule R8: Deployments cannot request GPUs) plus a Service for kubectl port-forward on your machine, never public.", kind, hours, cpu, mem, gs),
+			"Its sign-in token lives in a Secret and is shown to you once by nrp_session.",
+			"Use the GPU actively (NRP checks for >= 40% GPU use) and stop the session early with nrp_cleanup when you are done.",
+			"For a no-install option, the NRP's hosted JupyterHub is https://jupyterhub-west.nrp-nautilus.io (shuts down 1 h after you close the tab).")
+		p.Summary = fmt.Sprintf("A private %s GPU session (Job, %d h limit) in %s with %s CPU, %s memory, %s, image %s.", kind, hours, r.Namespace, cpu, mem, gs, p.Image)
+		p.Kubectl = []string{fmt.Sprintf("kubectl -n %s port-forward svc/%s %d:%d", r.Namespace, p.Name, port, port)}
+		return nil
 	}
+	dep := k8s.Object{APIVersion: "apps/v1", Kind: "Deployment", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: labels, Annotations: owner(r)},
+		DeploymentSpec: &k8s.DeploymentSpec{Replicas: 1, Selector: k8s.LabelSelector{MatchLabels: sel},
+			Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: labels}, Spec: spec}}}
+	p.Objects = []k8s.Object{sec, dep}
+	p.Extra["session_port"] = port
+	p.Extra["session_token_secret"] = p.Name + "-session"
+	gs := "no GPU"
 	p.Decisions = append(p.Decisions,
 		fmt.Sprintf("%s session as a 1-replica Deployment (%s CPU, %s, %s); reached only through kubectl port-forward on your machine, never public.", kind, cpu, mem, gs),
 		"Its sign-in token lives in a Secret and is shown to you once by nrp_session.",
@@ -1149,15 +1370,16 @@ func buildVolume(r Request, p *Plan) error {
 		p.Name = "data-" + shortRun(p.Run)
 	}
 	p.Labels["nrp-mcp/name"] = p.Name
+	sc, regLabel := volumeStorageClass(r.Region)
 	p.Objects = []k8s.Object{{APIVersion: "v1", Kind: "PersistentVolumeClaim", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: copyLabels(p.Labels), Annotations: owner(r)},
-		PVCSpec: &k8s.PVCSpec{AccessModes: []string{"ReadWriteMany"}, StorageClassName: "rook-cephfs-central", Resources: k8s.Resources{Requests: map[string]string{"storage": size}}}}}
+		PVCSpec: &k8s.PVCSpec{AccessModes: []string{"ReadWriteMany"}, StorageClassName: sc, Resources: k8s.Resources{Requests: map[string]string{"storage": size}}}}}
 	p.Image, p.ImageWhy = "", ""
 	p.Decisions = append(p.Decisions,
-		"A shared CephFS volume (rook-cephfs-central, ReadWriteMany) so Jobs, sweeps and sessions can all mount it at once (about 86 MiB/s per writer in a UCR test).",
+		fmt.Sprintf("A shared CephFS volume (%s, ReadWriteMany, %s region) so Jobs, sweeps and sessions can all mount it at once (about 86 MiB/s per writer in a UCR test).", sc, regLabel),
 		"Not for pip/conda installs or tens of thousands of small files (CephFS metadata is slow); pack small files into archives.",
 		"Volumes not accessed for 6 months can be purged without notice; keep the master copy elsewhere (CephRDS, HPCC storage).",
 		"Use it with data_volume="+p.Name+" in nrp_plan.")
-	p.Summary = fmt.Sprintf("A %s shared volume %q in %s (CephFS, central region).", size, p.Name, r.Namespace)
+	p.Summary = fmt.Sprintf("A %s shared volume %q in %s (CephFS, %s region).", size, p.Name, r.Namespace, regLabel)
 	p.Kubectl = []string{fmt.Sprintf("kubectl -n %s apply -f plan.json", r.Namespace), fmt.Sprintf("kubectl -n %s get pvc %s", r.Namespace, p.Name)}
 	return nil
 }
@@ -1194,18 +1416,21 @@ func buildPull(r Request, p *Plan) error {
 		p.Name = "pull-" + shortRun(p.Run)
 	}
 	p.Labels["nrp-mcp/name"] = p.Name
-	ctr := k8s.Container{Name: "pull", Image: "curlimages/curl:latest", Command: []string{"sh", "-c", b.String()},
-		Resources:    k8s.Resources{Requests: map[string]string{"cpu": "1", "memory": "2Gi"}, Limits: map[string]string{"cpu": "1", "memory": "2Gi"}},
+	scratch := scratchSize(r)
+	ctr := k8s.Container{Name: "pull", Image: "quay.io/curl/curl:8.23.0", Command: []string{"sh", "-c", b.String()},
+		Resources:    k8s.Resources{Requests: map[string]string{"cpu": "1", "memory": "2Gi", "ephemeral-storage": scratch}, Limits: map[string]string{"cpu": "1", "memory": "2Gi", "ephemeral-storage": scratch}},
 		VolumeMounts: []k8s.Mount{{Name: "data", MountPath: "/data"}}}
 	hours := r.Hours
 	if hours == 0 {
 		hours = 12
 	}
+	pullPod := k8s.PodSpec{RestartPolicy: "Never", Containers: []k8s.Container{ctr},
+		Volumes: []k8s.Volume{{Name: "data", PersistentVolumeClaim: &k8s.PVCSource{ClaimName: r.DataPVC}}}, AutomountServiceAccountToken: k8s.BoolPtr(false)}
+	applyRegion(&pullPod, r.Region, p)
 	js := &k8s.JobSpec{BackoffLimit: k8s.IntPtr(2), TTLSecondsAfterFinished: k8s.IntPtr(86400), ActiveDeadlineSeconds: k8s.IntPtr(hours * 3600),
-		Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: copyLabels(p.Labels)}, Spec: k8s.PodSpec{RestartPolicy: "Never", Containers: []k8s.Container{ctr},
-			Volumes: []k8s.Volume{{Name: "data", PersistentVolumeClaim: &k8s.PVCSource{ClaimName: r.DataPVC}}}, AutomountServiceAccountToken: k8s.BoolPtr(false)}}}
+		Template: k8s.PodTemplate{Metadata: k8s.Meta{Labels: copyLabels(p.Labels)}, Spec: pullPod}}
 	p.Objects = []k8s.Object{{APIVersion: "batch/v1", Kind: "Job", Metadata: k8s.Meta{Name: p.Name, Namespace: r.Namespace, Labels: copyLabels(p.Labels), Annotations: owner(r)}, JobSpec: js}}
-	p.Image, p.ImageWhy = "curlimages/curl:latest", "small image with curl"
+	p.Image, p.ImageWhy = "quay.io/curl/curl:8.23.0", "small image with curl"
 	p.Decisions = append(p.Decisions,
 		fmt.Sprintf("Downloads %d file(s) inside the cluster straight into volume %s at %s, so nothing large passes through your laptop or the Kubernetes API.", len(r.URLs), r.DataPVC, dir),
 		"Retries each file 5 times; stops after "+strconv.Itoa(hours)+" h.")

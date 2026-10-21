@@ -245,10 +245,13 @@ func TestPlanRunJobFlow(t *testing.T) {
 		}
 	}
 	s := string(last)
-	for _, want := range []string{`"ConfigMap"`, `"app.kubernetes.io/managed-by"`, `"unpack-code"`} {
+	for _, want := range []string{`"ConfigMap"`, `"app.kubernetes.io/managed-by"`, `"code-src"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("applied manifest missing %s", want)
 		}
+	}
+	if strings.Contains(s, "busybox") || strings.Contains(s, "unpack-code") {
+		t.Errorf("applied manifest must not use a busybox unpack init container: %s", s)
 	}
 }
 
@@ -486,7 +489,7 @@ func TestCleanupEveryoneNeedsAdmin(t *testing.T) {
 func TestPlanLabelsOwner(t *testing.T) {
 	cs, _ := setup(t)
 	dir := project(t, map[string]string{"run.py": "print(1)\n"})
-	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "show_manifests": true})
 	if isErr {
 		t.Fatal(text)
 	}
@@ -574,7 +577,7 @@ func TestWatchPendingOnNode(t *testing.T) {
 func TestPlanAvoidNode(t *testing.T) {
 	cs, _ := setup(t)
 	dir := project(t, map[string]string{"app.py": "import streamlit as st\nst.write('hi')\n", "requirements.txt": "streamlit\n"})
-	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "goal": "web", "avoid_node": "k8s-haosu-20.sdsc.optiputer.net"})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "goal": "web", "avoid_node": "k8s-haosu-20.sdsc.optiputer.net", "show_manifests": true})
 	if isErr {
 		t.Fatal(text)
 	}
@@ -703,7 +706,7 @@ func TestSetupFixNeedsPersonApproval(t *testing.T) {
 func TestPlanPacksSafelyAndRedacts(t *testing.T) {
 	cs, _ := setup(t)
 	dir := project(t, map[string]string{"run.py": "print(1)\n", "id_rsa": "-----BEGIN OPENSSH PRIVATE KEY-----\nx\n", "tokenizer.py": "x = 1\n"})
-	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "show_manifests": true})
 	if isErr {
 		t.Fatal(text)
 	}
@@ -805,7 +808,7 @@ func TestWebHostInUseRefused(t *testing.T) {
 func TestJobPlanSaysResultsNotSavedWithoutKeys(t *testing.T) {
 	cs, _ := setup(t)
 	dir := project(t, map[string]string{"run.py": "print(1)\n"})
-	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "show_manifests": true})
 	if isErr {
 		t.Fatal(text)
 	}
@@ -851,8 +854,8 @@ func TestJobResultsWithKeys(t *testing.T) {
 	}
 	defer cs.Close()
 	dir := project(t, map[string]string{"run.py": "print(1)\n"})
-	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir})
-	if isErr || !strings.Contains(fmt.Sprint(m["decisions"]), "Saves results") || !strings.Contains(fmt.Sprint(m["manifests"]), "save-results") {
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "show_manifests": true})
+	if isErr || !strings.Contains(fmt.Sprint(m["decisions"]), "Saves results") || !strings.Contains(fmt.Sprint(m["manifests"]), "RESULTS_DIR") || strings.Contains(fmt.Sprint(m["manifests"]), "save-results") {
 		t.Fatalf("plan: %s %v", text, m["decisions"])
 	}
 	out, isErr, text := call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"], "confirm_token": m["confirm_token"]})
@@ -1070,5 +1073,201 @@ func TestCleanupSaysHowToSignIn(t *testing.T) {
 	_, isErr, text := call(t, cs, "nrp_cleanup", map[string]any{})
 	if !isErr || !strings.Contains(text, "nrp_setup") {
 		t.Fatalf("cleanup without a working sign-in must say what to do: %s", text)
+	}
+}
+
+func TestSessionToolFindsJobPods(t *testing.T) {
+	cs, fk := setup(t)
+	fk.mu.Lock()
+	fk.out = map[string]string{
+		"get deployment -l nrp-mcp/run=gpu-sess,nrp-mcp/session=true": `{"items":[]}`,
+		"get job -l nrp-mcp/run=gpu-sess,nrp-mcp/session=true":        `{"items":[{"metadata":{"name":"nb-gpu","labels":{"app.kubernetes.io/managed-by":"nrp-mcp","nrp-mcp/session":"true","nrp-mcp/run":"gpu-sess"}},"spec":{"template":{"spec":{"containers":[{"ports":[{"containerPort":8888}]}]}}},"status":{"active":1}}]}`,
+		"get pods -l nrp-mcp/run=gpu-sess":                            `{"items":[{"status":{"phase":"Running","containerStatuses":[{"ready":true}]}}]}`,
+		"get secret nb-gpu-session":                                   `{"data":{"token":"c2VjcmV0MTIz"}}`,
+	}
+	fk.mu.Unlock()
+	m, isErr, text := call(t, cs, "nrp_session", map[string]any{"run": "gpu-sess"})
+	if isErr {
+		t.Fatal(text)
+	}
+	if m["ready"] != true || m["token"] != "secret123" || !strings.Contains(fmt.Sprint(m["command"]), "port-forward svc/nb-gpu 8888:8888") {
+		t.Fatalf("session output: %v", m)
+	}
+}
+
+func TestNamespaceRunningGPUsCheckBeforeApproval(t *testing.T) {
+	cs, fk, codes := setupWith(t, "code", nil)
+	dir := project(t, map[string]string{"train.py": "import torch\nx=torch.zeros(1).cuda()\n"})
+	// 8 GPUs already Running in the namespace (2 pods x 4 GPUs, plus 1 Succeeded pod that does not count).
+	podsJSON := `{"items":[` +
+		`{"status":{"phase":"Running"},"spec":{"containers":[{"resources":{"requests":{"nvidia.com/gpu":"4"},"limits":{"nvidia.com/gpu":"4"}}}]}},` +
+		`{"status":{"phase":"Running"},"spec":{"containers":[{"resources":{"requests":{"nvidia.com/a40":"4"},"limits":{"nvidia.com/a40":"4"}}}]}},` +
+		`{"status":{"phase":"Succeeded"},"spec":{"containers":[{"resources":{"requests":{"nvidia.com/gpu":"4"},"limits":{"nvidia.com/gpu":"4"}}}]}}` +
+		`]}`
+	fk.mu.Lock()
+	fk.out = map[string]string{"get pods": podsJSON}
+	fk.mu.Unlock()
+	// At plan time: refused over namespace_gpus=8, no approval requested.
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "gpu": 1, "discard_results": true})
+	if isErr {
+		t.Fatal(text)
+	}
+	if m["runnable"] == true || !strings.Contains(fmt.Sprint(m["refusals"]), "namespace_gpus=8") {
+		t.Fatalf("plan over namespace_gpus must be refused: %v", m)
+	}
+	// Plan when only 7 GPUs are running (passes), then a 2nd GPU starts before nrp_run so 8 are running -> refused before approval code is issued.
+	fk.mu.Lock()
+	fk.out = map[string]string{"get pods": `{"items":[{"status":{"phase":"Running"},"spec":{"containers":[{"resources":{"requests":{"nvidia.com/gpu":"7"},"limits":{"nvidia.com/gpu":"7"}}}]}}]}`}
+	fk.mu.Unlock()
+	m, isErr, text = call(t, cs, "nrp_plan", map[string]any{"project": dir, "gpu": 1, "discard_results": true})
+	if isErr || m["runnable"] != true {
+		t.Fatalf("7 running + 1 new = 8 must be runnable: %v %s", m, text)
+	}
+	fk.mu.Lock()
+	fk.out = map[string]string{"get pods": podsJSON} // now 8 running
+	fk.mu.Unlock()
+	_, isErr, text = call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"]})
+	if !isErr || !strings.Contains(text, "namespace_gpus=8") || codes.lastCode() != "" || fk.applied() != 0 {
+		t.Fatalf("nrp_run over namespace_gpus must refuse before approval: isErr=%v text=%s code=%q applied=%d", isErr, text, codes.lastCode(), fk.applied())
+	}
+}
+
+func TestMissingQuotaRefusesH100H200GH200(t *testing.T) {
+	cs, _ := setup(t)
+	// fakeKube only has requests.nvidia.com/a100 in ResourceQuota; h100/h200/gh200 keys are missing.
+	dir := project(t, map[string]string{"train.py": "import torch\n"})
+	for _, gt := range []string{"h100", "h200", "gh200"} {
+		m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": dir, "gpu": 1, "gpu_type": gt, "discard_results": true})
+		if isErr {
+			t.Fatal(text)
+		}
+		if m["runnable"] == true || !strings.Contains(fmt.Sprint(m["refusals"]), "R6") {
+			t.Fatalf("%s with missing quota entry must be refused by R6: %v", gt, m["refusals"])
+		}
+		m, isErr, text = call(t, cs, "nrp_plan", map[string]any{"project": dir, "gpu": 1, "gpu_type": gt, "opportunistic": true, "discard_results": true})
+		if isErr || m["runnable"] != true {
+			t.Fatalf("opportunistic %s must be allowed: %v %s", gt, m["refusals"], text)
+		}
+	}
+}
+
+func TestPlainAppsGuidedQuestionsAndRPackagesViaMCP(t *testing.T) {
+	cs, fk := setup(t)
+	// 1. Plain http.server web app without command= or port=.
+	webDir := project(t, map[string]string{
+		"app.py": "from http.server import HTTPServer, BaseHTTPRequestHandler\nHTTPServer(('0.0.0.0', 8080), BaseHTTPRequestHandler).serve_forever()\n",
+	})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": webDir, "goal": "web", "show_manifests": true})
+	if isErr || m["runnable"] != true {
+		t.Fatalf("plain http.server web plan must be runnable without command=: isErr=%v text=%s m=%v", isErr, text, m)
+	}
+	mb, _ := json.Marshal(m["manifests"])
+	if !strings.Contains(string(mb), "python app.py") || !strings.Contains(string(mb), `"containerPort":8080`) {
+		t.Fatalf("manifests missing python app.py or port 8080: %s", mb)
+	}
+	// 2. Folder with several candidate entry files returns one guided question in next instead of an error.
+	multiDir := project(t, map[string]string{"a.py": "print(1)\n", "b.py": "print(2)\n"})
+	m, isErr, text = call(t, cs, "nrp_plan", map[string]any{"project": multiDir, "goal": "web"})
+	if isErr || m["runnable"] == true || m["confirm_token"] != nil {
+		t.Fatalf("multi-file folder must return a non-error guided plan: isErr=%v text=%s m=%v", isErr, text, m)
+	}
+	if !strings.Contains(fmt.Sprint(m["next"]), "Which file starts the app: a.py or b.py?") {
+		t.Fatalf("next got %q, want guided question", m["next"])
+	}
+	if _, isErr, _ = call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"]}); !isErr || fk.applied() != 0 {
+		t.Fatal("nrp_run must refuse a plan that still needs a command")
+	}
+	// 3. R script with install.R gets an install step.
+	rDir := project(t, map[string]string{
+		"sim.R":     "print(1)\n",
+		"install.R": "install.packages('jsonlite', repos='https://cloud.r-project.org')\n",
+	})
+	m, isErr, text = call(t, cs, "nrp_plan", map[string]any{"project": rDir, "discard_results": true, "show_manifests": true})
+	if isErr || m["runnable"] != true {
+		t.Fatalf("R script with install.R must be runnable: isErr=%v text=%s m=%v", isErr, text, m)
+	}
+	mb, _ = json.Marshal(m["manifests"])
+	if !strings.Contains(string(mb), "Rscript install.R") || !strings.Contains(string(mb), "Rscript sim.R") {
+		t.Fatalf("R manifest missing Rscript install.R or Rscript sim.R: %s", mb)
+	}
+}
+
+func TestSmallerPlanAndToolDescriptions(t *testing.T) {
+	cs, _ := setup(t)
+	// P5: Typical web plan result is under 6 KB, omits manifests unless show_manifests=true,
+	// and returns summary, decisions, refusals, warnings, code_files, skipped_files, resources.
+	webDir := project(t, map[string]string{
+		"app.py":           "import streamlit as st\nst.title('Leaf area explorer')\n",
+		"requirements.txt": "streamlit\n",
+		".env":             "SECRET=123\n",
+	})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": webDir, "goal": "web"})
+	if isErr {
+		t.Fatal(text)
+	}
+	if len(text) >= 6*1024 {
+		t.Fatalf("typical web plan result is %d bytes, want < 6 KB (6144 bytes)", len(text))
+	}
+	if m["manifests"] != nil {
+		t.Fatalf("manifests must be omitted unless show_manifests=true, got %v", m["manifests"])
+	}
+	for _, field := range []string{"summary", "decisions", "refusals", "warnings", "code_files", "skipped_files", "resources"} {
+		if m[field] == nil {
+			t.Fatalf("plan result missing %s: %v", field, m)
+		}
+	}
+	resList, _ := m["resources"].([]any)
+	if len(resList) == 0 {
+		t.Fatalf("resources empty: %v", m["resources"])
+	}
+	rb, _ := json.Marshal(resList)
+	for _, want := range []string{`"kind":"Deployment"`, `"cpu":"1"`, `"memory":"2Gi"`, `"kind":"Service"`, `"kind":"Ingress"`} {
+		if !strings.Contains(string(rb), want) {
+			t.Fatalf("resources missing %s: %s", want, rb)
+		}
+	}
+	// Job with GPU and hours reports cpu, memory, gpu, hours in resources.
+	jobDir := project(t, map[string]string{"train.py": "import torch\ntorch.cuda.is_available()\n"})
+	jm, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": jobDir, "gpu": 1, "hours": 6, "discard_results": true})
+	if isErr {
+		t.Fatal(text)
+	}
+	jrb, _ := json.Marshal(jm["resources"])
+	for _, want := range []string{`"kind":"Job"`, `"cpu":"4"`, `"memory":"16Gi"`, `"gpu":1`, `"hours":6`} {
+		if !strings.Contains(string(jrb), want) {
+			t.Fatalf("job resources missing %s: %s", want, jrb)
+		}
+	}
+	// With show_manifests=true, full manifests are returned.
+	withM, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": webDir, "goal": "web", "show_manifests": true})
+	if isErr {
+		t.Fatal(text)
+	}
+	if withM["manifests"] == nil {
+		t.Fatal("show_manifests=true did not include manifests")
+	}
+
+	// P6: nrp_plan, nrp_run, nrp_watch descriptions each under 600 chars and ending with what to tell the person.
+	lt, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := map[string]bool{}
+	for _, tl := range lt.Tools {
+		switch tl.Name {
+		case "nrp_plan", "nrp_run", "nrp_watch":
+			checked[tl.Name] = true
+			if len(tl.Description) == 0 || len(tl.Description) >= 600 {
+				t.Errorf("%s description is %d chars, want < 600: %q", tl.Name, len(tl.Description), tl.Description)
+			}
+			sentences := strings.Split(strings.TrimSuffix(tl.Description, "."), ". ")
+			last := sentences[len(sentences)-1]
+			if !strings.HasPrefix(last, "Tell the person") {
+				t.Errorf("%s description must end with what to tell the person, got last sentence %q", tl.Name, last)
+			}
+		}
+	}
+	if len(checked) != 3 {
+		t.Fatalf("checked %v, want nrp_plan, nrp_run, nrp_watch", checked)
 	}
 }

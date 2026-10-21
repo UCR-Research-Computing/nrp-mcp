@@ -11,8 +11,8 @@ import (
 func ctr(cmd ...string) k8s.Container {
 	return k8s.Container{Name: "main", Image: "python:3.12-slim", Command: cmd,
 		Resources: k8s.Resources{
-			Requests: map[string]string{"cpu": "1", "memory": "2Gi"},
-			Limits:   map[string]string{"cpu": "1", "memory": "2Gi"},
+			Requests: map[string]string{"cpu": "1", "memory": "2Gi", "ephemeral-storage": "10Gi"},
+			Limits:   map[string]string{"cpu": "1", "memory": "2Gi", "ephemeral-storage": "10Gi"},
 		}}
 }
 
@@ -58,6 +58,16 @@ func TestR2MissingResources(t *testing.T) {
 	delete(c.Resources.Limits, "memory")
 	if !has(Check([]k8s.Object{job(c)}, base()), "R2", Refuse) {
 		t.Error("missing memory limit not refused")
+	}
+	c2 := ctr("python", "a.py")
+	delete(c2.Resources.Requests, "ephemeral-storage")
+	if !has(Check([]k8s.Object{job(c2)}, base()), "R2", Refuse) {
+		t.Error("missing ephemeral-storage request not refused")
+	}
+	c3 := ctr("python", "a.py")
+	delete(c3.Resources.Limits, "ephemeral-storage")
+	if !has(Check([]k8s.Object{job(c3)}, base()), "R2", Refuse) {
+		t.Error("missing ephemeral-storage limit not refused")
 	}
 }
 
@@ -115,6 +125,20 @@ func TestR6SpecialGPUQuota(t *testing.T) {
 	if has(Check([]k8s.Object{j}, cx), "R6", Refuse) {
 		t.Error("opportunistic a100 refused")
 	}
+	// H100, H200 and GH200 must be refused even when the quota entry is missing from ResourceQuota.
+	for _, sg := range []string{"nvidia.com/h100", "nvidia.com/h200", "nvidia.com/gh200"} {
+		ch := ctr("python", "a.py")
+		ch.Resources.Requests[sg] = "1"
+		ch.Resources.Limits[sg] = "1"
+		jh := job(ch)
+		if !has(Check([]k8s.Object{jh}, cx), "R6", Refuse) {
+			t.Errorf("%s with missing quota entry not refused", sg)
+		}
+		jh.JobSpec.Template.Spec.PriorityClassName = "opportunistic"
+		if has(Check([]k8s.Object{jh}, cx), "R6", Refuse) {
+			t.Errorf("opportunistic %s refused", sg)
+		}
+	}
 }
 
 func TestR7TooManyGPUs(t *testing.T) {
@@ -139,8 +163,8 @@ func TestR8DeploymentGPU(t *testing.T) {
 	}
 	cx := base()
 	cx.Session = true
-	if has(Check([]k8s.Object{d}, cx), "R8", Refuse) {
-		t.Error("session GPU refused")
+	if !has(Check([]k8s.Object{d}, cx), "R8", Refuse) {
+		t.Error("session Deployment with GPU must also be refused by R8")
 	}
 	if !has(Check([]k8s.Object{d}, cx), "R17", Warn) {
 		t.Error("2-week warning missing")
@@ -268,5 +292,17 @@ func TestR14CapsCountConcurrency(t *testing.T) {
 	j.JobSpec.Parallelism = nil
 	if has(Check([]k8s.Object{j}, base()), "R14", Refuse) {
 		t.Error("500 tasks one at a time refused")
+	}
+	// Namespace running-GPU cap (namespace_gpus).
+	gj := sweep(2, 2, 1) // 2 GPUs in this run
+	cx := base()
+	cx.NamespaceGPUs = 8
+	cx.RunningGPUs = 6
+	if has(Check([]k8s.Object{gj}, cx), "R14", Refuse) {
+		t.Error("6 running + 2 new = 8 should pass under namespace_gpus=8")
+	}
+	cx.RunningGPUs = 7
+	if !has(Check([]k8s.Object{gj}, cx), "R14", Refuse) {
+		t.Error("7 running + 2 new = 9 should be refused over namespace_gpus=8")
 	}
 }

@@ -135,11 +135,11 @@ learn as you go.
 |---|---|---|
 | `nrp_setup` | only with `fix=true` | Laptop readiness: kubectl (version vs the cluster), kubelogin, NRP config, sign-in; installs or updates them with your yes |
 | `nrp_status` | no | Identity, namespaces, GPU quotas, workloads and what they ask for, volumes, public URLs, warnings |
-| `nrp_plan` | no | Inspects a project and a goal (`job`, `sweep`, `web`, `session`, `llm-batch`, `volume`, `pull`), applies every rule, returns a summary, decisions, refusals, the files it will copy and skip, and either a confirm token or `needs_person_approval` |
+| `nrp_plan` | no | Inspects a project and a goal (`job`, `sweep`, `web`, `session`, `llm-batch`, `volume`, `pull`), applies every rule, returns a summary, decisions, refusals, `resources`, the files it will copy and skip, and either a confirm token or `needs_person_approval` (full manifests with `show_manifests=true`) |
 | `nrp_run` | yes, after the person approves (question or code) or with a token for low-risk plans | Runs an approved plan; risky plans take the person's `approval_code`; writes a private run card to `<project>/.nrp/runs/` |
 | `nrp_watch` | no | Progress, logs (tail/grep), diagnosis with a fix, public URL check |
 | `nrp_cleanup` | yes, two steps | Lists your runs, then deletes one after a second confirm |
-| `nrp_session` | no | Readiness, port-forward command and local link for a notebook or VS Code session |
+| `nrp_session` | no | Readiness, port-forward command and local link for a notebook or VS Code session (GPU sessions run as Jobs with a time limit, default 6 hours) |
 | `nrp_data` | uploads only | List, upload small non-sensitive files, download results from a volume, or a job's saved results with `down run=<id>` |
 | `nrp_build` | no | Suggests a Dockerfile and a GitHub Actions workflow that builds it into ghcr.io (or, with `target=gitlab`, an NRP GitLab kaniko file); explains public vs private images |
 
@@ -205,8 +205,10 @@ namespace: my-lab             # default namespace
 kubectl: kubectl              # full path if kubectl is not on PATH
 pods_per_run: 50              # pods at the same time; plans over these caps are refused
 gpus_per_run: 4               # GPUs in use at the same time
+namespace_gpus: 8             # max GPUs in running pods across the namespace
 tasks_per_run: 10000          # total tasks in one sweep
 hours_per_run: 48
+gpu_session_hours: 6          # GPU sessions run as Jobs and stop after this many hours (max 12)
 upload_gb_per_run: 50
 ```
 
