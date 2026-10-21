@@ -16,7 +16,7 @@ import (
 )
 
 // Version is the release version.
-const Version = "1.1.1"
+const Version = "1.1.2"
 
 // ReleasesAPI is the GitHub Releases API endpoint for nrp-mcp.
 const ReleasesAPI = "https://api.github.com/repos/UCR-Research-Computing/nrp-mcp/releases/latest"

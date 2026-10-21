@@ -49,19 +49,19 @@ func (s *Server) gate(req *mcp.CallToolRequest, a approval, code string) (approv
 			er, _ := r.(*mcp.ElicitResult)
 			if er != nil && er.Action == "accept" {
 				v, filled := er.Content[approveKey]
-				if yes, _ := v.(bool); filled && yes {
+				if !filled {
+					// A yes/no app (Hermes Agent) shows the question in its own prompt and
+					// answers accept with nothing filled in. The person pressed yes there;
+					// the assistant cannot press it (1.1.2).
 					return true, nil, false, nil
 				}
-				if filled {
-					return false, nil, false, errors.New("the person did not tick approve in the question, so nothing was done. Ask them what they want to change")
+				if yes, _ := v.(bool); yes {
+					return true, nil, false, nil
 				}
-				// Accepted with no answer in it: the app shows only yes/no prompts and cannot
-				// fill in the box (Hermes Agent does this). That is not the person's approval;
-				// use an approval code with this app from now on.
-				noForms.mark(req.Session)
+				return false, nil, false, errors.New("the person did not approve in the question, so nothing was done. Ask them what they want to change")
 			}
-			// Declined, cancelled, or a yes/no-only app: nothing runs without the person.
-			// Show them a code; if they really meant no, they simply do not type it.
+			// Declined, cancelled, or the app could not show the question: nothing runs
+			// without the person. Show them a code; if they meant no, they do not type it.
 			if _, _, err := s.Codes.Issue(a.PlanID, a.PlanHash, a.Action, a.Summary); err != nil {
 				return false, nil, false, fmt.Errorf("could not make an approval code: %w", err)
 			}
@@ -74,7 +74,7 @@ func (s *Server) gate(req *mcp.CallToolRequest, a approval, code string) (approv
 		}
 		return true, nil, false, nil
 	}
-	if s.Cfg.Consent != "code" && req != nil && canAsk(req.Session) {
+	if s.Cfg.Consent != "code" && req != nil && canElicit(req.Session) {
 		return false, askResult(a, asked.issue(a)), false, nil
 	}
 	if _, _, err := s.Codes.Issue(a.PlanID, a.PlanHash, a.Action, a.Summary); err != nil {
@@ -83,14 +83,20 @@ func (s *Server) gate(req *mcp.CallToolRequest, a approval, code string) (approv
 	return false, nil, true, nil
 }
 
-// canAsk reports whether the client said it can show questions (MCP elicitation) and
-// has not shown that it cannot fill them in.
-func canAsk(ss *mcp.ServerSession) bool {
-	if ss == nil || noForms.has(ss) {
+// canElicit reports whether the client said it can show questions (MCP elicitation).
+// Approval questions need only a yes/no, so every such app gets them.
+func canElicit(ss *mcp.ServerSession) bool {
+	if ss == nil {
 		return false
 	}
 	p := ss.InitializeParams()
 	return p != nil && p.Capabilities != nil && p.Capabilities.Elicitation != nil
+}
+
+// canFillForms reports whether the client can show questions and has not shown that it
+// cannot fill in fields (a yes/no-only app answers a form with nothing in it).
+func canFillForms(ss *mcp.ServerSession) bool {
+	return canElicit(ss) && !noForms.has(ss)
 }
 
 // askResult is the tool result that asks the person one yes/no question.
@@ -99,7 +105,7 @@ func askResult(a approval, state string) *mcp.CallToolResult {
 	if a.Details != "" {
 		msg += "\n\n" + a.Details
 	}
-	msg += "\n\nTick the box and accept only if you agree."
+	msg += "\n\nApprove (or tick \"I approve\") only if you agree."
 	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -107,7 +113,7 @@ func askResult(a approval, state string) *mcp.CallToolResult {
 		},
 		// Not "required": an app that shows only yes/no prompts answers accept with no
 		// content, and a required field would make the SDK fail the whole call. gate()
-		// treats a missing box as "this app cannot ask" and falls back to a code.
+		// takes that accept as the person's yes in the app's own prompt.
 	}
 	return &mcp.CallToolResult{InputRequests: mcp.InputRequestMap{approveKey: &mcp.ElicitParams{Message: msg, RequestedSchema: schema}}, RequestState: state}
 }

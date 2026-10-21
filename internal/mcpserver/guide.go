@@ -70,7 +70,7 @@ func (s *Server) planQuestions(ctx context.Context, req *mcp.CallToolRequest, in
 		// Other responses (an approval answer) are not ours.
 		return nil, nil, nil
 	}
-	if !canAsk(req.Session) {
+	if !canFillForms(req.Session) {
 		return nil, nil, nil
 	}
 	fields := s.missingDetails(in)
@@ -415,7 +415,7 @@ func (s *Server) guideTool(ctx context.Context, _ *mcp.CallToolRequest, in guide
 		return done(stageFinished,
 			fmt.Sprintf("Run %s (%s) finished: %s.", focus.Run, focus.Name, focus.Status),
 			"Your run finished. Shall I download its results to your computer, and then clean it up?",
-			fmt.Sprintf("If yes: nrp_data action=down run=%s, tell the person where the files are, then nrp_cleanup run=%s (deleting asks for their approval).", focus.Run, focus.Run), "")
+			fmt.Sprintf("If yes: nrp_data action=down run=%s, tell the person where the files are, then nrp_cleanup run=%s (a finished run with no volumes needs only their yes in the chat).", focus.Run, focus.Run), "")
 	case focus.Kind == "Job" && strings.HasPrefix(st, "failed"):
 		return done(stageFailed,
 			fmt.Sprintf("Run %s (%s) failed: %s.", focus.Run, focus.Name, focus.Status),

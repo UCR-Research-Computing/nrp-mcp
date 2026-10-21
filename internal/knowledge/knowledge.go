@@ -42,8 +42,10 @@ Source: https://nrp.ai/documentation/userdocs/start/policies/ unless noted.
   (https://nrp.ai/documentation/userdocs/running/ingress/)
 - Moving data: never push large data through kubectl cp (it goes through the API server);
   use S3 or a pull Job. (https://nrp.ai/documentation/userdocs/storage/move-data/)
-- nrp-mcp approval: public web apps, GPU work, deleting, uploading and installing need the
-  person's own yes (a question from the AI app, or a one-time code shown only to them).
+- nrp-mcp approval: public web apps, GPU work, deleting volumes or anything still running,
+  uploading and installing need the person's own yes (a question from the AI app, or a
+  one-time code shown only to them). Removing a finished run with no volumes needs only
+  their yes in the chat.
 - nrp-mcp results: files a job writes to results/ go to the person's own NRP S3 bucket
   (set up once with nrp-mcp s3 setup); get them with nrp_data action=down run=<id>.
   Without it, a job runs only after the person says "yes, discard results".
