@@ -23,6 +23,7 @@ import (
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/plan"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/results"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/store"
+	"github.com/UCR-Research-Computing/nrp-mcp/internal/version"
 )
 
 // fakeKube records kubectl calls and returns canned JSON.
@@ -117,7 +118,8 @@ func setup(t *testing.T) (*mcp.ClientSession, *fakeKube) {
 		t.Fatal(err)
 	}
 	s := &Server{Cfg: config.Config{Context: "nautilus", PodsPerRun: 50, GPUsPerRun: 4, HoursPerRun: 48, Consent: "code"}, Ops: &ops.Ops{K: k}, Store: st,
-		Codes: testCodes(t), HTTP: func(string) (int, error) { return 404, nil }, Now: time.Now}
+		Codes: testCodes(t), HTTP: func(string) (int, error) { return 404, nil }, Now: time.Now,
+		VersionChecker: &version.Checker{Current: version.Version, HTTP: func(context.Context, string) ([]byte, error) { return nil, errors.New("offline in test") }}}
 	srv := New(s)
 	ct, stt := mcp.NewInMemoryTransports()
 	ctx := context.Background()
@@ -1269,5 +1271,69 @@ func TestSmallerPlanAndToolDescriptions(t *testing.T) {
 	}
 	if len(checked) != 3 {
 		t.Fatalf("checked %v, want nrp_plan, nrp_run, nrp_watch", checked)
+	}
+}
+
+func TestStatusReportsNewerReleaseOnceADay(t *testing.T) {
+	fk := &fakeKube{}
+	k := kube.New(kube.Config{Context: "nautilus"})
+	k.Exec = fk.exec
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hits int
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	vc := &version.Checker{
+		Current:  "0.10.0",
+		CacheDir: st.Dir,
+		Now:      func() time.Time { return now },
+		HTTP: func(context.Context, string) ([]byte, error) {
+			hits++
+			return []byte(`{"tag_name":"v1.1.0"}`), nil
+		},
+	}
+	s := &Server{
+		Cfg:            config.Config{Context: "nautilus", PodsPerRun: 50, GPUsPerRun: 4, HoursPerRun: 48, Consent: "code"},
+		Ops:            &ops.Ops{K: k},
+		Store:          st,
+		Codes:          testCodes(t),
+		HTTP:           func(string) (int, error) { return 404, nil },
+		Now:            func() time.Time { return now },
+		VersionChecker: vc,
+	}
+	ct, stt := mcp.NewInMemoryTransports()
+	ctx := context.Background()
+	if _, err := New(s).Connect(ctx, stt, nil); err != nil {
+		t.Fatal(err)
+	}
+	cs, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0"}, nil).Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	m1, isErr, text := call(t, cs, "nrp_status", nil)
+	if isErr {
+		t.Fatal(text)
+	}
+	if m1["latest_release"] != "v1.1.0" || !strings.Contains(fmt.Sprint(m1["summary"]), "v1.1.0") || !strings.Contains(fmt.Sprint(m1["warnings"]), "v1.1.0") {
+		t.Fatalf("nrp_status missing newer release notice: %v", m1)
+	}
+	if hits != 1 {
+		t.Fatalf("expected 1 HTTP hit, got %d", hits)
+	}
+
+	// Second call 1 hour later uses the cached result without hitting the API again.
+	now = now.Add(time.Hour)
+	m2, isErr, text := call(t, cs, "nrp_status", nil)
+	if isErr {
+		t.Fatal(text)
+	}
+	if m2["latest_release"] != "v1.1.0" || !strings.Contains(fmt.Sprint(m2["summary"]), "v1.1.0") {
+		t.Fatalf("second nrp_status missing cached newer release notice: %v", m2)
+	}
+	if hits != 1 {
+		t.Fatalf("expected cached check to avoid second HTTP hit, got %d", hits)
 	}
 }

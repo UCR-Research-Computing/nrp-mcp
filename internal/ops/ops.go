@@ -38,18 +38,19 @@ type Workload struct {
 
 // Status is the nrp_status result.
 type Status struct {
-	Summary    string            `json:"summary"`
-	User       string            `json:"user"`
-	Namespaces []string          `json:"namespaces"`
-	AdminOf    []string          `json:"admin_of,omitempty"`
-	Namespace  string            `json:"namespace"`
-	GPUQuota   map[string]int    `json:"special_gpu_quota"`
-	Defaults   map[string]string `json:"container_defaults,omitempty"`
-	Workloads  []Workload        `json:"workloads"`
-	Volumes    []Workload        `json:"volumes"`
-	PublicURLs []string          `json:"public_urls"`
-	Warnings   []string          `json:"warnings"`
-	Kubectl    []string          `json:"kubectl_equivalent"`
+	Summary       string            `json:"summary"`
+	User          string            `json:"user"`
+	Namespaces    []string          `json:"namespaces"`
+	AdminOf       []string          `json:"admin_of,omitempty"`
+	Namespace     string            `json:"namespace"`
+	GPUQuota      map[string]int    `json:"special_gpu_quota"`
+	Defaults      map[string]string `json:"container_defaults,omitempty"`
+	Workloads     []Workload        `json:"workloads"`
+	Volumes       []Workload        `json:"volumes"`
+	PublicURLs    []string          `json:"public_urls"`
+	Warnings      []string          `json:"warnings"`
+	LatestRelease string            `json:"latest_release,omitempty"`
+	Kubectl       []string          `json:"kubectl_equivalent"`
 }
 
 type objList struct {

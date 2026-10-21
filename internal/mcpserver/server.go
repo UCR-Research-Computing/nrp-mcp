@@ -60,13 +60,14 @@ kubectl equivalent so the user learns. Guides: resource nrp://kb.`
 
 // Server holds what the tools need.
 type Server struct {
-	Setup func() *nrpsetup.Env // nil: nrpsetup.DefaultEnv from Cfg
-	Cfg   config.Config
-	Ops   *ops.Ops
-	Store *store.Store
-	Codes *consent.Codes // approval codes shown only to the person
-	HTTP  func(url string) (int, error)
-	Now   func() time.Time
+	Setup          func() *nrpsetup.Env // nil: nrpsetup.DefaultEnv from Cfg
+	Cfg            config.Config
+	Ops            *ops.Ops
+	Store          *store.Store
+	Codes          *consent.Codes // approval codes shown only to the person
+	HTTP           func(url string) (int, error)
+	Now            func() time.Time
+	VersionChecker *version.Checker // nil: DefaultChecker(Store.Dir)
 }
 
 func readOnly(title string) *mcp.ToolAnnotations {
@@ -328,7 +329,11 @@ func New(s *Server) *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_status", Description: "Where do I stand on Nautilus: who I am, my namespaces, GPU quotas, what is running and what it asks for, volumes, public URLs, and policy warnings (2-week Deployment limit, 6-hour bare pods, quota-gated GPUs). Read-only. Start every session here.", Annotations: readOnly("Status")},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in statusIn) (*mcp.CallToolResult, *ops.Status, error) {
 			st, err := s.Ops.StatusOf(ctx, s.nsCtx(ctx, in.Namespace))
-			return nil, st, err
+			if err != nil {
+				return nil, nil, err
+			}
+			s.attachUpdateNotice(ctx, st)
+			return nil, st, nil
 		})
 
 	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_plan", Description: "Draft a plan for running a project on Nautilus. Creates nothing and changes nothing. Returns summary, decisions, refusals (each with a fix), warnings, code_files, skipped_files, resources (cpu/memory/gpu/hours per object), and plan_id; pass show_manifests=true for full manifests. goal is job, sweep, web, session, llm-batch, volume or pull. If a value is missing, ask the person; do not guess. Tell the person the summary, decisions, refusals and warnings in plain words, and for web plans say clearly the URL will be PUBLIC with no login.", Annotations: readOnly("Plan"), InputSchema: singleTypeSchema[planIn]()}, s.planTool)
@@ -367,6 +372,33 @@ func New(s *Server) *mcp.Server {
 // ToolNames lists every tool, for docs and tests.
 func ToolNames() []string {
 	return []string{"nrp_setup", "nrp_status", "nrp_plan", "nrp_run", "nrp_watch", "nrp_cleanup", "nrp_session", "nrp_data", "nrp_build"}
+}
+
+// attachUpdateNotice checks (cached once a day) whether a newer nrp-mcp release exists
+// and appends a notice to st.Summary and st.Warnings when one is available.
+func (s *Server) attachUpdateNotice(ctx context.Context, st *ops.Status) {
+	if st == nil {
+		return
+	}
+	vc := s.VersionChecker
+	if vc == nil {
+		dir := ""
+		if s.Store != nil {
+			dir = s.Store.Dir
+		}
+		vc = version.DefaultChecker(dir)
+		if s.Now != nil {
+			vc.Now = s.Now
+		}
+	}
+	info := vc.Check(ctx, true)
+	if info.Latest != "" {
+		st.LatestRelease = "v" + info.Latest
+	}
+	if info.Newer && info.Notice != "" {
+		st.Warnings = append(st.Warnings, "Update available: "+info.Notice)
+		st.Summary += " Update available: " + info.Notice + "."
+	}
 }
 
 // splitNodes turns the comma-separated avoid_node input into a list (nil when empty).
