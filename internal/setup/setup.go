@@ -80,15 +80,27 @@ type Env struct {
 
 // Defaults for the NRP.
 const (
-	NRPServerHint   = "nrp-nautilus.io"
-	NRPConfigURL    = "https://nrp.ai/config"
-	KubectlBase     = "https://dl.k8s.io/release"
-	KubeloginAPI    = "https://api.github.com/repos/int128/kubelogin/releases/latest"
-	KubeloginLatest = "https://github.com/int128/kubelogin/releases/latest"
-	KubeloginBase   = "https://github.com/int128/kubelogin/releases/download"
-	maxDownload     = 200 << 20
-	defaultContext  = "nautilus"
+	NRPServerHint  = "nrp-nautilus.io"
+	NRPConfigURL   = "https://nrp.ai/config"
+	KubectlBase    = "https://dl.k8s.io/release"
+	KubeloginBase  = "https://github.com/int128/kubelogin/releases/download"
+	KubeloginTag   = "v1.36.4"
+	maxDownload    = 200 << 20
+	defaultContext = "nautilus"
 )
+
+// KubeloginSHA256 embeds the SHA-256 digests of the official int128/kubelogin release
+// archives for KubeloginTag, verified at build time against the upstream release.
+var KubeloginSHA256 = map[string]string{
+	"darwin/amd64":  "7927b10c122b55dd4d9632f75d56752bfdc5f7b6ad3104615115c02f5f55e4f0",
+	"darwin/arm64":  "5aa470d059a9672d732439474678ac05a0de5623ad3af54966b8fe1ac7df4254",
+	"linux/amd64":   "9e8baeb4905d35a301304af2548324997add512fe94ab20e65993d167212bf85",
+	"linux/arm64":   "669c2d3bcc6766351ad5a7b03971792b4e7a55117b335a12d9858d43a525d9dc",
+	"linux/arm":     "ef21aa5d6697f830459fe1fbea3bfbca7aa3ae82f5b0e8751e788d2321d2e504",
+	"linux/ppc64le": "def4768b5b0fb184a727b7c5f42e6cf235f564819fa3474f3f8e314fec0bc0e1",
+	"windows/amd64": "a68be8ff153a7d3df1de19f272a9879164f55b8bb39298859d0e20c9e2c414ad",
+	"windows/arm64": "6a8f92078f974e3229c26249ef26f2b761aa01c664e3e664c3496a1d96b8545e",
+}
 
 // DefaultEnv builds an Env for this machine.
 func DefaultEnv(kubeconfig, kubectx, kubectl string) *Env {
@@ -146,7 +158,27 @@ func (e *Env) kubeconfigPath() string {
 		return e.Kubeconfig
 	}
 	if k := os.Getenv("KUBECONFIG"); k != "" {
-		return strings.Split(k, string(os.PathListSeparator))[0]
+		parts := filepath.SplitList(k)
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			if b, err := os.ReadFile(p); err == nil && isNRPConfig(b) {
+				return p
+			}
+		}
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				if _, err := os.Stat(p); err == nil {
+					return p
+				}
+			}
+		}
+		if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
+			return strings.TrimSpace(parts[0])
+		}
 	}
 	return filepath.Join(e.Home, ".kube", "config")
 }
@@ -456,7 +488,7 @@ func (e *Env) Inspect(ctx context.Context, signIn bool) *Report {
 	if ready && kubectl != "" {
 		if !signIn {
 			add(Check{ID: "signin", Title: "Signed in to Nautilus", Status: Manual, Detail: "not checked yet (it opens your browser the first time)",
-				Fix: "run nrp_setup with sign_in=true, or `kubectl auth whoami` in a terminal"})
+				Fix: "run nrp_setup with sign_in=true, or `" + kubectl + " --context " + e.ctxName() + " auth whoami` (or `nrp-mcp kubectl auth whoami`) in a terminal"})
 		} else {
 			args := []string{"--context", e.ctxName(), "auth", "whoami", "-o", "jsonpath={.status.userInfo.username}"}
 			if e.Kubeconfig != "" {
@@ -524,9 +556,12 @@ var origPath = os.Getenv("PATH")
 
 func pathHint(e *Env) string {
 	if e.GOOS == "windows" {
-		return `setx PATH "%PATH%;` + e.BinDir + `"  (then open a new terminal)`
+		return `[Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";` + e.BinDir + `", "User")  (in PowerShell, then open a new terminal)`
 	}
-	return `echo 'export PATH="` + e.BinDir + `:$PATH"' >> ~/.bashrc   (zsh: ~/.zshrc), then open a new terminal`
+	if e.GOOS == "darwin" {
+		return `echo 'export PATH="` + e.BinDir + `:$PATH"' >> ~/.zprofile   (bash: ~/.bashrc), then open a new terminal`
+	}
+	return `echo 'export PATH="` + e.BinDir + `:$PATH"' >> ~/.bashrc   (zsh: ~/.zprofile), then open a new terminal`
 }
 
 func isNRPConfig(b []byte) bool {
@@ -678,72 +713,29 @@ func (e *Env) installKubectl(ctx context.Context) (string, error) {
 	return msg, nil
 }
 
-// kubeloginTag finds the latest kubelogin release. The github.com "latest" page
-// redirects to /releases/tag/<tag> and is not rate-limited; the GitHub API allows 60
-// unauthenticated calls an hour per IP address, which a classroom on one campus network
-// can exhaust, so it is only the fallback.
-func (e *Env) kubeloginTag(ctx context.Context) (string, error) {
-	resolve := e.Redirect
-	if resolve == nil {
-		resolve = finalURL
+// kubeloginSpec returns the pinned kubelogin tag and embedded SHA256 for e.GOOS/e.GOARCH.
+func (e *Env) kubeloginSpec() (tag, sha string, err error) {
+	key := e.GOOS + "/" + e.GOARCH
+	sha, ok := KubeloginSHA256[key]
+	if !ok || len(sha) != 64 {
+		return "", "", fmt.Errorf("no embedded kubelogin SHA256 for %s", key)
 	}
-	if u, err := resolve(ctx, KubeloginLatest); err == nil {
-		if i := strings.LastIndex(u, "/tag/"); i >= 0 {
-			if tag := u[i+5:]; verRe.MatchString(tag) {
-				return tag, nil
-			}
-		}
-	}
-	b, err := e.HTTP(ctx, KubeloginAPI)
-	if err != nil {
-		return "", fmt.Errorf("could not find the latest kubelogin release: %w", err)
-	}
-	var rel struct {
-		Tag string `json:"tag_name"`
-	}
-	if err := json.Unmarshal(b, &rel); err != nil || !verRe.MatchString(rel.Tag) {
-		return "", fmt.Errorf("could not read the latest kubelogin release")
-	}
-	return rel.Tag, nil
-}
-
-// finalURL returns where url redirects to (one hop), without downloading a body.
-func finalURL(ctx context.Context, url string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("User-Agent", "nrp-mcp-setup")
-	c := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	r, err := c.Do(req)
-	if err != nil {
-		return "", err
-	}
-	r.Body.Close()
-	if loc := r.Header.Get("Location"); loc != "" {
-		return loc, nil
-	}
-	return "", fmt.Errorf("no redirect from %s (HTTP %d)", url, r.StatusCode)
+	return KubeloginTag, sha, nil
 }
 
 func (e *Env) installKubelogin(ctx context.Context) (string, error) {
-	tag, err := e.kubeloginTag(ctx)
+	tag, wantSHA, err := e.kubeloginSpec()
 	if err != nil {
 		return "", err
 	}
-	rel := struct{ Tag string }{tag}
 	asset := fmt.Sprintf("kubelogin_%s_%s.zip", e.GOOS, e.GOARCH)
-	url := fmt.Sprintf("%s/%s/%s", KubeloginBase, rel.Tag, asset)
+	url := fmt.Sprintf("%s/%s/%s", KubeloginBase, tag, asset)
 	z, err := e.HTTP(ctx, url)
 	if err != nil {
 		return "", err
 	}
-	sumFile, err := e.HTTP(ctx, url+".sha256")
-	if err != nil {
-		return "", err
-	}
-	if err := verify(z, sumFile); err != nil {
-		return "", fmt.Errorf("kubelogin %s: %w", rel.Tag, err)
+	if err := verify(z, []byte(wantSHA)); err != nil {
+		return "", fmt.Errorf("kubelogin %s: %w", tag, err)
 	}
 	bin, err := unzipOne(z, e.exe("kubelogin"))
 	if err != nil {
@@ -754,7 +746,7 @@ func (e *Env) installKubelogin(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	msg := fmt.Sprintf("installed kubelogin %s to %s (SHA256 verified)", rel.Tag, dst)
+	msg := fmt.Sprintf("installed kubelogin %s to %s (SHA256 verified)", tag, dst)
 	if bk != "" {
 		msg += "; previous copy kept at " + bk
 	}

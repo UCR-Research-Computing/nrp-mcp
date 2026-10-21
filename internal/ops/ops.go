@@ -38,18 +38,19 @@ type Workload struct {
 
 // Status is the nrp_status result.
 type Status struct {
-	Summary    string            `json:"summary"`
-	User       string            `json:"user"`
-	Namespaces []string          `json:"namespaces"`
-	AdminOf    []string          `json:"admin_of,omitempty"`
-	Namespace  string            `json:"namespace"`
-	GPUQuota   map[string]int    `json:"special_gpu_quota"`
-	Defaults   map[string]string `json:"container_defaults,omitempty"`
-	Workloads  []Workload        `json:"workloads"`
-	Volumes    []Workload        `json:"volumes"`
-	PublicURLs []string          `json:"public_urls"`
-	Warnings   []string          `json:"warnings"`
-	Kubectl    []string          `json:"kubectl_equivalent"`
+	Summary       string            `json:"summary"`
+	User          string            `json:"user"`
+	Namespaces    []string          `json:"namespaces"`
+	AdminOf       []string          `json:"admin_of,omitempty"`
+	Namespace     string            `json:"namespace"`
+	GPUQuota      map[string]int    `json:"special_gpu_quota"`
+	Defaults      map[string]string `json:"container_defaults,omitempty"`
+	Workloads     []Workload        `json:"workloads"`
+	Volumes       []Workload        `json:"volumes"`
+	PublicURLs    []string          `json:"public_urls"`
+	Warnings      []string          `json:"warnings"`
+	LatestRelease string            `json:"latest_release,omitempty"`
+	Kubectl       []string          `json:"kubectl_equivalent"`
 }
 
 type objList struct {
@@ -239,7 +240,7 @@ func signInHint(err error) error {
 	case strings.Contains(msg, "context") && strings.Contains(msg, "does not exist"):
 		return fmt.Errorf("your kubeconfig has no Nautilus context; download the NRP config from https://nrp.ai/config and run nrp_setup: %w", err)
 	}
-	return fmt.Errorf("could not reach Nautilus as you (run `kubectl auth whoami` in a terminal once to sign in in the browser): %w", err)
+	return fmt.Errorf("could not reach Nautilus as you (run `nrp-mcp kubectl auth whoami` in a terminal once to sign in in the browser): %w", err)
 }
 
 func mapGet(m map[string]any, k string) map[string]any {

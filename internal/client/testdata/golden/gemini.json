@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "nrp": {
+      "args": [
+        "serve"
+      ],
+      "command": "/opt/nrp/bin/nrp-mcp"
+    }
+  }
+}

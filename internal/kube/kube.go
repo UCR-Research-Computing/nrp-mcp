@@ -40,8 +40,10 @@ func New(cfg Config) *Runner {
 	// nrp_setup installs into a user folder that may not be on PATH yet (fresh laptops,
 	// MCP clients started from a desktop launcher). Add it so kubectl and its
 	// kubectl-oidc_login plugin are both found.
+	// Add UserBinDir before looking up Kubectl so a freshly installed ~/.local/bin/kubectl
+	// is preferred over any system kubectl when PATH is searched.
 	if dir := UserBinDir(); dir != "" {
-		addToPath(dir)
+		prependToPath(dir)
 		if _, err := exec.LookPath(cfg.Kubectl); err != nil && cfg.Kubectl == "kubectl" {
 			if p, err := exec.LookPath(filepath.Join(dir, exe("kubectl"))); err == nil {
 				cfg.Kubectl = p
@@ -73,14 +75,17 @@ func exe(n string) string {
 	return n
 }
 
-func addToPath(dir string) {
+func prependToPath(dir string) {
 	cur := os.Getenv("PATH")
+	var rest []string
 	for _, d := range filepath.SplitList(cur) {
-		if filepath.Clean(d) == filepath.Clean(dir) {
-			return
+		if d == "" || filepath.Clean(d) == filepath.Clean(dir) {
+			continue
 		}
+		rest = append(rest, d)
 	}
-	_ = os.Setenv("PATH", cur+string(os.PathListSeparator)+dir)
+	all := append([]string{dir}, rest...)
+	_ = os.Setenv("PATH", strings.Join(all, string(os.PathListSeparator)))
 }
 
 func (r *Runner) base(ns string) []string {
@@ -228,7 +233,7 @@ func Kind(err error) string {
 func Explain(what string, err error) error {
 	switch Kind(err) {
 	case KindSignedOut:
-		return fmt.Errorf("could not read %s: your Nautilus sign-in has expired or is missing. Run `kubectl auth whoami` in a terminal to sign in again, then retry (nothing was changed): %w", what, err)
+		return fmt.Errorf("could not read %s: your Nautilus sign-in has expired or is missing. Run `nrp-mcp kubectl auth whoami` in a terminal to sign in again, then retry (nothing was changed): %w", what, err)
 	case KindForbidden:
 		return fmt.Errorf("could not read %s: Nautilus says you are not allowed to (check the namespace, or ask its admin to add you): %w", what, err)
 	case KindTimeout:

@@ -5,11 +5,13 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -19,6 +21,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/term"
 
+	"github.com/UCR-Research-Computing/nrp-mcp/internal/client"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/config"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/consent"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/kube"
@@ -41,12 +44,15 @@ Usage:
   nrp-mcp init       write an example ~/.config/nrp-mcp/config.yaml (never overwrites)
   nrp-mcp approve    show the newest approval code (for when no notification appeared)
   nrp-mcp s3 setup   save your NRP S3 keys (from https://nrp.ai/s3token/) so job results are kept
+  nrp-mcp client <name>  add nrp-mcp (user scope, full path) to an MCP client:
+                     claude-desktop, claude-code, vscode, cursor, gemini, opencode, hermes
+  nrp-mcp kubectl    run the installed kubectl with the NRP kubeconfig and context
   nrp-mcp version
 
 Flags (serve, doctor, setup): --config PATH  --kubeconfig PATH  --context NAME  --namespace NS
 
-Add to an MCP client, e.g. Claude Desktop or Claude Code:
-  {"mcpServers": {"nrp": {"command": "nrp-mcp", "args": ["serve"]}}}
+Add to an MCP client automatically with ` + "`" + `nrp-mcp client <name>` + "`" + `, or in JSON (Claude Desktop, Cursor):
+  {"mcpServers": {"nrp": {"command": "/full/path/to/nrp-mcp", "args": ["serve"]}}}
 `
 
 func main() {
@@ -57,7 +63,7 @@ func main() {
 	cmd, args := os.Args[1], os.Args[2:]
 	switch cmd {
 	case "version", "--version", "-v":
-		fmt.Println("nrp-mcp", version.Version)
+		os.Exit(runVersion())
 	case "init":
 		os.Exit(runInit())
 	case "approve":
@@ -68,6 +74,10 @@ func main() {
 			os.Exit(2)
 		}
 		os.Exit(runS3Setup(config.Load(config.DefaultPath())))
+	case "kubectl":
+		os.Exit(runKubectl(config.Load(config.DefaultPath()), args))
+	case "client":
+		os.Exit(runClient(args))
 	case "serve", "doctor", "setup":
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 		cfgPath := fs.String("config", config.DefaultPath(), "config file")
@@ -133,7 +143,30 @@ func runServe(cfg config.Config) int {
 	return 0
 }
 
+func runVersion() int {
+	return runVersionWithChecker(version.DefaultChecker(store.DefaultDir()))
+}
+
+func runVersionWithChecker(vc *version.Checker) int {
+	cur := version.Version
+	if vc != nil && vc.Current != "" {
+		cur = vc.Current
+	}
+	fmt.Println("nrp-mcp", cur)
+	if vc != nil {
+		info := vc.Check(context.Background(), true)
+		if info.Newer && info.Notice != "" {
+			fmt.Println("Update available:", info.Notice)
+		}
+	}
+	return 0
+}
+
 func runDoctor(cfg config.Config) int {
+	return runDoctorWith(cfg, nil)
+}
+
+func runDoctorWith(cfg config.Config, vc *version.Checker) int {
 	fmt.Printf("nrp-mcp %s doctor\n", version.Version)
 	kc := cfg.Kubeconfig
 	if kc == "" {
@@ -145,47 +178,123 @@ func runDoctor(cfg config.Config) int {
 		}
 	}
 	ok := true
-	check := func(name string, err error, good string) {
+	check := func(name string, err error, good, fix string) {
 		if err != nil {
 			ok = false
-			fmt.Printf("  FAIL %-12s %v\n", name, err)
+			if fix != "" {
+				fmt.Printf("  FAIL %-12s %v -> %s\n", name, err, fix)
+			} else {
+				fmt.Printf("  FAIL %-12s %v\n", name, err)
+			}
 			return
 		}
 		fmt.Printf("  ok   %-12s %s\n", name, good)
 	}
-	_, err := os.Stat(kc)
-	check("kubeconfig", err, kc+" (contents not read by nrp-mcp)")
+
+	// KUBECONFIG may hold several files separated by os.PathListSeparator (: on Unix, ; on Windows).
+	kcPaths := splitKubeconfigs(kc)
+	var existingKCs, missingKCs []string
+	var hasNRPKC bool
+	for _, p := range kcPaths {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			missingKCs = append(missingKCs, p)
+			continue
+		}
+		existingKCs = append(existingKCs, p)
+		s := string(b)
+		if strings.Contains(s, setup.NRPServerHint) || strings.Contains(s, "67.58.53.148") || strings.Contains(s, "nautilus") {
+			hasNRPKC = true
+		}
+	}
+	switch {
+	case len(existingKCs) == 0:
+		check("kubeconfig", fmt.Errorf("%s does not exist", kc), "", "download your NRP config at https://nrp.ai/config and run `nrp-mcp setup`")
+	case len(missingKCs) > 0 && !hasNRPKC:
+		check("kubeconfig", fmt.Errorf("missing %s and no Nautilus cluster in %s", strings.Join(missingKCs, ", "), strings.Join(existingKCs, ", ")), "", "download your NRP config at https://nrp.ai/config and run `nrp-mcp setup`")
+	case !hasNRPKC:
+		check("kubeconfig", fmt.Errorf("no Nautilus cluster in %s", strings.Join(existingKCs, ", ")), "", "download your NRP config at https://nrp.ai/config and run `nrp-mcp setup`")
+	default:
+		detail := strings.Join(existingKCs, string(os.PathListSeparator)) + " (has Nautilus)"
+		if len(missingKCs) > 0 {
+			detail += fmt.Sprintf(" (missing %s ignored by kubectl)", strings.Join(missingKCs, ", "))
+		}
+		check("kubeconfig", nil, detail, "")
+	}
+
 	s, err := newServer(cfg)
 	if err != nil {
-		check("store", err, "")
+		check("store", err, "", "check permissions on "+store.DefaultDir()+" or run `nrp-mcp setup`")
 		return 1
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	out, err := s.Ops.K.Run(ctx, "", nil, "version", "--client", "-o", "json")
-	check("kubectl", err, fmt.Sprintf("%s (%d bytes of version info)", cfg.Kubectl, len(out)))
+	check("kubectl", err, fmt.Sprintf("%s (%d bytes of version info)", s.Ops.K.Cfg.Kubectl, len(out)), "run `nrp-mcp setup`")
+
+	// Show consent mode and whether S3 keys exist (yes/no, never values).
+	check("consent", nil, cfg.Consent, "")
+	if _, kerr := results.LoadKeys(cfg.S3KeysFile); kerr == nil {
+		check("s3-keys", nil, "yes ("+cfg.S3KeysFile+", values not shown)", "")
+	} else {
+		check("s3-keys", nil, "no (run `nrp-mcp s3 setup` with keys from https://nrp.ai/s3token/ to save job results)", "")
+	}
+
+	// Newest release from GitHub releases API (3 s timeout, skipped offline).
+	if vc == nil {
+		vc = version.DefaultChecker(s.Store.Dir)
+	}
+	relInfo := vc.Check(ctx, false)
+	switch {
+	case relInfo.Latest == "":
+		check("release", nil, fmt.Sprintf("v%s (newest check skipped offline)", relInfo.Current), "")
+	case relInfo.Newer:
+		check("release", nil, fmt.Sprintf("v%s installed; newest is v%s (https://github.com/UCR-Research-Computing/nrp-mcp/releases/latest)", relInfo.Current, relInfo.Latest), "")
+	default:
+		check("release", nil, fmt.Sprintf("v%s (up to date; newest is v%s)", relInfo.Current, relInfo.Latest), "")
+	}
+
 	w, err := s.Ops.K.WhoAmI(ctx)
 	if err != nil {
-		check("sign-in", err, "")
-		fmt.Println("\n  Run `kubectl --context " + cfg.Context + " auth whoami` once in a terminal to sign in through your browser (KB024).")
+		check("sign-in", err, "", "run `nrp-mcp setup` or `nrp-mcp kubectl auth whoami`")
+		fmt.Println("  store       ", s.Store.Dir)
 		return 1
 	}
-	check("sign-in", nil, w.Username)
-	check("namespaces", nil, fmt.Sprintf("%v (admin of %v)", w.Namespaces, w.Admin))
+	check("sign-in", nil, w.Username, "")
+	if len(w.Namespaces) == 0 {
+		check("namespaces", errors.New("0 namespaces (not in any namespace yet)"), "", "ask your PI to add you to a namespace at https://nrp.ai/namespaces (faculty can request one there)")
+	} else {
+		check("namespaces", nil, fmt.Sprintf("%v (admin of %v)", w.Namespaces, w.Admin), "")
+	}
 	ns := cfg.Namespace
 	if ns == "" && len(w.Namespaces) > 0 {
 		ns = w.Namespaces[0]
 	}
 	if ns != "" {
 		qs, err := s.Ops.K.Quotas(ctx, ns)
-		check("quota", err, fmt.Sprintf("%s special GPUs %v", ns, kube.GPUQuota(qs)))
+		check("quota", err, fmt.Sprintf("%s special GPUs %v", ns, kube.GPUQuota(qs)), "ask your PI to add you to a namespace at https://nrp.ai/namespaces or check `nrp-mcp kubectl -n "+ns+" get resourcequota`")
 	}
 	fmt.Println("  store       ", s.Store.Dir)
 	if !ok {
+		fmt.Println("\nNot ready. Follow the `->` step on each FAIL line above.")
 		return 1
 	}
-	fmt.Println("\nReady. Add nrp-mcp to your MCP client with args [\"serve\"].")
+	fmt.Println("\nReady. Connect your AI assistant with `nrp-mcp client <claude-desktop|claude-code|vscode|cursor|gemini|opencode|hermes>`.")
 	return 0
+}
+
+func splitKubeconfigs(kc string) []string {
+	var out []string
+	for _, p := range filepath.SplitList(kc) {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 && strings.TrimSpace(kc) != "" {
+		out = []string{strings.TrimSpace(kc)}
+	}
+	return out
 }
 
 // runS3Setup asks for the NRP S3 keys without echoing the secret and saves them 0600.
@@ -230,6 +339,86 @@ func runApprove() int {
 	}
 	fmt.Println("No approval code yet. Codes appear when your AI assistant asks to run something that needs your OK.")
 	return 1
+}
+
+// runKubectl runs the configured or installed kubectl with the NRP kubeconfig and
+// context, and puts the user bin folder on PATH so the kubelogin plugin is found.
+func runKubectl(cfg config.Config, args []string) int {
+	k := kube.New(kube.Config{Kubectl: cfg.Kubectl, Kubeconfig: cfg.Kubeconfig, Context: cfg.Context})
+	if _, err := exec.LookPath(k.Cfg.Kubectl); err != nil {
+		fmt.Fprintln(os.Stderr, "kubectl is not installed yet; run `nrp-mcp setup` first.")
+		return 1
+	}
+	hasFlag := func(names ...string) bool {
+		for _, a := range args {
+			for _, n := range names {
+				if a == n || strings.HasPrefix(a, n+"=") {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	var prefix []string
+	if k.Cfg.Kubeconfig != "" && !hasFlag("--kubeconfig") {
+		prefix = append(prefix, "--kubeconfig", k.Cfg.Kubeconfig)
+	}
+	if k.Cfg.Context != "" && !hasFlag("--context") {
+		prefix = append(prefix, "--context", k.Cfg.Context)
+	}
+	if cfg.Namespace != "" && !hasFlag("-n", "--namespace") {
+		prefix = append(prefix, "-n", cfg.Namespace)
+	}
+	cmd := exec.Command(k.Cfg.Kubectl, append(prefix, args...)...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return ee.ExitCode()
+		}
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
+}
+
+// runClient writes the user-scope MCP configuration for the named client.
+func runClient(args []string) int {
+	e, err := client.DefaultEnv()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return runClientWithEnv(e, args)
+}
+
+func runClientWithEnv(e *client.Env, args []string) int {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
+		fmt.Fprintf(os.Stderr, "usage: nrp-mcp client <%s>\n", strings.Join(client.All, "|"))
+		return 2
+	}
+	name := args[0]
+	fs := flag.NewFlagSet("client", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	ns := fs.String("namespace", "", "optional default namespace to pass to nrp-mcp serve")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	var extra []string
+	if *ns != "" {
+		extra = []string{"--namespace", *ns}
+	}
+	res, err := e.Configure(name, extra...)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Printf("Wrote %s (%s, user scope) with %s [\"serve\"].\n", res.Path, res.App, e.BinPath)
+	if res.Backup != "" {
+		fmt.Printf("Backed up previous file to %s.\n", res.Backup)
+	}
+	fmt.Printf("Next: %s so it picks up the new nrp server.\n", res.Restart)
+	return 0
 }
 
 func runInit() int {
@@ -306,7 +495,7 @@ func runSetup(cfg config.Config, yes, noSignIn bool) int {
 	}
 	if !pending && noSignIn {
 		fmt.Println("\nEverything is in place; sign-in skipped (--no-sign-in).")
-		fmt.Println("Next: run `nrp-mcp setup` again, or `kubectl auth whoami`, to sign in.")
+		fmt.Println("Next: run `nrp-mcp setup` again, or `nrp-mcp kubectl auth whoami`, to sign in.")
 		return 0
 	}
 	if !pending {
@@ -320,7 +509,7 @@ func runSetup(cfg config.Config, yes, noSignIn bool) int {
 		fmt.Println("To use kubectl in your own terminal:", r.PathHint)
 	}
 	if r.Ready {
-		fmt.Println("Next: add nrp-mcp to your AI client (see README), or run `nrp-mcp doctor`.")
+		fmt.Println("Next: run `nrp-mcp client <claude-desktop|claude-code|vscode|cursor|gemini|opencode|hermes>` to connect your AI assistant, or `nrp-mcp doctor`.")
 		return 0
 	}
 	return 1

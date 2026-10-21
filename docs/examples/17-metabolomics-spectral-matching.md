@@ -35,7 +35,7 @@ None of these groups use nrp-mcp today; this is an illustration.
 
 > **Researcher:** Yes, public data. Go ahead with both.
 
-> **Assistant:** [nrp_run] volume Bound; [nrp_run] pull finished, 1 file on /data/library. Now the sweep. [nrp_plan goal=sweep count=300 parallel=50 cpu=4 memory=16Gi gpu=0]. Plan summary: Indexed Job, 300 tasks, 50 at a time, image python:3.12-slim with your requirements.txt installed at start, /data mounted, 24 h time limit for the whole sweep (300 tasks at 50 at a time is 6 waves of 30-90 minutes, so up to about 9 h), 2 retries. Each task reads `$JOB_COMPLETION_INDEX` (0-299), picks that row of studies.csv and downloads its files over FTP or HTTPS. No GPU: matchms and MS2DeepScore inference run fine on CPU. Note that requests above 1 CPU / 2 GiB are checked for usage, so keep the 4 cores busy. Confirm?
+> **Assistant:** [nrp_run] volume Bound; [nrp_run] pull finished, 1 file on /data/library. Now the sweep. [nrp_plan goal=sweep count=300 parallel=50 cpu=4 memory=16Gi gpu=0 data_volume=metab-data data_is_p1=true discard_results=true]. Plan summary (`resources` shown per object; full YAML omitted unless `show_manifests=true`): Indexed Job, 300 tasks, 50 at a time, image python:3.12-slim with your requirements.txt installed at start, /data mounted, 24 h time limit for the whole sweep (300 tasks at 50 at a time is 6 waves of 30-90 minutes, so up to about 9 h), 2 retries (`data_is_p1=true` for `studies.csv`; `discard_results=true` satisfies R23 if S3 keys are not set, since hit tables go to `/data/results`). Each task reads `$JOB_COMPLETION_INDEX` (0-299), picks that row of studies.csv and downloads its files over FTP or HTTPS. No GPU: matchms and MS2DeepScore inference run fine on CPU. Note that requests above 1 CPU / 2 GiB are checked for usage, so keep the 4 cores busy. Confirm?
 
 > **Researcher:** Confirm.
 
@@ -43,15 +43,15 @@ None of these groups use nrp-mcp today; this is an illustration.
 
 > **Researcher:** Rerun just those three with more memory.
 
-> **Assistant:** I put the three indices in `rerun.txt`. [nrp_plan goal=sweep count=3 parallel=3 cpu=4 memory=24Gi command="python task.py --index-file rerun.txt"]. Confirm? ... [nrp_run], then [nrp_watch]: all 3 succeeded. 300 per-study hit tables and embedding files are now on /data/results.
+> **Assistant:** I put the three indices in `rerun.txt`. [nrp_plan goal=sweep count=3 parallel=3 cpu=4 memory=24Gi data_volume=metab-data data_is_p1=true discard_results=true command="python task.py --index-file rerun.txt"]. Confirm? ... [nrp_run], then [nrp_watch]: all 3 succeeded. 300 per-study hit tables and embedding files are now on /data/results.
 
 > **Researcher:** I would also like to fine-tune MS2DeepScore on the latest library, on a GPU.
 
-> **Assistant:** [nrp_plan goal=job gpu=1 cpu=8 memory=32Gi command="python finetune.py"] picks pytorch/pytorch, one standard GPU (A4000/A5000/A40 class), no premium GPU. The script saves a checkpoint each epoch to /data/models, so a restart loses little. Confirm? ... [nrp_run]. Then [nrp_plan goal=session cpu=4 memory=16Gi] gives a private Jupyter on the same volume; [nrp_session] prints the port-forward command and a local URL with its sign-in token.
+> **Assistant:** [nrp_plan goal=job gpu=1 cpu=8 memory=32Gi data_volume=metab-data data_is_p1=true discard_results=true command="python finetune.py"] picks pytorch/pytorch, one standard GPU (A4000/A5000/A40 class), no premium GPU. The script saves a checkpoint each epoch to /data/models, so a restart loses little. Because this plan uses a GPU (`needs_person_approval: true`), [nrp_run plan_id=...] sends a 6-character code to your notification and `nrp-mcp approve`. ... [nrp_run plan_id=... approval_code=...]. Then [nrp_plan goal=session cpu=4 memory=16Gi data_volume=metab-data] gives a private Jupyter on the same volume; [nrp_session] prints the `nrp-mcp kubectl ... port-forward` command and a local URL with its sign-in token.
 
 > **Researcher:** Network built. Bring back the summary tables and clean up, but keep the volume for a month.
 
-> **Assistant:** [nrp_data down path=/data/summary] copied 1.2 GB of tables and the GraphML file to `results/`. [nrp_cleanup] lists the sweep, the rerun, the fine-tune job and the session; it deletes them after your second yes. The volume stays (purged after 6 months without use).
+> **Assistant:** [nrp_data action=down volume=metab-data path=/data/summary] copied 1.2 GB of tables and the GraphML file to `results/`. [nrp_cleanup] lists the sweep, the rerun, the fine-tune job and the session; it deletes them after your approval code (`nrp-mcp approve`). The volume stays (purged after 6 months without use).
 
 ## What nrp builds
 
@@ -80,8 +80,8 @@ Assumptions: 300 studies, about 150 million MS/MS spectra in total, 1 hour of 4-
 - **SIRIUS and CSI:FingerID.** SIRIUS is AGPL-3.0. Its structure search (CSI:FingerID), compound classes (CANOPUS) and MSNovelist run as web services hosted by FSU Jena. They are free for academic use but need a SIRIUS account login, and every query goes to their servers. nrp does not manage that login. If you use it, store the credentials in a Kubernetes Secret (never in the spec), send only a prioritized shortlist, and respect the service's capacity. Fragmentation trees and isotope analysis run locally without a license. The open models matchms, Spec2Vec and MS2DeepScore have no such limit (matchms and MS2DeepScore are Apache-2.0).
 - **FTP.** `goal=pull` handles http(s) only. MassIVE serves public files by FTP, so each task downloads its own study. An FTP outage shows up as failed tasks, which nrp_watch names.
 - **Large networks.** All-against-all over 150 million spectra needs approximate nearest-neighbor search on the embeddings, not pairwise cosine.
-- **Storage.** CephFS measured about 86 MiB/s per writer in a UCR test; write one Parquet file per study. Volumes are not an archive, and NRP S3 for moving terabytes out is not yet tested by UCR RC.
-- **Web viewers** are possible with `goal=web`, but NRP removes Deployments after 2 weeks, and at UCR publishing needs RC's OK first.
+- **Storage.** CephFS measured about 86 MiB/s per writer in a UCR test; write one Parquet file per study. Volumes are not an archive; `nrp-mcp s3 setup` saves job outputs in `/work/results` to your personal NRP S3 bucket, and standard S3 tools move larger datasets out.
+- **Web viewers** are possible with `goal=web`, but public web apps expire after 14 days (NRP removes Deployments after 2 weeks), require your approval code, and at UCR publishing needs RC's OK first.
 
 ## Starter kit
 

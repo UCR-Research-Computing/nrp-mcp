@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "nrp": {
+      "command": [
+        "/opt/nrp/bin/nrp-mcp",
+        "serve"
+      ],
+      "enabled": true,
+      "type": "local"
+    }
+  }
+}

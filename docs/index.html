@@ -50,13 +50,13 @@
 <section class="hero">
   <div class="container hero-grid">
     <div class="hero-copy">
-      <div class="kicker">MCP server<span class="sep">/</span>Nautilus<span class="sep">/</span>v0.10.0</div>
+      <div class="kicker">MCP server<span class="sep">/</span>Nautilus<span class="sep">/</span>v1.0.0</div>
       <h1>Run your research on Nautilus by talking to your AI assistant.</h1>
       <p class="lead"><code>nrp-mcp</code> is a small MCP server that runs on your own computer. Point it at your Nautilus sign-in and it turns "here is my code, run it on a GPU" into a reviewed plan and a running job. It knows the NRP's rules, so you don't have to learn Kubernetes first.</p>
       <div class="actions">
-        <a class="btn gold solid" href="#start"><i class="fa-solid fa-play" aria-hidden="true"></i> Get started</a>
+        <a class="btn gold solid" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/START-HERE.md"><i class="fa-solid fa-play" aria-hidden="true"></i> Start here</a>
         <a class="btn gold" href="https://github.com/UCR-Research-Computing/nrp-mcp"><i class="fa-brands fa-github" aria-hidden="true"></i> View on GitHub</a>
-        <a class="btn gold" href="https://github.com/UCR-Research-Computing/nrp-mcp/releases/latest"><i class="fa-solid fa-tag" aria-hidden="true"></i> Release v0.10.0</a>
+        <a class="btn gold" href="https://github.com/UCR-Research-Computing/nrp-mcp/releases/latest"><i class="fa-solid fa-tag" aria-hidden="true"></i> Release v1.0.0</a>
       </div>
       <div class="badges">
         <a href="https://github.com/UCR-Research-Computing/nrp-mcp/actions/workflows/ci.yml"><img src="https://github.com/UCR-Research-Computing/nrp-mcp/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status" height="20" loading="lazy"></a>
@@ -118,7 +118,7 @@
       <article class="task">
         <div class="ic"><i class="fa-solid fa-book-open" aria-hidden="true"></i></div>
         <h3>Notebooks, data and web apps</h3>
-        <p>Private Jupyter or VS Code sessions through port-forward, in-cluster dataset downloads to a shared volume, and lab tools on HTTPS, published only after you type the URL back.</p>
+        <p>Private Jupyter or VS Code sessions through port-forward, in-cluster dataset downloads to a shared volume, and lab tools on HTTPS, published only after your approval code and expiring after 14 days.</p>
       </article>
       <article class="task">
         <div class="ic"><i class="fa-solid fa-screwdriver-wrench" aria-hidden="true"></i></div>
@@ -128,7 +128,7 @@
       <article class="task">
         <div class="ic"><i class="fa-solid fa-plug" aria-hidden="true"></i></div>
         <h3>Works with your MCP client</h3>
-        <p>Tested end to end with Hermes Agent, Gemini CLI, OpenCode and Claude Code. Also works with Claude Desktop, VS Code, Cursor and any other MCP client.</p>
+        <p>Run <code>nrp-mcp client &lt;name&gt;</code> once for Claude Desktop, Claude Code, VS Code, Cursor, Gemini CLI, OpenCode or Hermes Agent.</p>
       </article>
     </div>
   </div>
@@ -213,8 +213,8 @@
     </div>
     <div class="safety">
       <div class="s-item"><i class="fa-solid fa-user-lock" aria-hidden="true"></i><div><h3>Runs as you, on your computer</h3><p>Uses your kubeconfig and the NRP's sign-in. Never reads or stores your token.</p></div></div>
-      <div class="s-item"><i class="fa-solid fa-key" aria-hidden="true"></i><div><h3>Your approval, not the AI's</h3><p>Public web, GPUs, deleting and uploading wait for you: a question from your AI app, or a one-time code only you see. Other runs need a single-use token bound to the exact plan.</p></div></div>
-      <div class="s-item"><i class="fa-solid fa-globe" aria-hidden="true"></i><div><h3>Nothing goes public by accident</h3><p>A web plan publishes only when you type its exact URL back.</p></div></div>
+      <div class="s-item"><i class="fa-solid fa-key" aria-hidden="true"></i><div><h3>Your approval, not the AI's</h3><p>Public web, GPUs, deleting and uploading wait for you: a question from your AI app, or a one-time code from <code>nrp-mcp approve</code>. Other runs need a single-use token bound to the exact plan.</p></div></div>
+      <div class="s-item"><i class="fa-solid fa-globe" aria-hidden="true"></i><div><h3>Nothing goes public by accident</h3><p>A web plan publishes only after your approval code, and public apps expire after 14 days.</p></div></div>
       <div class="s-item"><i class="fa-solid fa-users" aria-hidden="true"></i><div><h3>Shared namespaces are safe</h3><p>Every object is labelled with its owner; cleanup sees only your runs unless a namespace admin asks for everyone's.</p></div></div>
       <div class="s-item"><i class="fa-solid fa-gauge" aria-hidden="true"></i><div><h3>Caps</h3><p>On pods and GPUs running at once, tasks per sweep, and hours per run.</p></div></div>
       <div class="s-item"><i class="fa-solid fa-file-lines" aria-hidden="true"></i><div><h3>Audit log</h3><p>Every change is logged at <code>~/.local/state/nrp-mcp/audit.log</code>.</p></div></div>
@@ -240,7 +240,7 @@
       <div>
         <div class="kicker">Quick start</div>
         <h2>Five steps</h2>
-        <p class="sub">You need a Nautilus account and a namespace. Sign in at <a href="https://nrp.ai">nrp.ai</a> with your institution; students are added to a namespace by their PI, faculty can request one. UCR researchers: see <a href="https://ucr-research-computing.github.io/kb/kb024-nautilus-getting-access/">Getting access</a>.</p>
+        <p class="sub">Read the full one-page guide at <a href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/START-HERE.md">docs/START-HERE.md</a>. You need a Nautilus account and a namespace: sign in once at <a href="https://nrp.ai">nrp.ai</a> with your institution; students are added to a namespace by their PI at <a href="https://nrp.ai/namespaces">nrp.ai/namespaces</a>, and faculty can request one. UCR researchers: see <a href="https://ucr-research-computing.github.io/kb/kb024-nautilus-getting-access/">Getting access</a>.</p>
       </div>
     </div>
     <ol class="steps">
@@ -248,7 +248,9 @@
         <h3>Install nrp-mcp</h3>
         <p>Linux or macOS:</p>
         <div class="code"><pre><code>curl -fsSL https://raw.githubusercontent.com/UCR-Research-Computing/nrp-mcp/main/scripts/install.sh | sh</code></pre><button class="copy" type="button" aria-label="Copy install command">Copy</button></div>
-        <p>Windows: download <code>nrp-mcp_&lt;version&gt;_windows_amd64.zip</code> from <a href="https://github.com/UCR-Research-Computing/nrp-mcp/releases">Releases</a>, unzip it and keep <code>nrp-mcp.exe</code> somewhere handy. With Go installed, this works everywhere:</p>
+        <p>Windows (PowerShell):</p>
+        <div class="code"><pre><code>irm https://raw.githubusercontent.com/UCR-Research-Computing/nrp-mcp/main/scripts/install.ps1 | iex</code></pre><button class="copy" type="button" aria-label="Copy Windows install command">Copy</button></div>
+        <p>Or download the archive for your OS from <a href="https://github.com/UCR-Research-Computing/nrp-mcp/releases">Releases</a>, or with Go installed:</p>
         <div class="code"><pre><code>go install github.com/UCR-Research-Computing/nrp-mcp/cmd/nrp-mcp@latest</code></pre><button class="copy" type="button" aria-label="Copy go install command">Copy</button></div>
       </li>
       <li>
@@ -256,27 +258,30 @@
         <p>At <a href="https://nrp.ai/config">nrp.ai/config</a> (it lands in Downloads).</p>
       </li>
       <li>
-        <h3>Get your computer ready</h3>
-        <div class="code"><pre><code>nrp-mcp setup</code></pre><button class="copy" type="button" aria-label="Copy setup command">Copy</button></div>
-        <p><code>setup</code> checks everything first and asks before changing anything. Then it installs kubectl and the kubelogin sign-in plugin (official releases, SHA256-checked, into your user folder, no admin rights), puts the NRP config in <code>~/.kube/config</code> (backing up an existing one), and signs you in through your browser. It ends with "This computer is ready for Nautilus."</p>
+        <h3>Get your computer ready (and optional S3 results)</h3>
+        <div class="code"><pre><code>nrp-mcp setup
+nrp-mcp s3 setup   # optional once: keys from https://nrp.ai/s3token/</code></pre><button class="copy" type="button" aria-label="Copy setup command">Copy</button></div>
+        <p><code>setup</code> checks everything first and asks before changing anything. Then it installs kubectl and the kubelogin sign-in plugin (official releases, SHA256-checked, into your user folder, no admin rights), puts the NRP config in <code>~/.kube/config</code> (backing up an existing one), and signs you in through your browser. Check readiness at any time with <code>nrp-mcp doctor</code>.</p>
       </li>
       <li>
         <h3>Add it to your AI client</h3>
-        <p>Tested end to end (live cluster, Gemini API key) with each of these:</p>
+        <p>Run <code>nrp-mcp client &lt;name&gt;</code> once in your terminal (writes user-scope config with the full binary path and keeps a <code>.bak</code> backup):</p>
+        <div class="code"><pre><code>nrp-mcp client claude-desktop   # or: claude-code, vscode, cursor, gemini, opencode, hermes</code></pre><button class="copy" type="button" aria-label="Copy client command">Copy</button></div>
         <div class="table-wrap">
           <table class="clients">
-            <thead><tr><th scope="col">Client</th><th scope="col">Add nrp</th></tr></thead>
+            <thead><tr><th scope="col">Client</th><th scope="col">Automatic (<code>nrp-mcp client</code>)</th></tr></thead>
             <tbody>
-              <tr><td><a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a></td><td><code>hermes mcp add nrp --command nrp-mcp --args serve</code></td></tr>
-              <tr><td><a href="https://github.com/google-gemini/gemini-cli">Gemini CLI</a></td><td><code>gemini mcp add nrp nrp-mcp serve</code></td></tr>
-              <tr><td><a href="https://opencode.ai/">OpenCode</a></td><td>add <code>"mcp": {"nrp": {"type": "local", "command": ["nrp-mcp", "serve"]}}</code> to <code>opencode.json</code></td></tr>
-              <tr><td>Claude Code</td><td><code>claude mcp add nrp -- nrp-mcp serve</code></td></tr>
+              <tr><td><a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a></td><td><code>nrp-mcp client hermes</code> (<code>~/.hermes/config.yaml</code>)</td></tr>
+              <tr><td><a href="https://github.com/google-gemini/gemini-cli">Gemini CLI</a></td><td><code>nrp-mcp client gemini</code> (<code>~/.gemini/settings.json</code>)</td></tr>
+              <tr><td><a href="https://opencode.ai/">OpenCode</a></td><td><code>nrp-mcp client opencode</code> (<code>~/.config/opencode/opencode.json</code>)</td></tr>
+              <tr><td>Claude Code</td><td><code>nrp-mcp client claude-code</code> (<code>~/.claude.json</code>)</td></tr>
+              <tr><td>Claude Desktop</td><td><code>nrp-mcp client claude-desktop</code></td></tr>
+              <tr><td>Cursor</td><td><code>nrp-mcp client cursor</code> (<code>~/.cursor/mcp.json</code>)</td></tr>
+              <tr><td>VS Code</td><td><code>nrp-mcp client vscode</code> (<code>User/mcp.json</code>, uses <code>"servers"</code>)</td></tr>
             </tbody>
           </table>
         </div>
-        <p>Claude Desktop, Cursor, VS Code and others (<code>mcpServers</code> block):</p>
-        <div class="code"><pre><code>{"mcpServers": {"nrp": {"command": "nrp-mcp", "args": ["serve"]}}}</code></pre><button class="copy" type="button" aria-label="Copy mcpServers block">Copy</button></div>
-        <p>Use the full path to <code>nrp-mcp</code> if your client doesn't see your shell's PATH, and add <code>"--namespace", "&lt;your-namespace&gt;"</code> to <code>args</code> to pick a default.</p>
+        <p>Pass <code>--namespace &lt;your-namespace&gt;</code> to pin a default namespace, then restart your AI client.</p>
       </li>
       <li>
         <h3>Ask</h3>
@@ -288,8 +293,8 @@
       <ul>
         <li>Code is copied as text files under 200 KB each (900 KB total). Bigger projects need an image (<code>nrp_build</code>) or git.</li>
         <li><code>nrp_build</code> suggests files; it doesn't build. Builds run on GitHub Actions (or NRP GitLab).</li>
-        <li>S3 uploads are guidance only; S3 keys come from the NRP portal.</li>
-        <li>Sessions are port-forwarded and never public. For zero install, the NRP runs a hosted JupyterHub.</li>
+        <li>Job results written to <code>results/</code> (or new files in <code>/work</code>) are saved to your personal NRP S3 bucket once you run <code>nrp-mcp s3 setup</code> with keys from <a href="https://nrp.ai/s3token/">nrp.ai/s3token</a>.</li>
+        <li>Sessions are port-forwarded (<code>nrp-mcp kubectl ... port-forward</code>) and never public. For zero install, the NRP runs a hosted JupyterHub.</li>
         <li>The browser sign-in step of <code>setup</code> can't run in CI and is tested by hand.</li>
       </ul>
     </div>

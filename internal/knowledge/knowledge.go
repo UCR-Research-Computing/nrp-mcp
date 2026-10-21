@@ -95,6 +95,7 @@ const KB = `# UCR Research Computing guides to Nautilus
 6. Hosted LLMs: https://ucr-research-computing.github.io/kb/kb028-nautilus-llm-api/
 7. Hosting a web tool: https://ucr-research-computing.github.io/kb/kb029-nautilus-hosting-web-tools/
 8. Teaching a class or workshop: https://ucr-research-computing.github.io/kb/kb030-nautilus-teaching-and-workshops/
+9. Quick start with nrp-mcp: https://ucr-research-computing.github.io/kb/kb031-nrp-mcp-quick-start/
 
 UCR help: research-computing@ucr.edu. NRP help: https://nrp.ai/contact (Matrix).
 `

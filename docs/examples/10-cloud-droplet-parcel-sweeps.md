@@ -34,23 +34,23 @@ All of this is P1. The lab's own instrument data stay wherever the lab keeps the
 
 **Researcher:** Plan the sweep.
 
-**Assistant:** [nrp_plan goal=sweep count=50 parallel=50 cpu=1 memory=2Gi data_volume=parcel-runs] Summary: an Indexed Job, 50 tasks, all at once, 1 CPU and 2 GiB each (limits equal requests; exempt from usage-violation checks), image python:3.12-slim, requirements.txt installed at start, /data mounted, 24 h limit. Each task gets $SLURM_ARRAY_TASK_ID 0..49. No GPU: the code is CPU-only. Confirm token valid 10 minutes. **Researcher:** Go. [nrp_run] Running. Run card in .nrp/runs/.
+**Assistant:** [nrp_plan goal=sweep count=50 parallel=50 cpu=1 memory=2Gi data_volume=parcel-runs discard_results=true] Summary (`resources` shown per object; full YAML omitted unless `show_manifests=true`): an Indexed Job, 50 tasks, all at once, 1 CPU and 2 GiB each (limits equal requests; exempt from usage-violation checks), image python:3.12-slim, requirements.txt installed at start, /data mounted, 24 h limit (`discard_results=true` satisfies R23 if S3 keys are not set, since Parquet files go to `/data/runs`). Each task gets $SLURM_ARRAY_TASK_ID 0..49. No GPU: the code is CPU-only. Confirm token valid 10 minutes. **Researcher:** Go. [nrp_run] Running. Run card in .nrp/runs/.
 
 **Researcher:** How is it going?
 
-**Assistant:** [nrp_watch] 41 tasks done, 7 running, 2 failed. Task 17 and task 33 exited 1. Last log lines: "SolverError: integration failed" at updraft 0.05 m/s with 5000 particles per cm3 and the largest kappa perturbation; the parcel never reached peak supersaturation before t_end. Fix: catch the error, retry that row with a longer t_end, and record a status column instead of crashing.
+**Assistant:** [nrp_watch] 41 tasks done, 7 running, 2 failed. Task 17 and task 33 exited 1. Last log lines (`untrusted_logs`): "SolverError: integration failed" at updraft 0.05 m/s with 5000 particles per cm3 and the largest kappa perturbation; the parcel never reached peak supersaturation before t_end. Fix: catch the error, retry that row with a longer t_end, and record a status column instead of crashing.
 
 **Researcher:** Patched. Rerun only those two.
 
-**Assistant:** [nrp_plan goal=job command="python parcel.py --tasks 17,33" data_volume=parcel-runs] One Job that redoes both slices in a row, 1 CPU and 2 GiB. **Researcher:** Yes. [nrp_run] [nrp_watch] Both succeeded; 16,800 rows, 23 marked "long_tend".
+**Assistant:** [nrp_plan goal=job command="python parcel.py --tasks 17,33" data_volume=parcel-runs discard_results=true] One Job that redoes both slices in a row, 1 CPU and 2 GiB. **Researcher:** Yes. [nrp_run] [nrp_watch] Both succeeded; 16,800 rows, 23 marked "long_tend".
 
 **Researcher:** Now combine everything into one file and add the PySDM cross-check on 500 points.
 
-**Assistant:** [nrp_plan goal=job command="python combine.py" data_volume=parcel-runs cpu=2 memory=8Gi] combines the 50 Parquet files into grid.parquet with droplet number, peak supersaturation and activated fraction. Then [nrp_plan goal=sweep count=50 parallel=50 cpu=2 memory=4Gi command="python pysdm_check.py" data_volume=parcel-runs] runs 10 PySDM parcels per task. Both approved and run.
+**Assistant:** [nrp_plan goal=job command="python combine.py" data_volume=parcel-runs cpu=2 memory=8Gi discard_results=true] combines the 50 Parquet files into grid.parquet with droplet number, peak supersaturation and activated fraction. Then [nrp_plan goal=sweep count=50 parallel=50 cpu=2 memory=4Gi command="python pysdm_check.py" data_volume=parcel-runs discard_results=true] runs 10 PySDM parcels per task. Both approved and run.
 
 **Researcher:** Bring it home and clean up, keep the volume for a week.
 
-**Assistant:** [nrp_data down volume=parcel-runs path=summary/] 48 MB: grid.parquet, pysdm_check.parquet, logs. [nrp_cleanup] lists 4 runs; after your second yes they are deleted. The volume stays; open analysis.ipynb locally.
+**Assistant:** [nrp_data action=down volume=parcel-runs path=summary/] 48 MB: grid.parquet, pysdm_check.parquet, logs. [nrp_cleanup] lists 4 runs; after you approve with [nrp_cleanup plan_id=... approval_code=...] (`nrp-mcp approve`) they are deleted. The volume stays; open analysis.ipynb locally.
 
 ## What nrp builds
 

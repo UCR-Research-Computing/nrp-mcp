@@ -55,13 +55,14 @@ func fakeEnv(t *testing.T, tamper bool) (*Env, *[]string) {
 	bin := filepath.Join(home, ".local", "bin")
 	kubectlBin := []byte("#!/bin/sh\necho kubectl\n")
 	klZip := zipWith("kubelogin", []byte("#!/bin/sh\necho kubelogin\n"))
+	origSHA := KubeloginSHA256["linux/amd64"]
+	KubeloginSHA256["linux/amd64"] = sum(klZip)
+	t.Cleanup(func() { KubeloginSHA256["linux/amd64"] = origSHA })
 	files := map[string][]byte{
-		KubectlBase + "/stable.txt":                             []byte("v1.37.1\n"),
-		KubectlBase + "/v1.37.1/bin/linux/amd64/kubectl":        kubectlBin,
-		KubectlBase + "/v1.37.1/bin/linux/amd64/kubectl.sha256": []byte(sum(kubectlBin)),
-		KubeloginAPI: []byte(`{"tag_name":"v1.36.4"}`),
-		KubeloginBase + "/v1.36.4/kubelogin_linux_amd64.zip":        klZip,
-		KubeloginBase + "/v1.36.4/kubelogin_linux_amd64.zip.sha256": []byte(sum(klZip) + " *kubelogin_linux_amd64.zip\n"),
+		KubectlBase + "/stable.txt":                                       []byte("v1.37.1\n"),
+		KubectlBase + "/v1.37.1/bin/linux/amd64/kubectl":                  kubectlBin,
+		KubectlBase + "/v1.37.1/bin/linux/amd64/kubectl.sha256":           []byte(sum(kubectlBin)),
+		KubeloginBase + "/" + KubeloginTag + "/kubelogin_linux_amd64.zip": klZip,
 	}
 	if tamper {
 		files[KubectlBase+"/v1.37.1/bin/linux/amd64/kubectl"] = []byte("evil")
@@ -77,9 +78,6 @@ func fakeEnv(t *testing.T, tamper bool) (*Env, *[]string) {
 		return nil, fmt.Errorf("404 %s", url)
 	}
 	e.LookPath = func(name string) (string, error) { return "", errors.New("not found") }
-	e.Redirect = func(_ context.Context, url string) (string, error) {
-		return "", errors.New("no network in tests") // exercises the API fallback
-	}
 	e.Run = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		j := strings.Join(args, " ")
 		switch {
@@ -355,23 +353,61 @@ func TestKubeloginVersionFallbackAndBroken(t *testing.T) {
 	}
 }
 
-func TestKubeloginTagPrefersRedirect(t *testing.T) {
-	e, fetched := fakeEnv(t, false)
-	e.Redirect = func(_ context.Context, url string) (string, error) {
-		return "https://github.com/int128/kubelogin/releases/tag/v1.36.4", nil
+func TestKubeloginPinnedSHA256EmbeddedAtBuildTime(t *testing.T) {
+	if !strings.HasPrefix(KubeloginTag, "v1.") {
+		t.Fatalf("KubeloginTag = %q, want pinned v1.x.y", KubeloginTag)
 	}
-	tag, err := e.kubeloginTag(context.Background())
-	if err != nil || tag != "v1.36.4" {
-		t.Fatalf("%q %v", tag, err)
-	}
-	for _, u := range *fetched {
-		if u == KubeloginAPI {
-			t.Fatal("used the rate-limited API although the redirect worked")
+	for _, target := range []string{"darwin/amd64", "darwin/arm64", "linux/amd64", "linux/arm64", "windows/amd64", "windows/arm64"} {
+		sha, ok := KubeloginSHA256[target]
+		if !ok || len(sha) != 64 {
+			t.Fatalf("missing or invalid embedded SHA256 for %s: %q", target, sha)
 		}
 	}
-	// Junk redirect: fall back to the API.
-	e.Redirect = func(_ context.Context, url string) (string, error) { return "https://github.com/login", nil }
-	if tag, err := e.kubeloginTag(context.Background()); err != nil || tag != "v1.36.4" {
-		t.Fatalf("fallback: %q %v", tag, err)
+	e, fetched := fakeEnv(t, false)
+	_ = os.MkdirAll(e.BinDir, 0o755)
+	if _, err := e.installKubelogin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range *fetched {
+		if strings.HasSuffix(u, ".sha256") || strings.Contains(u, "api.github.com") || strings.Contains(u, "/releases/latest") {
+			t.Fatalf("installKubelogin must use embedded SHA256 and pinned tag without querying latest or .sha256: fetched %s", u)
+		}
+	}
+	// Tampering with the kubelogin zip must fail against the embedded SHA256.
+	eBad, _ := fakeEnv(t, false)
+	KubeloginSHA256["linux/amd64"] = strings.Repeat("0", 64)
+	if _, err := eBad.installKubelogin(context.Background()); err == nil || !strings.Contains(err.Error(), "SHA256 mismatch") {
+		t.Fatalf("expected SHA256 mismatch for tampered kubelogin, got %v", err)
+	}
+}
+
+func TestPathHintsAndSignInFixAvoidBareKubectlAndSetx(t *testing.T) {
+	win := &Env{GOOS: "windows", BinDir: `C:\Users\jane\AppData\Local\Programs\nrp-mcp\bin`}
+	wh := pathHint(win)
+	if strings.Contains(strings.ToLower(wh), "setx") || !strings.Contains(wh, `[Environment]::SetEnvironmentVariable("Path"`) {
+		t.Fatalf("windows pathHint must use SetEnvironmentVariable, never setx: %s", wh)
+	}
+	mac := &Env{GOOS: "darwin", BinDir: "/Users/jane/.local/bin"}
+	if mh := pathHint(mac); !strings.Contains(mh, "~/.zprofile") {
+		t.Fatalf("darwin pathHint must default to ~/.zprofile: %s", mh)
+	}
+	lin := &Env{GOOS: "linux", BinDir: "/home/jane/.local/bin"}
+	if lh := pathHint(lin); !strings.Contains(lh, "~/.bashrc") {
+		t.Fatalf("linux pathHint must default to ~/.bashrc: %s", lh)
+	}
+	e, _ := fakeEnv(t, false)
+	_ = os.MkdirAll(e.BinDir, 0o755)
+	for _, f := range []string{"kubectl", "kubectl-oidc_login"} {
+		_ = os.WriteFile(filepath.Join(e.BinDir, f), []byte("x"), 0o755)
+	}
+	_ = os.MkdirAll(filepath.Join(e.Home, ".kube"), 0o700)
+	_ = os.WriteFile(filepath.Join(e.Home, ".kube", "config"), []byte(nrpConfig), 0o600)
+	r := e.Inspect(context.Background(), false)
+	for _, c := range r.Checks {
+		if c.ID == "signin" {
+			if !strings.Contains(c.Fix, filepath.Join(e.BinDir, "kubectl")) && !strings.Contains(c.Fix, "nrp-mcp kubectl") {
+				t.Fatalf("signin fix must use full kubectl path or nrp-mcp kubectl: %q", c.Fix)
+			}
+		}
 	}
 }

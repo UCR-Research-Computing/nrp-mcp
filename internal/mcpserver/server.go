@@ -60,13 +60,14 @@ kubectl equivalent so the user learns. Guides: resource nrp://kb.`
 
 // Server holds what the tools need.
 type Server struct {
-	Setup func() *nrpsetup.Env // nil: nrpsetup.DefaultEnv from Cfg
-	Cfg   config.Config
-	Ops   *ops.Ops
-	Store *store.Store
-	Codes *consent.Codes // approval codes shown only to the person
-	HTTP  func(url string) (int, error)
-	Now   func() time.Time
+	Setup          func() *nrpsetup.Env // nil: nrpsetup.DefaultEnv from Cfg
+	Cfg            config.Config
+	Ops            *ops.Ops
+	Store          *store.Store
+	Codes          *consent.Codes // approval codes shown only to the person
+	HTTP           func(url string) (int, error)
+	Now            func() time.Time
+	VersionChecker *version.Checker // nil: DefaultChecker(Store.Dir)
 }
 
 func readOnly(title string) *mcp.ToolAnnotations {
@@ -328,7 +329,11 @@ func New(s *Server) *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_status", Description: "Where do I stand on Nautilus: who I am, my namespaces, GPU quotas, what is running and what it asks for, volumes, public URLs, and policy warnings (2-week Deployment limit, 6-hour bare pods, quota-gated GPUs). Read-only. Start every session here.", Annotations: readOnly("Status")},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in statusIn) (*mcp.CallToolResult, *ops.Status, error) {
 			st, err := s.Ops.StatusOf(ctx, s.nsCtx(ctx, in.Namespace))
-			return nil, st, err
+			if err != nil {
+				return nil, nil, err
+			}
+			s.attachUpdateNotice(ctx, st)
+			return nil, st, nil
 		})
 
 	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_plan", Description: "Draft a plan for running a project on Nautilus. Creates nothing and changes nothing. Returns summary, decisions, refusals (each with a fix), warnings, code_files, skipped_files, resources (cpu/memory/gpu/hours per object), and plan_id; pass show_manifests=true for full manifests. goal is job, sweep, web, session, llm-batch, volume or pull. If a value is missing, ask the person; do not guess. Tell the person the summary, decisions, refusals and warnings in plain words, and for web plans say clearly the URL will be PUBLIC with no login.", Annotations: readOnly("Plan"), InputSchema: singleTypeSchema[planIn]()}, s.planTool)
@@ -367,6 +372,33 @@ func New(s *Server) *mcp.Server {
 // ToolNames lists every tool, for docs and tests.
 func ToolNames() []string {
 	return []string{"nrp_setup", "nrp_status", "nrp_plan", "nrp_run", "nrp_watch", "nrp_cleanup", "nrp_session", "nrp_data", "nrp_build"}
+}
+
+// attachUpdateNotice checks (cached once a day) whether a newer nrp-mcp release exists
+// and appends a notice to st.Summary and st.Warnings when one is available.
+func (s *Server) attachUpdateNotice(ctx context.Context, st *ops.Status) {
+	if st == nil {
+		return
+	}
+	vc := s.VersionChecker
+	if vc == nil {
+		dir := ""
+		if s.Store != nil {
+			dir = s.Store.Dir
+		}
+		vc = version.DefaultChecker(dir)
+		if s.Now != nil {
+			vc.Now = s.Now
+		}
+	}
+	info := vc.Check(ctx, true)
+	if info.Latest != "" {
+		st.LatestRelease = "v" + info.Latest
+	}
+	if info.Newer && info.Notice != "" {
+		st.Warnings = append(st.Warnings, "Update available: "+info.Notice)
+		st.Summary += " Update available: " + info.Notice + "."
+	}
 }
 
 // splitNodes turns the comma-separated avoid_node input into a list (nil when empty).
@@ -1151,7 +1183,7 @@ func (s *Server) sessionTool(ctx context.Context, _ *mcp.CallToolRequest, in ses
 		}
 	}
 	out := &sessionOut{Ready: ready, Token: tok}
-	out.Command = fmt.Sprintf("kubectl --context %s -n %s port-forward %s/%s %d:%d", s.Cfg.Context, ns, targetKind, name, port, port)
+	out.Command = fmt.Sprintf("nrp-mcp kubectl --context %s -n %s port-forward %s/%s %d:%d", s.Cfg.Context, ns, targetKind, name, port, port)
 	out.URL = fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
 	if out.Ready {
 		out.Summary = "Ready. Run the command in a terminal (leave it open), then open the URL. VS Code asks for the token as its password."
@@ -1409,7 +1441,7 @@ func (s *Server) buildTool(ctx context.Context, _ *mcp.CallToolRequest, in build
 		owner := strings.SplitN(repo, "/", 2)[0]
 		out.PrivateImage = []string{
 			"New images on GitHub are private. Public is simplest for open research code: on GitHub open the package (Packages, then the image), Package settings, Change visibility, Public. Nautilus then pulls it with no secret.",
-			"To keep it private: create a GitHub personal access token (classic) with only the read:packages scope, then store it in your namespace once: kubectl -n <namespace> create secret docker-registry ghcr-pull --docker-server=ghcr.io --docker-username=" + owner + " --docker-password=<the token>. Then plan with pull_secret=ghcr-pull. Never paste the token into a chat or a file in the repo.",
+			"To keep it private: create a GitHub personal access token (classic) with only the read:packages scope, then store it in your namespace once: nrp-mcp kubectl -n <namespace> create secret docker-registry ghcr-pull --docker-server=ghcr.io --docker-username=" + owner + " --docker-password=<the token>. Then plan with pull_secret=ghcr-pull. Never paste the token into a chat or a file in the repo.",
 			"Nautilus has a few ARM nodes but nrp-mcp schedules on the common amd64 nodes, which is what GitHub builds by default.",
 		}
 	case "gitlab":
@@ -1424,7 +1456,7 @@ func (s *Server) buildTool(ctx context.Context, _ *mcp.CallToolRequest, in build
 		}
 		out.PrivateImage = []string{
 			"Public project: Nautilus pulls with no secret.",
-			"Private project: create a deploy token with read_registry (Settings, Repository, Deploy tokens), then kubectl -n <namespace> create secret docker-registry gitlab-pull --docker-server=gitlab-registry.nrp-nautilus.io --docker-username=<token user> --docker-password=<token>, and plan with pull_secret=gitlab-pull.",
+			"Private project: create a deploy token with read_registry (Settings, Repository, Deploy tokens), then nrp-mcp kubectl -n <namespace> create secret docker-registry gitlab-pull --docker-server=gitlab-registry.nrp-nautilus.io --docker-username=<token user> --docker-password=<token>, and plan with pull_secret=gitlab-pull.",
 		}
 	}
 	if f.Dockerfile {

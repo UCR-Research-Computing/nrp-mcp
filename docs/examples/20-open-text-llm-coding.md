@@ -34,23 +34,23 @@ None of these groups use nrp-mcp today; this is an illustration.
 
 > **Researcher:** Yes, public comments, identifiers removed.
 
-> **Assistant:** [nrp_run] volume Bound; [nrp_data up] 3 files to /data/in (the two parts plus `human600.csv`, the RA codes). Now the coding run. [nrp_plan goal=llm-batch command="python code_comments.py --models gpt-oss,qwen3 --prompts v1,v2" cpu=2 memory=4Gi]. Plan summary: one Job, python:3.12-slim, calling https://ellm.nrp-nautilus.io/v1. Your LLM token goes from the file you name into a Kubernetes Secret; the spec only references it. The script must retry with backoff (fair use is about 200K output tokens per minute per token and model). Set a private `cache_salt` so prompts are not cached across users. 24 h limit, 2 retries; progress on /data/out lets a retry resume. Confirm?
+> **Assistant:** [nrp_run] volume Bound; [nrp_data action=up approval_code=...] 3 files to /data/in (the two parts plus `human600.csv`, the RA codes; uploaded after your approval code from `nrp-mcp approve`). Now the coding run. [nrp_plan goal=llm-batch data_volume=comments command="python code_comments.py --models gpt-oss,qwen3 --prompts v1,v2" cpu=2 memory=4Gi]. Plan summary (`resources` shown per object; full YAML omitted unless `show_manifests=true`): one Job, python:3.12-slim, calling https://ellm.nrp-nautilus.io/v1. Your LLM token goes from the file you name into a Kubernetes Secret; the spec only references it. The script must retry with backoff (fair use is about 200K output tokens per minute per token and model). Set a private `cache_salt` so prompts are not cached across users. 24 h limit, 2 retries; progress on /data/out lets a retry resume. Confirm?
 
 > **Researcher:** Confirm. The token is in ~/.config/nrp/llm-token.
 
-> **Assistant:** [nrp_run] Secret created from that file (its value is not logged or shown), Job started; run card in .nrp/runs/. [nrp_watch] after 20 minutes: running, 9,800 of 244,000 requests done, but the log shows `404 model not found: qwen3` for every qwen3 request. Diagnosis: that model name is not in the current catalog; NRP models rotate. Fix: read /v1/models at start and use the exact id instead of a hard-coded name.
+> **Assistant:** [nrp_run] Secret created from that file (its value is not logged or shown), Job started; run card in .nrp/runs/. [nrp_watch] after 20 minutes: running, 9,800 of 244,000 requests done, but the log (`untrusted_logs`) shows `404 model not found: qwen3` for every qwen3 request. Diagnosis: that model name is not in the current catalog; NRP models rotate. Fix: read /v1/models at start and use the exact id instead of a hard-coded name.
 
 > **Researcher:** Patch it to check /v1/models and use whichever qwen3 model is listed.
 
-> **Assistant:** Patched. [nrp_cleanup] removes the first run (its gpt-oss results on /data/out are kept and skipped on restart). [nrp_plan goal=llm-batch ...] again, confirm, [nrp_run]. [nrp_watch] four hours later: complete. 244,000 requests, 1,712 retried after HTTP 429 and all succeeded on backoff, 37 responses were not valid JSON on the first try and were re-asked once; 3 still failed and are listed in /data/out/failed.jsonl.
+> **Assistant:** Patched. [nrp_cleanup] removes the first run after your approval code (its gpt-oss results on /data/out are kept and skipped on restart). [nrp_plan goal=llm-batch ...] again, confirm, [nrp_run]. [nrp_watch] four hours later: complete. 244,000 requests, 1,712 retried after HTTP 429 and all succeeded on backoff, 37 responses were not valid JSON on the first try and were re-asked once; 3 still failed and are listed in /data/out/failed.jsonl.
 
 > **Researcher:** Now the validation.
 
-> **Assistant:** [nrp_plan goal=job command="python validate.py" cpu=1 memory=2Gi] runs on the 600 double-coded comments. Confirm? ... [nrp_run], [nrp_watch]: done. Summary from /data/out/agreement.csv: RA vs RA Krippendorff's alpha 0.81 on stance; gpt-oss prompt v2 vs the RA consensus alpha 0.78, qwen3 v2 0.74; both models weakest on "mixed" stance (most errors are mixed coded as oppose). Form-letter detection agrees almost perfectly. [nrp_data down path=/data/out] brought back codes, agreement tables and confusion matrices (95 MB).
+> **Assistant:** [nrp_plan goal=job data_volume=comments discard_results=true command="python validate.py" cpu=1 memory=2Gi] runs on the 600 double-coded comments (`discard_results=true` satisfies R23 if S3 keys are not set, since agreement tables go to `/data/out`). Confirm? ... [nrp_run], [nrp_watch]: done. Summary from /data/out/agreement.csv: RA vs RA Krippendorff's alpha 0.81 on stance; gpt-oss prompt v2 vs the RA consensus alpha 0.78, qwen3 v2 0.74; both models weakest on "mixed" stance (most errors are mixed coded as oppose). Form-letter detection agrees almost perfectly. [nrp_data action=down volume=comments path=/data/out] brought back codes, agreement tables and confusion matrices (95 MB).
 
 > **Researcher:** Good enough to report with the caveats. Clean up everything, including the volume.
 
-> **Assistant:** [nrp_cleanup] lists the coding run, the validation job, the data helper pod, the Secret and the volume; deletes them after your second yes. Keep the prompt files, model ids and run dates with the results; the hosted models will change.
+> **Assistant:** [nrp_cleanup] lists the coding run, the validation job, the data helper pod, the Secret and the volume; deletes them after your approval code (`nrp-mcp approve`). Keep the prompt files, model ids and run dates with the results; the hosted models will change.
 
 ## What nrp builds
 

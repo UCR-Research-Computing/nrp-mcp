@@ -19,7 +19,7 @@ The Department of Entomology (https://entomology.ucr.edu/) and the Center for In
 - PubMLST Wolbachia typing: https://pubmlst.org/organisms/wolbachia-spp
 - Tools: SPAdes (https://github.com/ablab/spades), Bakta (https://github.com/oschwengers/bakta; light database 3.9 GB unzipped) or Prokka, FastANI, Panaroo (https://github.com/gtonkinhill/panaroo), IQ-TREE (https://iqtree.github.io/), minimap2, fastp.
 
-Insect and bacterial sequence data are P1, including the lab's unpublished strains. Small files (under 100 MB) go up with nrp_data; full FASTQ sets come in through an in-cluster https download or NRP S3 (not yet tested by UCR RC). If a related project sequenced human blood meals from mosquitoes, those human reads would be identifiable and must not go to Nautilus.
+Insect and bacterial sequence data are P1, including the lab's unpublished strains. Small files (under 100 MB) go up with `nrp_data action=up` (with your approval code); full FASTQ sets come in through an in-cluster https download (`goal=pull`) or standard S3 tools, and job outputs written to `/work/results` go to your personal NRP S3 bucket once you run `nrp-mcp s3 setup`. If a related project sequenced human blood meals from mosquitoes, those human reads would be identifiable and must not go to Nautilus.
 
 ## The conversation
 
@@ -33,27 +33,27 @@ Insect and bacterial sequence data are P1, including the lab's unpublished strai
 
 **Researcher:** assemble.sh runs fastp, minimap2 against a Wolbachia pan-reference to drop host reads, SPAdes, then Bakta. Plan a sweep.
 
-**Assistant:** [nrp_plan goal=sweep count=180 parallel=30 cpu=8 memory=32Gi data_volume=wolb-data] The caps pass: 30 pods at the same time is within pods_per_run (50), and 180 tasks is under tasks_per_run. With more than 100 pods in the run, R4 applies and nrp sets limits equal to requests. But no image has these tools; installing SPAdes and Bakta in 180 pods is slow and fragile.
+**Assistant:** [nrp_plan goal=sweep count=180 parallel=30 cpu=8 memory=32Gi data_volume=wolb-data data_is_p1=true discard_results=true] The caps pass: 30 pods at the same time is within pods_per_run (50), and 180 tasks is under tasks_per_run. With more than 100 pods in the run, R4 applies and nrp sets limits equal to requests. But no stock image has these tools; installing SPAdes and Bakta in 180 pods is slow and fragile.
 
 **Researcher:** Make me an image.
 
-**Assistant:** [nrp_build] Two files for NRP GitLab: a Dockerfile installing the tools from bioconda, and a .gitlab-ci.yml that builds it with kaniko into gitlab-registry.nrp-nautilus.io/<group>/wolb-tools:1.0. Commit them and GitLab builds the image. The Bakta light database goes on the volume once (a small Job), not into the image.
+**Assistant:** [nrp_build target=gitlab] Two files for NRP GitLab: a Dockerfile installing the tools from bioconda, and a .gitlab-ci.yml that builds it with kaniko into gitlab-registry.nrp-nautilus.io/<group>/wolb-tools:1.0. Commit them and GitLab builds the image. The Bakta light database goes on the volume once (a small Job), not into the image.
 
 **Researcher:** Built, and the database is in /data/db. Plan the sweep again.
 
-**Assistant:** [nrp_plan goal=sweep count=180 parallel=30 cpu=8 memory=32Gi image=gitlab-registry.nrp-nautilus.io/<group>/wolb-tools:1.0 command="bash assemble.sh" data_volume=wolb-data] Summary: an Indexed Job, 180 tasks, 30 at a time, 8 CPU and 32 GiB each (limits equal requests), no GPU, /data mounted, 24 h limit for the whole sweep (6 waves of 30 at 1-3 h each fits). $SLURM_ARRAY_TASK_ID 0..179 picks a line of samples.tsv. Warning R16: requests over 1 CPU / 2 GiB are checked for use; SPAdes keeps 8 threads busy. Confirm token valid 10 minutes. **Researcher:** Go. [nrp_run] Running.
+**Assistant:** [nrp_plan goal=sweep count=180 parallel=30 cpu=8 memory=32Gi image=gitlab-registry.nrp-nautilus.io/<group>/wolb-tools:1.0 command="bash assemble.sh" data_volume=wolb-data data_is_p1=true discard_results=true] Summary (`resources` shown per object; full YAML omitted unless `show_manifests=true`): an Indexed Job, 180 tasks, 30 at a time, 8 CPU and 32 GiB each (limits equal requests), no GPU, /data mounted, 24 h limit for the whole sweep (6 waves of 30 at 1-3 h each fits; `discard_results=true` satisfies R23 if S3 keys are not set, since assemblies go to `/data/asm`). $SLURM_ARRAY_TASK_ID 0..179 picks a line of samples.tsv. Warning R16: requests over 1 CPU / 2 GiB are checked for use; SPAdes keeps 8 threads busy. Confirm token valid 10 minutes. **Researcher:** Go. [nrp_run] Running.
 
 **Researcher:** How is it going?
 
-**Assistant:** [nrp_watch] 171 succeeded, 9 failed. Six are OOMKilled at the 32 GiB limit in SPAdes: whole-ant runs where far more reads survived host filtering. Fix: raise memory 50%, to 48 GiB. The other three exited 1 with "No reads left after mapping": probably no Wolbachia, or a strain far from the pan-reference. That is a result, not a bug; metaSPAdes on unfiltered reads can confirm.
+**Assistant:** [nrp_watch] 171 succeeded, 9 failed. Six are OOMKilled at the 32 GiB limit in SPAdes: whole-ant runs where far more reads survived host filtering. Fix: raise memory 50%, to 48 GiB. The other three exited 1 with "No reads left after mapping" (`untrusted_logs`): probably no Wolbachia, or a strain far from the pan-reference. That is a result, not a bug; metaSPAdes on unfiltered reads can confirm.
 
 **Researcher:** Rerun the six at 48 GiB.
 
-**Assistant:** [nrp_plan goal=job cpu=8 memory=48Gi command="bash assemble.sh --ids 12,47,48,90,131,166" ...] One Job, six samples in a row. **Researcher:** Yes. [nrp_run] [nrp_watch] All six assembled.
+**Assistant:** [nrp_plan goal=job cpu=8 memory=48Gi command="bash assemble.sh --ids 12,47,48,90,131,166" data_volume=wolb-data data_is_p1=true discard_results=true ...] One Job, six samples in a row. **Researcher:** Yes. [nrp_run] [nrp_watch] All six assembled.
 
 **Researcher:** Now the tree, with 400 public genomes.
 
-**Assistant:** [nrp_plan goal=job cpu=32 memory=64Gi hours=36 command="bash phylo.sh" image=...wolb-tools:1.0 data_volume=wolb-data] One Job: FastANI, Panaroo core alignment, IQ-TREE with 1,000 ultrafast bootstraps. **Researcher:** Go. [nrp_run] [nrp_watch] Done in 19 hours. [nrp_data down volume=wolb-data path=results/] copied 1.2 GB of annotations, ANI matrix, gene table and tree to ./results. [nrp_cleanup] lists 6 runs; deleted after your second yes. The volume stays.
+**Assistant:** [nrp_plan goal=job cpu=32 memory=64Gi hours=36 command="bash phylo.sh" image=...wolb-tools:1.0 data_volume=wolb-data data_is_p1=true discard_results=true] One Job: FastANI, Panaroo core alignment, IQ-TREE with 1,000 ultrafast bootstraps. **Researcher:** Go. [nrp_run] [nrp_watch] Done in 19 hours. [nrp_data action=down volume=wolb-data path=results/] copied 1.2 GB of annotations, ANI matrix, gene table and tree to ./results. [nrp_cleanup] lists 6 runs; deleted after you approve with [nrp_cleanup plan_id=... approval_code=...] (`nrp-mcp approve`). The volume stays.
 
 ## What nrp builds
 
@@ -76,7 +76,7 @@ Assumptions: about 2 hours on 8 cores per sample, so 180 samples is about 2,900 
 
 - pods_per_run (default 50) limits pods at the same time, so 180 samples at parallel=30 pass with default caps. The 24 h Job limit covers all 6 waves, not each task; size hours for the whole sweep.
 - Host filtering keeps memory reasonable, but some samples still need 48-64 GiB. Wolbachia genomes are repeat-rich, so short-read assemblies are fragmented; closed genomes need long reads (Flye plus polishing), which fits the same sweep.
-- NRP S3 suits terabytes of the lab's own reads but is untested by UCR RC; https downloads with goal=pull work today.
+- NRP S3 suits terabytes of the lab's own reads via standard S3 tools, and `nrp-mcp s3 setup` saves job outputs in `/work/results` to your personal bucket automatically; https downloads with `goal=pull` also work directly into a cluster volume.
 - IQ-TREE on hundreds of genomes fits one big pod; multi-node MPI phylogenies belong on the HPCC or Ursa Major.
 - CephFS writes ran about 86 MiB/s per writer in a UCR test; SPAdes scratch uses pod-local /tmp; only final outputs go to /data.
 - Nautilus is not an archive: submit assemblies to GenBank.
