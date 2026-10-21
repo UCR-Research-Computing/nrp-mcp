@@ -305,7 +305,6 @@ func TestWebApprovalByQuestion(t *testing.T) {
 	}{
 		{"accept", &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": true}}, 1},
 		{"accept-unticked", &mcp.ElicitResult{Action: "accept", Content: map[string]any{"approve": false}}, 0},
-		{"decline", &mcp.ElicitResult{Action: "decline"}, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			asked := 0
@@ -1335,5 +1334,48 @@ func TestStatusReportsNewerReleaseOnceADay(t *testing.T) {
 	}
 	if hits != 1 {
 		t.Fatalf("expected cached check to avoid second HTTP hit, got %d", hits)
+	}
+}
+
+// A declined question (or an app that could not show it: Hermes Agent sends decline then)
+// never runs anything; nrp-mcp falls back to a code only the person sees.
+func TestDeclinedQuestionFallsBackToCode(t *testing.T) {
+	cs, fk, codes := setupWith(t, "ask", func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		return &mcp.ElicitResult{Action: "decline"}, nil
+	})
+	dir := project(t, map[string]string{"app.py": "import streamlit as st\nst.write('hi')\n"})
+	m, _, _ := call(t, cs, "nrp_plan", map[string]any{"project": dir, "goal": "web"})
+	out, isErr, text := call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"]})
+	if isErr || out["waiting_for_approval"] != true || fk.applied() != 0 || codes.lastCode() == "" {
+		t.Fatalf("decline must wait for a code: %v %s", out, text)
+	}
+	if _, isErr, _ = call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"], "approval_code": codes.lastCode()}); isErr || fk.applied() != 1 {
+		t.Fatal("the person's code should run it")
+	}
+}
+
+// Hermes Agent shows MCP questions as a plain yes/no and answers accept with no content.
+// That is not the person ticking approve: nrp-mcp must not run, must show a code, and must
+// use codes (not questions) for the rest of the session.
+func TestYesNoOnlyClientGetsACode(t *testing.T) {
+	asked := 0
+	cs, fk, codes := setupWith(t, "ask", func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		asked++
+		return &mcp.ElicitResult{Action: "accept", Content: map[string]any{}}, nil
+	})
+	dir := project(t, map[string]string{"app.py": "import streamlit as st\nst.write('hi')\n"})
+	m, _, _ := call(t, cs, "nrp_plan", map[string]any{"project": dir, "goal": "web"})
+	out, isErr, text := call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"]})
+	if isErr || out["waiting_for_approval"] != true || fk.applied() != 0 || codes.lastCode() == "" {
+		t.Fatalf("empty accept must not run; want a code: %v %s", out, text)
+	}
+	if _, isErr, _ = call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"], "approval_code": codes.lastCode()}); isErr || fk.applied() != 1 {
+		t.Fatal("the person's code should run it")
+	}
+	// Next risky step in the same session: straight to a code, no second question.
+	c1, _, _ := call(t, cs, "nrp_cleanup", map[string]any{"run": "r-1"})
+	w, _, _ := call(t, cs, "nrp_cleanup", map[string]any{"plan_id": c1["plan_id"]})
+	if asked != 1 || w["waiting_for_approval"] != true {
+		t.Fatalf("after an empty accept the session should use codes: asked=%d %v", asked, w)
 	}
 }

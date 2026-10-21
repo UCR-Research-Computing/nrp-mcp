@@ -1,6 +1,6 @@
 # nrp-mcp SPEC
 
-Version 1.1.0 (2026-10-21; code 1.1.0). Owner: UCR Research Computing.
+Version 1.1.1 (2026-10-21; code 1.1.1). Owner: UCR Research Computing.
 Repo: `UCR-Research-Computing/nrp-mcp`. License: MIT.
 
 ## 1. What it is
@@ -158,7 +158,11 @@ asks for a GPU, `nrp_cleanup` step 2, `nrp_data up`, and `nrp_setup fix=true`. C
   directly with one boolean field, `approve`. Accept + true runs; decline or cancel refuses.
   An answer counts only when it carries the request state nrp-mcp issued with that question
   (random, single use, 10 minutes, bound to plan id + plan hash + action), so a client
-  cannot answer a question that was never asked.
+  cannot answer a question that was never asked. Only an accept with `approve: true` runs.
+  An accept with no content (apps that show questions only as yes/no, such as Hermes Agent),
+  a decline, or a question the app could not show falls back to an approval code shown only
+  to the person, and that session uses codes from then on (1.1.1). The field is not marked
+  required, so an empty answer cannot fail the call.
 - Code (`code`, or `ask` with an app that cannot ask): the first `nrp_run` returns
   `waiting_for_approval` and nothing starts. nrp-mcp shows a 6-character code (for example
   ABC-234) only to the person: desktop notification, stderr, `nrp-mcp approve`, and
@@ -190,7 +194,10 @@ Deterministic code, no model calls. Two parts:
   project and goal (single use, 10 minutes). Answers fill the inputs, are added to
   `decisions` in plain words, and are returned as `answers_to_reuse`. No form support, or a
   declined form: planning goes on with what was given, as in 1.0 (the question in `next`, or
-  a refusal with its fix). Approval questions (5.2) are separate and unchanged.
+  a refusal with its fix). An accept with nothing filled in (a yes/no-only app) falls back
+  the same way and that session gets chat questions from then on (1.1.1). No field is marked
+  required; unanswered fields fall back to the chat question. Approval questions (5.2) are
+  separate.
 - **`nrp_guide`.** Stages in order: `laptop` (setup checks other than sign-in not ok ->
   `nrp_setup fix=true` with approval, or `nrp-mcp setup`), `sign-in` (`auth whoami` fails ->
   the person runs `nrp-mcp kubectl auth whoami`), `namespace` (none -> nrp.ai/namespaces),
@@ -595,6 +602,17 @@ approval question once ("Delete 3 nrp-mcp object(s) ... run 1021-1249-ewkd9g") a
 the Job, pod, ConfigMap and results Secret. `nrp_guide` ended at stage `project` again and
 `nrp_status`: `0 workloads (0 active), 0 volumes, 0 public URLs` (`E2E GUIDE OK`).
 
+**Live test 1.1.1 (2026-10-21, `scripts/e2eguide`, CPU only, nothing public).** (a) With
+`-yesno`, the driver acts like Hermes Agent: it shows every question as a plain yes/no and
+answers accept with nothing filled in. The details form came back empty, so `nrp_plan`
+returned the chat question "Which file runs the project: fit.py or prep.py?"; planning
+again with the answer (`python fit.py`, `gpu=0`) gave a runnable CPU plan. Run
+`1021-1520-9e5ccs` finished, `nrp_guide` showed `finished`, results downloaded, and cleanup
+went straight to an approval code (no second question to an app that cannot fill it in);
+the code, read by the driver acting as the person, deleted the run. Ended at `0 workloads`
+(`E2E GUIDE OK`). (b) The full-form client (1.1.0 path) still passed: one form, answers
+applied, cleanup approved by one question, `0 workloads` (`E2E GUIDE OK`).
+
 ## 13. Change log
 
 | Version | Date | Change |
@@ -612,5 +630,6 @@ the Job, pod, ConfigMap and results Secret. `nrp_guide` ended at stage `project`
 | 0.9.0 | 2026-10-20 | Code 0.9.0: person approval (elicitation or code) for risky steps; safe packing with packed/skipped lists; results to a per-person NRP S3 bucket; web hardening (R20-R22, no API token, 14-day expiry); untrusted text and owner checks; D3 revised, D9-D11 added |
 | 0.9.1 | 2026-10-20 | Code 0.9.1: kubectl errors are errors; dry run before approval and run card first; no plan without identity, R6Q; per-command time limits; locked token/approval stores; nrp_watch Job conditions, scoped events and new diagnoses; input validation and Slurm fixes; 0.9.0 review leftovers |
 | 0.10.0 | 2026-10-20 | Code 0.10.0: GPU sessions as Jobs (`gpu_session_hours`); pinned images with single-container unpack and exit results upload; policy (`ephemeral-storage` 10Gi default + R2, CPU-only sweep anti-GPU nodeAffinity + `opportunistic`, `region` storage classes, `namespace_gpus` running-GPU cap, missing H100/H200/GH200 quota = 0); plain Python web apps without `command=`, guided entry questions, R package install steps; compact plans (`resources`, `show_manifests=true`, < 6 KB) and < 600-char tool descriptions; live test recorded |
+| 1.1.1 | 2026-10-21 | Code 1.1.1: yes/no-only apps (Hermes Agent): an empty accept, decline or unshown question falls back to an approval code or the chat question, and the session stays on codes; no required fields in questions; live test recorded |
 | 1.1.0 | 2026-10-21 | Code 1.1.0: guided mode (5.5): `nrp_plan` asks missing details in one elicitation form, `nrp_guide` tenth tool, `walk_me_through` prompt; explicit `gpu=0` honored; cleanup listings show status; live test recorded |
 | 1.0.0 | 2026-10-20 | Code 1.0.0: `install.sh` (shell PATH offer, full path) and `install.ps1` (Windows User `Path`, `Unblock-File`, no `setx`); `nrp-mcp kubectl` passthrough and no bare `kubectl` hints; `nrp-mcp client <name>` for 7 clients (user scope, `.bak`, VS Code `"servers"`); `nrp-mcp doctor` actionable `FAIL ->` steps, 0-namespace failure, multi-file `KUBECONFIG`, consent/S3/release checks; 24-hour update check in `version` and `nrp_status`; `docs/START-HERE.md`, jargon table, and all 20 examples refreshed to 1.0; supply chain pinning (commit SHAs, `kubelogin` v1.36.4 SHA256, GitHub build provenance attestations); live test recorded |

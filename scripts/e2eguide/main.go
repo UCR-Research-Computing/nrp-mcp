@@ -23,6 +23,7 @@ import (
 func main() {
 	bin := flag.String("bin", "nrp-mcp", "nrp-mcp binary")
 	ns := flag.String("ns", "", "namespace")
+	yesno := flag.Bool("yesno", false, "act like Hermes Agent: show questions as plain yes/no and answer accept with nothing filled in; approvals then use the code (read from approve.txt, as the person)")
 	flag.Parse()
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 	defer cancel()
@@ -30,6 +31,15 @@ func main() {
 	forms, approvals := 0, 0
 	elicit := func(_ context.Context, req *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
 		b, _ := json.Marshal(req.Params.RequestedSchema)
+		if *yesno {
+			if strings.Contains(string(b), `"approve"`) {
+				approvals++
+			} else {
+				forms++
+			}
+			fmt.Println("YES/NO PROMPT (answered accept, no content):", firstLine(req.Params.Message))
+			return &mcp.ElicitResult{Action: "accept", Content: map[string]any{}}, nil
+		}
 		if strings.Contains(string(b), `"approve"`) {
 			approvals++
 			fmt.Println("QUESTION (approval):", firstLine(req.Params.Message))
@@ -96,6 +106,16 @@ print("fit done")
 
 	p := call("nrp_plan", map[string]any{"project": dir, "cpu": "1", "memory": "1Gi", "hours": 1, "name": "e2e-guide"})
 	fmt.Println("PLAN:", p["summary"])
+	if *yesno {
+		fmt.Println("NEXT (chat question):", p["next"])
+		if p["runnable"] == true || !strings.Contains(fmt.Sprint(p["next"]), "Which file") {
+			fail("yes/no app: expected the chat question, got %v", p)
+		}
+		// The person answers in the chat: fit.py, CPU only.
+		p = call("nrp_plan", map[string]any{"project": dir, "cpu": "1", "memory": "1Gi", "hours": 1, "name": "e2e-guide", "command": "python fit.py", "gpu": 0, "goal": "job"})
+		fmt.Println("PLAN (after chat answer):", p["summary"])
+		forms = 1
+	}
 	if forms != 1 {
 		fail("expected exactly one details form, got %d", forms)
 	}
@@ -145,9 +165,31 @@ print("fit done")
 
 	c1 := call("nrp_cleanup", map[string]any{"run": run})
 	c2 := call("nrp_cleanup", map[string]any{"plan_id": c1["plan_id"]})
+	if *yesno {
+		if c2["waiting_for_approval"] != true {
+			fail("yes/no app: cleanup should wait for a code, got %v", c2)
+		}
+		fmt.Println("CLEANUP waiting for the person's code (as the person, read approve.txt)")
+		home, _ := os.UserHomeDir()
+		b, err := os.ReadFile(filepath.Join(home, ".local", "state", "nrp-mcp", "approve.txt"))
+		must(err)
+		code := ""
+		if l, _, ok := strings.Cut(string(b), "\n"); ok {
+			code = strings.TrimSpace(strings.TrimPrefix(l, "nrp-mcp approval code:"))
+		}
+		if code == "" {
+			fail("no code in approve.txt")
+		}
+		c2 = call("nrp_cleanup", map[string]any{"plan_id": c1["plan_id"], "approval_code": code})
+	}
 	fmt.Println("CLEANUP:", c2["summary"], c2["deleted"])
-	if approvals != 1 {
+	if !*yesno && approvals != 1 {
 		fail("expected one approval question for cleanup, got %d", approvals)
+	}
+	if *yesno && approvals != 0 {
+		// The empty form answer already told nrp-mcp this app cannot fill in questions,
+		// so cleanup goes straight to a code.
+		fail("yes/no app: expected no approval question after the empty form answer, got %d", approvals)
 	}
 	g = call("nrp_guide", nil)
 	fmt.Printf("GUIDE END: stage=%v | %v\n", g["stage"], g["summary"])

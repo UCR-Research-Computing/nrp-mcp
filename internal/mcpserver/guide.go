@@ -37,9 +37,8 @@ const (
 
 // field is one question in the details form.
 type field struct {
-	name     string
-	schema   map[string]any
-	optional bool
+	name   string
+	schema map[string]any
 }
 
 func choice(title, desc string, opts ...[2]string) map[string]any {
@@ -66,7 +65,7 @@ func (s *Server) planQuestions(ctx context.Context, req *mcp.CallToolRequest, in
 			if !formAsked.take(req.Params.RequestState, formKey(in)) {
 				return nil, nil, errors.New("that answer does not match a question nrp-mcp asked, so nothing was planned. Call nrp_plan again without it")
 			}
-			return nil, applyAnswers(in, req.Params.InputResponses[planFormKey]), nil
+			return nil, applyAnswers(req.Session, in, req.Params.InputResponses[planFormKey]), nil
 		}
 		// Other responses (an approval answer) are not ours.
 		return nil, nil, nil
@@ -78,18 +77,17 @@ func (s *Server) planQuestions(ctx context.Context, req *mcp.CallToolRequest, in
 	if len(fields) == 0 {
 		return nil, nil, nil
 	}
+	// No "required" list: a yes/no-only app answers accept with no content, and required
+	// fields would make the SDK fail the whole call. Unanswered fields fall back to the
+	// chat question (applyAnswers).
 	props := map[string]any{}
-	var required []string
 	var lines []string
 	for _, f := range fields {
 		props[f.name] = f.schema
-		if !f.optional {
-			required = append(required, f.name)
-		}
 		lines = append(lines, "- "+fmt.Sprint(f.schema["title"]))
 	}
 	msg := "nrp-mcp needs a few details before it can plan this. Nothing runs yet: you will see the plan first.\n\n" + strings.Join(lines, "\n")
-	schema := map[string]any{"type": "object", "properties": props, "required": required}
+	schema := map[string]any{"type": "object", "properties": props}
 	st := formAsked.issue(formKey(in))
 	return &mcp.CallToolResult{InputRequests: mcp.InputRequestMap{planFormKey: &mcp.ElicitParams{Message: msg, RequestedSchema: schema}}, RequestState: st}, nil, nil
 }
@@ -150,7 +148,7 @@ func (s *Server) missingDetails(in *planIn) []field {
 		if goal == "" {
 			title = "If you picked a sweep: how many tasks (runs)?"
 		}
-		out = append(out, field{name: fCount, optional: goal == "", schema: map[string]any{"type": "integer", "title": title,
+		out = append(out, field{name: fCount, schema: map[string]any{"type": "integer", "title": title,
 			"description": "Each task gets its own number in $JOB_COMPLETION_INDEX (0, 1, 2, ...) to pick its settings.", "minimum": 1, "maximum": 10000}})
 	}
 	if (goal == "" || goal == plan.GoalJob || goal == plan.GoalSweep) && !in.Discard && in.Image == "" {
@@ -166,10 +164,15 @@ func (s *Server) missingDetails(in *planIn) []field {
 
 // applyAnswers copies the person's form answers into the plan inputs and returns one
 // plain line per answer.
-func applyAnswers(in *planIn, resp mcp.InputResponse) []string {
+func applyAnswers(ss *mcp.ServerSession, in *planIn, resp mcp.InputResponse) []string {
 	er, _ := resp.(*mcp.ElicitResult)
 	if er == nil || er.Action != "accept" {
-		return []string{"The person skipped the details form; planned with what was given."}
+		return []string{"The details form was skipped or could not be shown; planned with what was given (ask the person in the chat for anything still missing)."}
+	}
+	if len(er.Content) == 0 {
+		// Accepted with nothing filled in: the app shows only yes/no prompts.
+		noForms.mark(ss)
+		return []string{"This app cannot fill in nrp-mcp's details form; planned with what was given (ask the person in the chat for anything still missing)."}
 	}
 	var lines []string
 	if in.answers == nil {
