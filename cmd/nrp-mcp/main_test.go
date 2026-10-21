@@ -34,8 +34,13 @@ func TestRunKubectlPassthrough(t *testing.T) {
 	if err := os.WriteFile(fakeKubectl, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Also place a failing /usr/bin-like stub on PATH after ~/.local/bin to ensure ~/.local/bin wins.
+	sysBin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sysBin, "kubectl"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("HOME", home)
-	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("PATH", sysBin+":/usr/bin:/bin")
 
 	cfg := config.Config{Kubectl: "kubectl", Kubeconfig: "/tmp/nrp-kc", Context: "nautilus", Namespace: "ucr-test"}
 

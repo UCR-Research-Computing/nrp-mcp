@@ -48,7 +48,9 @@ jobs:
           fi
           fresh="$RUNNER_TEMP/fresh-home"
           mkdir -p "$fresh"
-          out="$(HOME="$fresh" PATH="/usr/bin:/bin:/usr/sbin:/sbin" NRP_MCP_VERSION="$ver" NRP_MCP_BASE="file://$dist" NRP_MCP_YES=1 sh scripts/install.sh)"
+          sh_env="/bin/bash"
+          [ "$os" = darwin ] && sh_env="/bin/zsh"
+          out="$(HOME="$fresh" SHELL="$sh_env" PATH="/usr/bin:/bin:/usr/sbin:/sbin" NRP_MCP_VERSION="$ver" NRP_MCP_BASE="file://$dist" NRP_MCP_YES=1 sh scripts/install.sh)"
           printf '%s\n' "$out"
           printf '%s\n' "$out" | grep -Fq "Binary path: $fresh/.local/bin/nrp-mcp"
           test -x "$fresh/.local/bin/nrp-mcp"
