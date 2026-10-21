@@ -1150,3 +1150,44 @@ func TestMissingQuotaRefusesH100H200GH200(t *testing.T) {
 		}
 	}
 }
+
+func TestPlainAppsGuidedQuestionsAndRPackagesViaMCP(t *testing.T) {
+	cs, fk := setup(t)
+	// 1. Plain http.server web app without command= or port=.
+	webDir := project(t, map[string]string{
+		"app.py": "from http.server import HTTPServer, BaseHTTPRequestHandler\nHTTPServer(('0.0.0.0', 8080), BaseHTTPRequestHandler).serve_forever()\n",
+	})
+	m, isErr, text := call(t, cs, "nrp_plan", map[string]any{"project": webDir, "goal": "web"})
+	if isErr || m["runnable"] != true {
+		t.Fatalf("plain http.server web plan must be runnable without command=: isErr=%v text=%s m=%v", isErr, text, m)
+	}
+	mb, _ := json.Marshal(m["manifests"])
+	if !strings.Contains(string(mb), "python app.py") || !strings.Contains(string(mb), `"containerPort":8080`) {
+		t.Fatalf("manifests missing python app.py or port 8080: %s", mb)
+	}
+	// 2. Folder with several candidate entry files returns one guided question in next instead of an error.
+	multiDir := project(t, map[string]string{"a.py": "print(1)\n", "b.py": "print(2)\n"})
+	m, isErr, text = call(t, cs, "nrp_plan", map[string]any{"project": multiDir, "goal": "web"})
+	if isErr || m["runnable"] == true || m["confirm_token"] != nil {
+		t.Fatalf("multi-file folder must return a non-error guided plan: isErr=%v text=%s m=%v", isErr, text, m)
+	}
+	if !strings.Contains(fmt.Sprint(m["next"]), "Which file starts the app: a.py or b.py?") {
+		t.Fatalf("next got %q, want guided question", m["next"])
+	}
+	if _, isErr, _ = call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"]}); !isErr || fk.applied() != 0 {
+		t.Fatal("nrp_run must refuse a plan that still needs a command")
+	}
+	// 3. R script with install.R gets an install step.
+	rDir := project(t, map[string]string{
+		"sim.R":     "print(1)\n",
+		"install.R": "install.packages('jsonlite', repos='https://cloud.r-project.org')\n",
+	})
+	m, isErr, text = call(t, cs, "nrp_plan", map[string]any{"project": rDir, "discard_results": true})
+	if isErr || m["runnable"] != true {
+		t.Fatalf("R script with install.R must be runnable: isErr=%v text=%s m=%v", isErr, text, m)
+	}
+	mb, _ = json.Marshal(m["manifests"])
+	if !strings.Contains(string(mb), "Rscript install.R") || !strings.Contains(string(mb), "Rscript sim.R") {
+		t.Fatalf("R manifest missing Rscript install.R or Rscript sim.R: %s", mb)
+	}
+}

@@ -41,6 +41,15 @@ type Facts struct {
 	Skipped     []string `json:"skipped_sensitive,omitempty"`
 	Title       string   `json:"title,omitempty"`
 	Single      string   `json:"single_file,omitempty"` // the project is this one file (relative to Root)
+	Candidates  []string `json:"candidates,omitempty"`  // top-level runnable scripts when none was chosen
+	RPackages   []string `json:"r_packages,omitempty"`  // R packages from DESCRIPTION Imports
+	mainEntries []string
+	pyServers   []pyServerCand
+}
+
+type pyServerCand struct {
+	entry string
+	port  int
 }
 
 var skipDirs = map[string]bool{".git": true, "node_modules": true, ".venv": true, "venv": true, "__pycache__": true,
@@ -126,13 +135,16 @@ func Dir(root string) (*Facts, error) {
 }
 
 var (
-	gpuRe     = regexp.MustCompile(`(?m)(^\s*(import|from)\s+(torch|tensorflow|jax|cupy|transformers|vllm|diffusers|accelerate)\b|\.cuda\(|device\s*=\s*['"]cuda|torch\.cuda|tf\.config\.list_physical_devices\(['"]GPU|#SBATCH\s+--gres=gpu|nvidia-smi)`)
-	pkgLineRe = regexp.MustCompile(`^\s*([A-Za-z0-9_.\-]+)`)
-	sbatchRe  = regexp.MustCompile(`(?m)^#SBATCH\s`)
-	exposeRe  = regexp.MustCompile(`(?mi)^\s*EXPOSE\s+(\d+)`)
-	githubRe  = regexp.MustCompile(`github\.com[^:/]*[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$`)
-	mainRe    = regexp.MustCompile(`(?m)^if\s+__name__\s*==\s*['"]__main__['"]`)
-	titleRe   = regexp.MustCompile(`(?mi)(?:st\.title|st\.set_page_config\(\s*page_title\s*=|titlePanel|<title>|page_title\s*=)\(?\s*['"]([^'"]{3,60})['"]`)
+	gpuRe      = regexp.MustCompile(`(?m)(^\s*(import|from)\s+(torch|tensorflow|jax|cupy|transformers|vllm|diffusers|accelerate)\b|\.cuda\(|device\s*=\s*['"]cuda|torch\.cuda|tf\.config\.list_physical_devices\(['"]GPU|#SBATCH\s+--gres=gpu|nvidia-smi)`)
+	pkgLineRe  = regexp.MustCompile(`^\s*([A-Za-z0-9_.\-]+)`)
+	sbatchRe   = regexp.MustCompile(`(?m)^#SBATCH\s`)
+	exposeRe   = regexp.MustCompile(`(?mi)^\s*EXPOSE\s+(\d+)`)
+	githubRe   = regexp.MustCompile(`github\.com[^:/]*[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$`)
+	mainRe     = regexp.MustCompile(`(?m)^if\s+__name__\s*==\s*['"]__main__['"]`)
+	titleRe    = regexp.MustCompile(`(?mi)(?:st\.title|st\.set_page_config\(\s*page_title\s*=|titlePanel|<title>|page_title\s*=)\(?\s*['"]([^'"]{3,60})['"]`)
+	pyServerRe = regexp.MustCompile(`(?m)(HTTPServer|ThreadingHTTPServer|TCPServer|ThreadingTCPServer|serve_forever\s*\(|\bapp\.run\s*\(|http\.server)`)
+	pyPortRe   = regexp.MustCompile(`(?mi)(?:port\s*=\s*(\d{2,5})|^\s*PORT\s*=\s*(\d{2,5})|(?:\(['"][^'"]*['"]\s*,\s*(\d{2,5})\))|(?:http\.server\s+(\d{2,5}))|\b(8000|8080|8888|5000|3000)\b)`)
+	rPkgNameRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9.]*[A-Za-z0-9]$|^[A-Za-z]{2,}$`)
 )
 
 func scanFile(f *Facts, p, rel string) {
@@ -146,7 +158,7 @@ func scanFile(f *Facts, p, rel string) {
 	case "makefile":
 		f.Makefile = true
 	case "requirements.txt", "pyproject.toml", "environment.yml", "environment.yaml", "setup.py", "renv.lock",
-		"description", "package.json", "project.toml", "pixi.toml":
+		"description", "install.r", "package.json", "project.toml", "pixi.toml":
 		f.DepFiles = append(f.DepFiles, rel)
 	}
 	ext := strings.ToLower(filepath.Ext(base))
@@ -185,6 +197,11 @@ func scanFile(f *Facts, p, rel string) {
 			}
 		}
 	}
+	if base == "description" {
+		for _, pkg := range parseDescriptionImports(b) {
+			f.RPackages = append(f.RPackages, pkg)
+		}
+	}
 	if (ext == ".sh" || ext == ".slurm" || ext == ".sbatch" || ext == "") && sbatchRe.MatchString(b) {
 		f.Slurm = append(f.Slurm, rel)
 	}
@@ -194,8 +211,8 @@ func scanFile(f *Facts, p, rel string) {
 			f.Title = m[1]
 		}
 	}
-	if ext == ".py" && f.Entry == "" && mainRe.MatchString(b) && f.WebApp == "" {
-		f.Entry, f.EntryReason = rel, "has if __name__ == '__main__'"
+	if ext == ".py" && mainRe.MatchString(b) && f.WebApp == "" {
+		f.mainEntries = append(f.mainEntries, rel)
 	}
 }
 
@@ -231,11 +248,58 @@ func detectWeb(f *Facts, rel, base, b string) {
 		set("fastapi", 8000, rel)
 	case strings.Contains(b, "Flask(__name__)") && strings.HasSuffix(base, ".py"):
 		set("flask", 5000, rel)
+	case strings.HasSuffix(base, ".py") && pyServerRe.MatchString(b):
+		f.pyServers = append(f.pyServers, pyServerCand{entry: rel, port: extractPythonPort(b)})
 	case base == "package.json" && (strings.Contains(b, `"express"`) || strings.Contains(b, `"next"`) || strings.Contains(b, `"start"`)):
 		set("node", 3000, "")
 	case base == "index.html" && !strings.Contains(rel, "/"):
 		set("static", 80, "")
 	}
+}
+
+func extractPythonPort(b string) int {
+	if m := pyPortRe.FindStringSubmatch(b); m != nil {
+		for _, g := range m[1:] {
+			if g != "" {
+				if p, err := strconv.Atoi(g); err == nil && p > 0 && p <= 65535 {
+					return p
+				}
+			}
+		}
+	}
+	return 8000
+}
+
+func parseDescriptionImports(b string) []string {
+	var pkgs []string
+	seen := map[string]bool{}
+	inImports := false
+	for _, line := range strings.Split(b, "\n") {
+		if strings.HasPrefix(line, "Imports:") {
+			inImports = true
+			line = strings.TrimPrefix(line, "Imports:")
+		} else if inImports {
+			if len(line) > 0 && (line[0] == ' ' || line[0] == '	') {
+				// continuation line
+			} else {
+				inImports = false
+			}
+		}
+		if !inImports {
+			continue
+		}
+		for _, part := range strings.Split(line, ",") {
+			part = strings.TrimSpace(part)
+			if i := strings.Index(part, "("); i >= 0 {
+				part = strings.TrimSpace(part[:i])
+			}
+			if rPkgNameRe.MatchString(part) && !seen[part] {
+				seen[part] = true
+				pkgs = append(pkgs, part)
+			}
+		}
+	}
+	return pkgs
 }
 
 func readSmall(p string) string {
@@ -270,6 +334,26 @@ func readGit(f *Facts) {
 }
 
 func finish(f *Facts) {
+	if f.WebApp == "" && len(f.pyServers) == 1 {
+		// Use the single plain Python web server unless there are multiple top-level .py scripts.
+		pyCount := 0
+		if f.Single != "" {
+			pyCount = 1
+		} else if ents, err := os.ReadDir(f.Root); err == nil {
+			for _, e := range ents {
+				if !e.IsDir() && strings.ToLower(filepath.Ext(e.Name())) == ".py" && !strings.HasPrefix(e.Name(), "test_") && e.Name() != "setup.py" {
+					pyCount++
+				}
+			}
+		}
+		if pyCount <= 1 {
+			f.WebApp, f.WebPort = "python", f.pyServers[0].port
+			f.Entry, f.EntryReason = f.pyServers[0].entry, "python web server"
+		}
+	}
+	if f.Entry == "" && f.WebApp == "" && len(f.mainEntries) == 1 {
+		f.Entry, f.EntryReason = f.mainEntries[0], "has if __name__ == '__main__'"
+	}
 	if f.Entry == "" && f.WebApp == "" {
 		for _, c := range []string{"main.py", "train.py", "run.py", "analysis.py", "main.R", "run.sh", "main.jl"} {
 			if _, err := os.Stat(filepath.Join(f.Root, c)); err == nil {
@@ -285,18 +369,22 @@ func finish(f *Facts) {
 			for _, e := range ents {
 				switch strings.ToLower(filepath.Ext(e.Name())) {
 				case ".py", ".r", ".jl", ".sh":
-					if !e.IsDir() && !strings.HasPrefix(e.Name(), "test_") && e.Name() != "setup.py" {
+					if !e.IsDir() && !strings.HasPrefix(e.Name(), "test_") && e.Name() != "setup.py" && strings.ToLower(e.Name()) != "install.r" {
 						only = append(only, e.Name())
 					}
 				}
 			}
 		}
+		sort.Strings(only)
 		if len(only) == 1 {
 			f.Entry, f.EntryReason = only[0], "the only script in the folder"
+		} else if len(only) > 1 {
+			f.Candidates = only
 		}
 	}
 	sort.Strings(f.DepFiles)
 	sort.Strings(f.Packages)
+	sort.Strings(f.RPackages)
 	for _, p := range f.Packages {
 		switch p {
 		case "torch", "tensorflow", "jax", "cupy", "vllm", "transformers", "accelerate", "diffusers":

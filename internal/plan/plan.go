@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -69,29 +70,30 @@ type Request struct {
 
 // Plan is the reviewed result.
 type Plan struct {
-	ID         string            `json:"plan_id"`
-	Created    time.Time         `json:"created"`
-	Goal       string            `json:"goal"`
-	Namespace  string            `json:"namespace"`
-	Name       string            `json:"name"`
-	Summary    string            `json:"summary"`
-	Image      string            `json:"image"`
-	ImageWhy   string            `json:"image_reason"`
-	NeedsBuild bool              `json:"needs_build"`
-	Prebuilt   bool              `json:"prebuilt,omitempty"` // runs a built image as is: no code copy, no install
-	Decisions  []string          `json:"decisions"`
-	PublicURL  string            `json:"public_url,omitempty"`
-	Suggested  []string          `json:"suggested_names,omitempty"`
-	Objects    []k8s.Object      `json:"objects"`
-	Facts      *inspect.Facts    `json:"facts,omitempty"`
-	Slurm      []SlurmMapping    `json:"slurm_mapping,omitempty"`
-	Kubectl    []string          `json:"kubectl_equivalent"`
-	Extra      map[string]any    `json:"extra,omitempty"`
-	Hash       string            `json:"plan_hash"`
-	Run        string            `json:"run_id"`
-	Request    map[string]any    `json:"request"`
-	Cleanup    string            `json:"cleanup"`
-	Labels     map[string]string `json:"labels"`
+	ID           string            `json:"plan_id"`
+	Created      time.Time         `json:"created"`
+	Goal         string            `json:"goal"`
+	Namespace    string            `json:"namespace"`
+	Name         string            `json:"name"`
+	Summary      string            `json:"summary"`
+	Image        string            `json:"image"`
+	ImageWhy     string            `json:"image_reason"`
+	NeedsBuild   bool              `json:"needs_build"`
+	NeedsCommand string            `json:"needs_command,omitempty"` // guided question when several candidate entry files exist
+	Prebuilt     bool              `json:"prebuilt,omitempty"`      // runs a built image as is: no code copy, no install
+	Decisions    []string          `json:"decisions"`
+	PublicURL    string            `json:"public_url,omitempty"`
+	Suggested    []string          `json:"suggested_names,omitempty"`
+	Objects      []k8s.Object      `json:"objects"`
+	Facts        *inspect.Facts    `json:"facts,omitempty"`
+	Slurm        []SlurmMapping    `json:"slurm_mapping,omitempty"`
+	Kubectl      []string          `json:"kubectl_equivalent"`
+	Extra        map[string]any    `json:"extra,omitempty"`
+	Hash         string            `json:"plan_hash"`
+	Run          string            `json:"run_id"`
+	Request      map[string]any    `json:"request"`
+	Cleanup      string            `json:"cleanup"`
+	Labels       map[string]string `json:"labels"`
 }
 
 // SlurmMapping shows how one #SBATCH line was translated.
@@ -152,7 +154,7 @@ func SuggestNames(f *inspect.Facts, goal string) []string {
 		}
 		if f.WebApp != "" && f.Name != "" {
 			add(f.Name + "-" + map[string]string{"shiny": "app", "streamlit": "viewer", "dash": "dashboard", "gradio": "demo",
-				"fastapi": "api", "flask": "web", "node": "web", "static": "site"}[f.WebApp])
+				"fastapi": "api", "flask": "web", "python": "web", "node": "web", "static": "site"}[f.WebApp])
 		}
 	}
 	if len(cands) == 0 {
@@ -528,13 +530,77 @@ func installStep(f *inspect.Facts, p *Plan) string {
 	if f == nil || p.NeedsBuild || p.Prebuilt {
 		return ""
 	}
+	var steps []string
+	var notes []string
+	var hasInstallR, hasRenv, hasDesc bool
+	var installRPath string
 	for _, d := range f.DepFiles {
-		switch strings.ToLower(d) {
+		switch strings.ToLower(filepath.Base(d)) {
 		case "requirements.txt":
-			return "pip install --quiet --no-cache-dir -r requirements.txt && "
+			steps = append(steps, "pip install --quiet --no-cache-dir -r "+d+" && ")
+			notes = append(notes, "requirements.txt")
+		case "install.r":
+			hasInstallR = true
+			installRPath = d
+		case "renv.lock":
+			hasRenv = true
+		case "description":
+			hasDesc = true
 		}
 	}
+	switch {
+	case hasInstallR:
+		steps = append(steps, "Rscript "+installRPath+" && ")
+		notes = append(notes, installRPath)
+	case hasRenv:
+		steps = append(steps, `Rscript -e "if (!requireNamespace('renv', quietly=TRUE)) install.packages('renv', repos='https://cloud.r-project.org'); renv::restore(prompt=FALSE)" && `)
+		notes = append(notes, "renv.lock")
+	case hasDesc && len(f.RPackages) > 0:
+		quoted := make([]string, len(f.RPackages))
+		for i, pkg := range f.RPackages {
+			quoted[i] = "'" + pkg + "'"
+		}
+		steps = append(steps, fmt.Sprintf(`Rscript -e "install.packages(c(%s), repos='https://cloud.r-project.org')" && `, strings.Join(quoted, ", ")))
+		notes = append(notes, "DESCRIPTION Imports ("+strings.Join(f.RPackages, ", ")+")")
+	}
+	if len(notes) > 0 {
+		p.Decisions = append(p.Decisions, "Installs "+strings.Join(notes, ", ")+" at start (fine for small projects; for big ones build an image with nrp_build).")
+	}
+	return strings.Join(steps, "")
+}
+
+func candidateQuestion(f *inspect.Facts, goal string) string {
+	if f == nil {
+		return ""
+	}
+	if len(f.Candidates) > 1 {
+		verb := "runs the project"
+		if goal == GoalWeb {
+			verb = "starts the app"
+		}
+		return fmt.Sprintf("Which file %s: %s? Ask the person and call nrp_plan again with command=.", verb, orList(f.Candidates))
+	}
+	if len(f.Notebooks) > 0 {
+		nb := f.Notebooks[0]
+		if len(f.Notebooks) == 1 {
+			return fmt.Sprintf("Found notebook %s: should this open an interactive Jupyter session (goal=session) or execute the notebook from start to finish (command=\"jupyter nbconvert --to notebook --execute --inplace %s\")? Ask the person and call nrp_plan again.", nb, nb)
+		}
+		return fmt.Sprintf("Which notebook should run: %s? Ask the person whether to open an interactive session (goal=session) or run one with command=\"jupyter nbconvert --to notebook --execute --inplace <file>\".", orList(f.Notebooks))
+	}
 	return ""
+}
+
+func orList(xs []string) string {
+	switch len(xs) {
+	case 0:
+		return ""
+	case 1:
+		return xs[0]
+	case 2:
+		return xs[0] + " or " + xs[1]
+	default:
+		return strings.Join(xs[:len(xs)-1], ", ") + " or " + xs[len(xs)-1]
+	}
 }
 
 func inferCommand(f *inspect.Facts, r Request) (string, string) {
@@ -563,6 +629,12 @@ func buildJob(f *inspect.Facts, r Request, p *Plan) error {
 		cmd, why = r.Command, "the command you gave"
 	}
 	if cmd == "" && !p.Prebuilt {
+		if q := candidateQuestion(f, r.Goal); q != "" {
+			p.NeedsCommand = q
+			p.Summary = q
+			p.Decisions = append(p.Decisions, q)
+			return nil
+		}
 		return fmt.Errorf("I could not tell what to run: pass command (for example \"python train.py --epochs 10\")")
 	}
 	if cmd != "" {
@@ -592,9 +664,6 @@ func buildJob(f *inspect.Facts, r Request, p *Plan) error {
 		}
 	}
 	install := installStep(f, p)
-	if install != "" {
-		p.Decisions = append(p.Decisions, "Installs requirements.txt at start (fine for small projects; for big ones build an image with nrp_build).")
-	}
 	script := "set -e; cd /work; " + install + cmd
 	if r.Goal == GoalSweep && r.Count > 0 {
 		script = "set -e; cd /work; " + arrayEnv(r.ArrayIDs, r.Count) + install + cmd
@@ -775,6 +844,9 @@ func buildWeb(f *inspect.Facts, r Request, p *Plan) error {
 	case app == "flask":
 		mod := strings.TrimSuffix(strings.ReplaceAll(f.Entry, "/", "."), ".py")
 		cmd = fmt.Sprintf("pip install --quiet gunicorn && gunicorn -b 0.0.0.0:%d %s:app", port, mod)
+	case app == "python":
+		cmd = "python " + f.Entry
+		p.Decisions = append(p.Decisions, fmt.Sprintf("Runs: %s on port %d (%s).", cmd, port, f.EntryReason))
 	case app == "shiny":
 		cmd = "cp -r /work/. /srv/shiny-server/ && exec /init"
 	case app == "static":
@@ -783,13 +855,26 @@ func buildWeb(f *inspect.Facts, r Request, p *Plan) error {
 	case app == "node":
 		cmd = "npm install --omit=dev && npm start"
 	default:
+		if f != nil && f.Entry != "" {
+			if ic, why := inferCommand(f, r); ic != "" {
+				cmd = ic
+				p.Decisions = append(p.Decisions, fmt.Sprintf("Runs: %s on port %d (%s).", cmd, port, why))
+				break
+			}
+		}
+		if q := candidateQuestion(f, GoalWeb); q != "" {
+			p.NeedsCommand = q
+			p.Summary = q
+			p.Decisions = append(p.Decisions, q)
+			return nil
+		}
 		return fmt.Errorf("I could not tell how to start the web app: pass command (for example \"python app.py\") and port")
 	}
 	if app == "static" {
 		p.Decisions = append(p.Decisions, "nginx-unprivileged listens on 8080.")
 	}
 	install := installStep(f, p)
-	if app == "shiny" || app == "static" || app == "node" {
+	if app == "static" || app == "node" {
 		install = ""
 	}
 	cpu, mem := r.CPU, r.Memory
@@ -829,7 +914,10 @@ func buildWeb(f *inspect.Facts, r Request, p *Plan) error {
 		ctr.Command = []string{"sh", "-c", "cp -r /work/. /usr/share/nginx/html/ && exec nginx -g 'daemon off;'"}
 	}
 	if app == "shiny" {
-		ctr.Command = []string{"sh", "-c", "cp -r /work/. /srv/shiny-server/ && exec /init"}
+		ctr.Command = []string{"sh", "-c", "cd /work && " + install + "cp -r /work/. /srv/shiny-server/ && exec /init"}
+		if install == "" {
+			ctr.Command = []string{"sh", "-c", "cp -r /work/. /srv/shiny-server/ && exec /init"}
+		}
 	}
 	vols := []k8s.Volume{{Name: "code", EmptyDir: &k8s.EmptyDir{}}}
 	if p.Prebuilt {

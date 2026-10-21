@@ -408,7 +408,7 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 	var codeFiles []string
 	var skippedFiles []inspect.Skip
 	var needsP1 []string
-	if project != "" && facts != nil && (p.Goal == plan.GoalJob || p.Goal == plan.GoalSweep || p.Goal == plan.GoalWeb || p.Goal == plan.GoalLLMBatch) && !p.NeedsBuild && !p.Prebuilt {
+	if project != "" && facts != nil && (p.Goal == plan.GoalJob || p.Goal == plan.GoalSweep || p.Goal == plan.GoalWeb || p.Goal == plan.GoalLLMBatch) && !p.NeedsBuild && !p.Prebuilt && p.NeedsCommand == "" {
 		po := inspect.PackOptions{DataIsP1: in.DataIsP1, Only: facts.Single, WebOnly: p.Goal == plan.GoalWeb && facts.WebApp == "static"}
 		pk, err := inspect.PackDir(project, po)
 		if err != nil {
@@ -426,7 +426,7 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 		}
 	}
 	var hostFinding, discardFinding *rules.Finding
-	if (p.Goal == plan.GoalJob || p.Goal == plan.GoalSweep || p.Goal == plan.GoalLLMBatch) && !p.Prebuilt && !p.NeedsBuild {
+	if (p.Goal == plan.GoalJob || p.Goal == plan.GoalSweep || p.Goal == plan.GoalLLMBatch) && !p.Prebuilt && !p.NeedsBuild && p.NeedsCommand == "" {
 		if !s.planResults(p) && !in.Discard {
 			discardFinding = &rules.Finding{ID: "R23", Severity: rules.Refuse, Source: "nrp-mcp results",
 				Message: "Results storage is not set up, so everything this job writes is lost when it ends.",
@@ -488,6 +488,8 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 		return nil, nil, err
 	}
 	switch {
+	case p.NeedsCommand != "":
+		out.Next = p.NeedsCommand
 	case len(out.Refusals) > 0:
 		out.Next = "Not runnable: fix the refusals (each has a fix) and call nrp_plan again."
 	case p.NeedsBuild:
@@ -695,6 +697,9 @@ func (s *Server) runTool(ctx context.Context, req *mcp.CallToolRequest, in runIn
 	}
 	if p.Goal == plan.GoalCleanup {
 		return nil, nil, errors.New("that is a cleanup plan; use nrp_cleanup")
+	}
+	if p.NeedsCommand != "" {
+		return nil, nil, errors.New(p.NeedsCommand)
 	}
 	if plan.Hash(p) != p.Hash {
 		return nil, nil, store.ErrChanged
@@ -1408,6 +1413,16 @@ func suggestDockerfile(f *inspect.Facts) string {
 			fmt.Fprintf(&df, "# conda env: consider a micromamba base image\nCOPY %s /tmp/environment.yml\n", d)
 		case "renv.lock":
 			fmt.Fprintf(&df, "COPY %s renv.lock\nRUN R -e \"install.packages('renv'); renv::restore()\"\n", d)
+		case "install.r":
+			fmt.Fprintf(&df, "COPY %s /tmp/install.R\nRUN Rscript /tmp/install.R\n", d)
+		case "description":
+			if len(f.RPackages) > 0 {
+				quoted := make([]string, len(f.RPackages))
+				for i, pkg := range f.RPackages {
+					quoted[i] = "'" + pkg + "'"
+				}
+				fmt.Fprintf(&df, "RUN Rscript -e \"install.packages(c(%s), repos='https://cloud.r-project.org')\"\n", strings.Join(quoted, ", "))
+			}
 		case "package.json":
 			df.WriteString("COPY package*.json ./\nRUN npm install --omit=dev\n")
 		}

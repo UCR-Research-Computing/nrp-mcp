@@ -761,3 +761,147 @@ func TestVolumeStorageClassFollowsRegion(t *testing.T) {
 		t.Fatalf("region affinity %+v", terms)
 	}
 }
+
+func TestPlainAppsAndRPackagesTable(t *testing.T) {
+	cases := []struct {
+		name         string
+		files        map[string]string
+		req          Request
+		wantGoal     string
+		wantPort     int
+		wantCmdSub   []string
+		wantDecision string
+		wantQuestion string
+	}{
+		{
+			name:         "plain_httpserver_web_no_command",
+			files:        map[string]string{"app.py": "from http.server import HTTPServer, BaseHTTPRequestHandler\nHTTPServer(('0.0.0.0', 8080), BaseHTTPRequestHandler).serve_forever()\n"},
+			req:          Request{Namespace: "ucr-example", Goal: GoalWeb},
+			wantGoal:     GoalWeb,
+			wantPort:     8080,
+			wantCmdSub:   []string{"python app.py"},
+			wantDecision: "Runs: python app.py on port 8080",
+		},
+		{
+			name:         "plain_serve_forever_8000_auto_goal_web",
+			files:        map[string]string{"server.py": "import socketserver\nPORT = 8000\nwith socketserver.TCPServer(('', PORT), None) as httpd:\n    httpd.serve_forever()\n"},
+			req:          Request{Namespace: "ucr-example"},
+			wantGoal:     GoalWeb,
+			wantPort:     8000,
+			wantCmdSub:   []string{"python server.py"},
+			wantDecision: "Runs: python server.py on port 8000",
+		},
+		{
+			name:         "plain_app_run_port_kw",
+			files:        map[string]string{"web.py": "from bottle import Bottle\napp = Bottle()\napp.run(host='0.0.0.0', port=8000)\n"},
+			req:          Request{Namespace: "ucr-example", Goal: GoalWeb},
+			wantGoal:     GoalWeb,
+			wantPort:     8000,
+			wantCmdSub:   []string{"python web.py"},
+			wantDecision: "Runs: python web.py on port 8000",
+		},
+		{
+			name:         "two_py_scripts_web_guided_question",
+			files:        map[string]string{"a.py": "print(1)\n", "b.py": "print(2)\n"},
+			req:          Request{Namespace: "ucr-example", Goal: GoalWeb},
+			wantGoal:     GoalWeb,
+			wantQuestion: "Which file starts the app: a.py or b.py?",
+		},
+		{
+			name:         "two_r_scripts_job_guided_question",
+			files:        map[string]string{"model.R": "print(1)\n", "helpers.R": "x <- 1\n"},
+			req:          Request{Namespace: "ucr-example", Goal: GoalJob},
+			wantGoal:     GoalJob,
+			wantQuestion: "Which file runs the project: helpers.R or model.R?",
+		},
+		{
+			name:         "notebook_folder_guided_question",
+			files:        map[string]string{"analysis.ipynb": "{\"cells\":[]}\n"},
+			req:          Request{Namespace: "ucr-example", Goal: GoalJob},
+			wantGoal:     GoalJob,
+			wantQuestion: "Found notebook analysis.ipynb: should this open an interactive Jupyter session (goal=session) or execute the notebook",
+		},
+		{
+			name: "r_job_with_install_r",
+			files: map[string]string{
+				"sim.R":     "library(sandwich)\nprint(1)\n",
+				"install.R": "install.packages('sandwich', repos='https://cloud.r-project.org')\n",
+			},
+			req:          Request{Namespace: "ucr-example", Goal: GoalJob},
+			wantGoal:     GoalJob,
+			wantCmdSub:   []string{"Rscript install.R && Rscript sim.R"},
+			wantDecision: "Installs install.R at start",
+		},
+		{
+			name: "r_job_with_description_imports",
+			files: map[string]string{
+				"main.R":      "library(dplyr)\n",
+				"DESCRIPTION": "Package: x\nImports:\n    dplyr (>= 1.0),\n    sandwich\n",
+			},
+			req:          Request{Namespace: "ucr-example", Goal: GoalJob},
+			wantGoal:     GoalJob,
+			wantCmdSub:   []string{`Rscript -e "install.packages(c('dplyr', 'sandwich')`, "Rscript main.R"},
+			wantDecision: "DESCRIPTION Imports (dplyr, sandwich)",
+		},
+		{
+			name: "r_job_with_renv_lock",
+			files: map[string]string{
+				"main.R":    "print(1)\n",
+				"renv.lock": `{"R":{"Version":"4.4.2"},"Packages":{}}`,
+			},
+			req:          Request{Namespace: "ucr-example", Goal: GoalJob},
+			wantGoal:     GoalJob,
+			wantCmdSub:   []string{"renv::restore(prompt=FALSE)", "Rscript main.R"},
+			wantDecision: "Installs renv.lock at start",
+		},
+		{
+			name: "r_shiny_with_install_r",
+			files: map[string]string{
+				"app.R":     "library(shiny)\nshinyApp(ui, server)\n",
+				"install.R": "install.packages('leaflet', repos='https://cloud.r-project.org')\n",
+			},
+			req:          Request{Namespace: "ucr-example", Goal: GoalWeb},
+			wantGoal:     GoalWeb,
+			wantPort:     3838,
+			wantCmdSub:   []string{"Rscript install.R && cp -r /work/. /srv/shiny-server/ && exec /init"},
+			wantDecision: "Installs install.R at start",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := proj(t, tc.files)
+			p, err := Build(f, tc.req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if p.Goal != tc.wantGoal {
+				t.Fatalf("goal got %q, want %q", p.Goal, tc.wantGoal)
+			}
+			if tc.wantQuestion != "" {
+				if !strings.Contains(p.NeedsCommand, tc.wantQuestion) || len(p.Objects) != 0 {
+					t.Fatalf("got NeedsCommand=%q objects=%d, want substring %q and 0 objects", p.NeedsCommand, len(p.Objects), tc.wantQuestion)
+				}
+				return
+			}
+			if p.NeedsCommand != "" {
+				t.Fatalf("unexpected NeedsCommand: %q", p.NeedsCommand)
+			}
+			c := p.Objects[0].PodSpecOf().Containers[0]
+			if tc.wantPort != 0 && (len(c.Ports) == 0 || c.Ports[0].ContainerPort != tc.wantPort) {
+				t.Fatalf("ports got %+v, want %d", c.Ports, tc.wantPort)
+			}
+			cmdStr := strings.Join(c.Command, " ")
+			for _, sub := range tc.wantCmdSub {
+				if !strings.Contains(cmdStr, sub) {
+					t.Fatalf("command %q missing %q", cmdStr, sub)
+				}
+			}
+			if tc.wantDecision != "" && !strings.Contains(strings.Join(p.Decisions, " | "), tc.wantDecision) {
+				t.Fatalf("decisions %v missing %q", p.Decisions, tc.wantDecision)
+			}
+			if fs := rules.Check(p.Objects, ctx()); rules.Blocking(fs) {
+				t.Fatalf("plan refused by rules: %+v", fs)
+			}
+		})
+	}
+}
