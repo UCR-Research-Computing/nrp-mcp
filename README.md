@@ -163,15 +163,16 @@ Tested end to end (live cluster, Gemini API key) with each of these:
 
 ## The tools
 
-Nine tools, each named for what you want rather than for Kubernetes objects. Every result
+Ten tools, each named for what you want rather than for Kubernetes objects. Every result
 starts with a plain-language summary and, where useful, the `kubectl` equivalent so you
 learn as you go.
 
 | Tool | Changes things? | What it does |
 |---|---|---|
+| `nrp_guide` | no | Walks you through step by step: checks your computer, sign-in, namespace, saving results and your runs, and tells your assistant the one next step and the question to ask you (new in 1.1; or use the `walk_me_through` prompt) |
 | `nrp_setup` | only with `fix=true` | Laptop readiness: kubectl (version vs the cluster), kubelogin, NRP config, sign-in; installs or updates them with your yes |
 | `nrp_status` | no | Identity, namespaces, GPU quotas, workloads and what they ask for, volumes, public URLs, warnings |
-| `nrp_plan` | no | Inspects a project and a goal (`job`, `sweep`, `web`, `session`, `llm-batch`, `volume`, `pull`), applies every rule, returns a summary, decisions, refusals, `resources`, the files it will copy and skip, and either a confirm token or `needs_person_approval` (full manifests with `show_manifests=true`) |
+| `nrp_plan` | no | Asks you for anything missing in one short form if your AI app can show one (folder, goal, which file, GPU or not, results), then inspects a project and a goal (`job`, `sweep`, `web`, `session`, `llm-batch`, `volume`, `pull`), applies every rule, returns a summary, decisions, refusals, `resources`, the files it will copy and skip, and either a confirm token or `needs_person_approval` (full manifests with `show_manifests=true`) |
 | `nrp_run` | yes, after the person approves (question or code) or with a token for low-risk plans | Runs an approved plan; risky plans take the person's `approval_code`; writes a private run card to `<project>/.nrp/runs/` |
 | `nrp_watch` | no | Progress, logs (tail/grep), diagnosis with a fix, public URL check |
 | `nrp_cleanup` | yes, two steps | Lists your runs, then deletes one after a second confirm |

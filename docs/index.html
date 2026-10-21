@@ -50,13 +50,13 @@
 <section class="hero">
   <div class="container hero-grid">
     <div class="hero-copy">
-      <div class="kicker">MCP server<span class="sep">/</span>Nautilus<span class="sep">/</span>v1.0.0</div>
+      <div class="kicker">MCP server<span class="sep">/</span>Nautilus<span class="sep">/</span>v1.1.0</div>
       <h1>Run your research on Nautilus by talking to your AI assistant.</h1>
       <p class="lead"><code>nrp-mcp</code> is a small MCP server that runs on your own computer. Point it at your Nautilus sign-in and it turns "here is my code, run it on a GPU" into a reviewed plan and a running job. It knows the NRP's rules, so you don't have to learn Kubernetes first.</p>
       <div class="actions">
         <a class="btn gold solid" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/START-HERE.md"><i class="fa-solid fa-play" aria-hidden="true"></i> Start here</a>
         <a class="btn gold" href="https://github.com/UCR-Research-Computing/nrp-mcp"><i class="fa-brands fa-github" aria-hidden="true"></i> View on GitHub</a>
-        <a class="btn gold" href="https://github.com/UCR-Research-Computing/nrp-mcp/releases/latest"><i class="fa-solid fa-tag" aria-hidden="true"></i> Release v1.0.0</a>
+        <a class="btn gold" href="https://github.com/UCR-Research-Computing/nrp-mcp/releases/latest"><i class="fa-solid fa-tag" aria-hidden="true"></i> Release v1.1.0</a>
       </div>
       <div class="badges">
         <a href="https://github.com/UCR-Research-Computing/nrp-mcp/actions/workflows/ci.yml"><img src="https://github.com/UCR-Research-Computing/nrp-mcp/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status" height="20" loading="lazy"></a>
@@ -139,8 +139,8 @@
     <div class="band-head">
       <div>
         <div class="kicker">The tools</div>
-        <h2>Nine tools</h2>
-        <p class="sub">Five are read-only. The rest change things only as listed: with a flag, your approval, or a confirm token.</p>
+        <h2>Ten tools</h2>
+        <p class="sub">Six are read-only. The rest change things only as listed: with a flag, your approval, or a confirm token.</p>
       </div>
     </div>
     <div class="table-wrap">
@@ -149,6 +149,7 @@
           <tr><th scope="col">Tool</th><th scope="col">Changes things?</th><th scope="col">What it does</th></tr>
         </thead>
         <tbody>
+          <tr><td><code>nrp_guide</code></td><td><span class="pill no">no</span></td><td>Walks you through step by step: checks your computer, sign-in, namespace, saving results and your runs, and tells your assistant the next step and the question to ask you</td></tr>
           <tr><td><code>nrp_setup</code></td><td><span class="pill warn">only with fix=true</span></td><td>Laptop readiness: kubectl (version vs the cluster), kubelogin, NRP config, sign-in; installs or updates them with your yes</td></tr>
           <tr><td><code>nrp_status</code></td><td><span class="pill no">no</span></td><td>Identity, namespaces, GPU quotas, workloads and what they ask for, volumes, public URLs, warnings</td></tr>
           <tr><td><code>nrp_plan</code></td><td><span class="pill no">no</span></td><td>Inspects a project and a goal (<code>job</code>, <code>sweep</code>, <code>web</code>, <code>session</code>, <code>llm-batch</code>, <code>volume</code>, <code>pull</code>), applies every rule, returns a summary, decisions, refusals, the files it will copy and skip, and either a confirm token or <code>needs_person_approval</code></td></tr>
