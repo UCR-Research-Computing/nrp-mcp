@@ -456,7 +456,7 @@ func (e *Env) Inspect(ctx context.Context, signIn bool) *Report {
 	if ready && kubectl != "" {
 		if !signIn {
 			add(Check{ID: "signin", Title: "Signed in to Nautilus", Status: Manual, Detail: "not checked yet (it opens your browser the first time)",
-				Fix: "run nrp_setup with sign_in=true, or `kubectl auth whoami` in a terminal"})
+				Fix: "run nrp_setup with sign_in=true, or `" + kubectl + " --context " + e.ctxName() + " auth whoami` (or `nrp-mcp kubectl auth whoami`) in a terminal"})
 		} else {
 			args := []string{"--context", e.ctxName(), "auth", "whoami", "-o", "jsonpath={.status.userInfo.username}"}
 			if e.Kubeconfig != "" {
@@ -524,9 +524,12 @@ var origPath = os.Getenv("PATH")
 
 func pathHint(e *Env) string {
 	if e.GOOS == "windows" {
-		return `setx PATH "%PATH%;` + e.BinDir + `"  (then open a new terminal)`
+		return `[Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";` + e.BinDir + `", "User")  (in PowerShell, then open a new terminal)`
 	}
-	return `echo 'export PATH="` + e.BinDir + `:$PATH"' >> ~/.bashrc   (zsh: ~/.zshrc), then open a new terminal`
+	if e.GOOS == "darwin" {
+		return `echo 'export PATH="` + e.BinDir + `:$PATH"' >> ~/.zprofile   (bash: ~/.bashrc), then open a new terminal`
+	}
+	return `echo 'export PATH="` + e.BinDir + `:$PATH"' >> ~/.bashrc   (zsh: ~/.zprofile), then open a new terminal`
 }
 
 func isNRPConfig(b []byte) bool {

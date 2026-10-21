@@ -5,11 +5,13 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -41,6 +43,7 @@ Usage:
   nrp-mcp init       write an example ~/.config/nrp-mcp/config.yaml (never overwrites)
   nrp-mcp approve    show the newest approval code (for when no notification appeared)
   nrp-mcp s3 setup   save your NRP S3 keys (from https://nrp.ai/s3token/) so job results are kept
+  nrp-mcp kubectl    run the installed kubectl with the NRP kubeconfig and context
   nrp-mcp version
 
 Flags (serve, doctor, setup): --config PATH  --kubeconfig PATH  --context NAME  --namespace NS
@@ -68,6 +71,8 @@ func main() {
 			os.Exit(2)
 		}
 		os.Exit(runS3Setup(config.Load(config.DefaultPath())))
+	case "kubectl":
+		os.Exit(runKubectl(config.Load(config.DefaultPath()), args))
 	case "serve", "doctor", "setup":
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 		cfgPath := fs.String("config", config.DefaultPath(), "config file")
@@ -167,7 +172,7 @@ func runDoctor(cfg config.Config) int {
 	w, err := s.Ops.K.WhoAmI(ctx)
 	if err != nil {
 		check("sign-in", err, "")
-		fmt.Println("\n  Run `kubectl --context " + cfg.Context + " auth whoami` once in a terminal to sign in through your browser (KB024).")
+		fmt.Println("\n  Run `nrp-mcp setup` (or `nrp-mcp kubectl auth whoami`) once in a terminal to sign in through your browser (KB024).")
 		return 1
 	}
 	check("sign-in", nil, w.Username)
@@ -230,6 +235,47 @@ func runApprove() int {
 	}
 	fmt.Println("No approval code yet. Codes appear when your AI assistant asks to run something that needs your OK.")
 	return 1
+}
+
+// runKubectl runs the configured or installed kubectl with the NRP kubeconfig and
+// context, and puts the user bin folder on PATH so the kubelogin plugin is found.
+func runKubectl(cfg config.Config, args []string) int {
+	k := kube.New(kube.Config{Kubectl: cfg.Kubectl, Kubeconfig: cfg.Kubeconfig, Context: cfg.Context})
+	if _, err := exec.LookPath(k.Cfg.Kubectl); err != nil {
+		fmt.Fprintln(os.Stderr, "kubectl is not installed yet; run `nrp-mcp setup` first.")
+		return 1
+	}
+	hasFlag := func(names ...string) bool {
+		for _, a := range args {
+			for _, n := range names {
+				if a == n || strings.HasPrefix(a, n+"=") {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	var prefix []string
+	if k.Cfg.Kubeconfig != "" && !hasFlag("--kubeconfig") {
+		prefix = append(prefix, "--kubeconfig", k.Cfg.Kubeconfig)
+	}
+	if k.Cfg.Context != "" && !hasFlag("--context") {
+		prefix = append(prefix, "--context", k.Cfg.Context)
+	}
+	if cfg.Namespace != "" && !hasFlag("-n", "--namespace") {
+		prefix = append(prefix, "-n", cfg.Namespace)
+	}
+	cmd := exec.Command(k.Cfg.Kubectl, append(prefix, args...)...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return ee.ExitCode()
+		}
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
 }
 
 func runInit() int {
@@ -306,7 +352,7 @@ func runSetup(cfg config.Config, yes, noSignIn bool) int {
 	}
 	if !pending && noSignIn {
 		fmt.Println("\nEverything is in place; sign-in skipped (--no-sign-in).")
-		fmt.Println("Next: run `nrp-mcp setup` again, or `kubectl auth whoami`, to sign in.")
+		fmt.Println("Next: run `nrp-mcp setup` again, or `nrp-mcp kubectl auth whoami`, to sign in.")
 		return 0
 	}
 	if !pending {

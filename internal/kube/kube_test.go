@@ -115,3 +115,10 @@ func TestSignInIsNotCutAtTheDefaultLimit(t *testing.T) {
 		t.Fatalf("an ordinary call past the default limit must time out, got %v", err)
 	}
 }
+
+func TestExplainSignedOutUsesNrpMcpKubectl(t *testing.T) {
+	err := Explain("pods", &Error{Args: []string{"get", "pods"}, Msg: "error: You must be logged in to the server (Unauthorized)"})
+	if err == nil || !strings.Contains(err.Error(), "nrp-mcp kubectl auth whoami") {
+		t.Fatalf("Explain must point to nrp-mcp kubectl auth whoami: %v", err)
+	}
+}

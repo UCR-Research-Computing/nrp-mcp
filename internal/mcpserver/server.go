@@ -1151,7 +1151,7 @@ func (s *Server) sessionTool(ctx context.Context, _ *mcp.CallToolRequest, in ses
 		}
 	}
 	out := &sessionOut{Ready: ready, Token: tok}
-	out.Command = fmt.Sprintf("kubectl --context %s -n %s port-forward %s/%s %d:%d", s.Cfg.Context, ns, targetKind, name, port, port)
+	out.Command = fmt.Sprintf("nrp-mcp kubectl --context %s -n %s port-forward %s/%s %d:%d", s.Cfg.Context, ns, targetKind, name, port, port)
 	out.URL = fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
 	if out.Ready {
 		out.Summary = "Ready. Run the command in a terminal (leave it open), then open the URL. VS Code asks for the token as its password."
@@ -1409,7 +1409,7 @@ func (s *Server) buildTool(ctx context.Context, _ *mcp.CallToolRequest, in build
 		owner := strings.SplitN(repo, "/", 2)[0]
 		out.PrivateImage = []string{
 			"New images on GitHub are private. Public is simplest for open research code: on GitHub open the package (Packages, then the image), Package settings, Change visibility, Public. Nautilus then pulls it with no secret.",
-			"To keep it private: create a GitHub personal access token (classic) with only the read:packages scope, then store it in your namespace once: kubectl -n <namespace> create secret docker-registry ghcr-pull --docker-server=ghcr.io --docker-username=" + owner + " --docker-password=<the token>. Then plan with pull_secret=ghcr-pull. Never paste the token into a chat or a file in the repo.",
+			"To keep it private: create a GitHub personal access token (classic) with only the read:packages scope, then store it in your namespace once: nrp-mcp kubectl -n <namespace> create secret docker-registry ghcr-pull --docker-server=ghcr.io --docker-username=" + owner + " --docker-password=<the token>. Then plan with pull_secret=ghcr-pull. Never paste the token into a chat or a file in the repo.",
 			"Nautilus has a few ARM nodes but nrp-mcp schedules on the common amd64 nodes, which is what GitHub builds by default.",
 		}
 	case "gitlab":
@@ -1424,7 +1424,7 @@ func (s *Server) buildTool(ctx context.Context, _ *mcp.CallToolRequest, in build
 		}
 		out.PrivateImage = []string{
 			"Public project: Nautilus pulls with no secret.",
-			"Private project: create a deploy token with read_registry (Settings, Repository, Deploy tokens), then kubectl -n <namespace> create secret docker-registry gitlab-pull --docker-server=gitlab-registry.nrp-nautilus.io --docker-username=<token user> --docker-password=<token>, and plan with pull_secret=gitlab-pull.",
+			"Private project: create a deploy token with read_registry (Settings, Repository, Deploy tokens), then nrp-mcp kubectl -n <namespace> create secret docker-registry gitlab-pull --docker-server=gitlab-registry.nrp-nautilus.io --docker-username=<token user> --docker-password=<token>, and plan with pull_secret=gitlab-pull.",
 		}
 	}
 	if f.Dockerfile {

@@ -1090,7 +1090,7 @@ func TestSessionToolFindsJobPods(t *testing.T) {
 	if isErr {
 		t.Fatal(text)
 	}
-	if m["ready"] != true || m["token"] != "secret123" || !strings.Contains(fmt.Sprint(m["command"]), "port-forward svc/nb-gpu 8888:8888") {
+	if m["ready"] != true || m["token"] != "secret123" || !strings.Contains(fmt.Sprint(m["command"]), "nrp-mcp kubectl --context nautilus -n ucr-test port-forward svc/nb-gpu 8888:8888") {
 		t.Fatalf("session output: %v", m)
 	}
 }

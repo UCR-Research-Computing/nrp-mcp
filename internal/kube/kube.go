@@ -228,7 +228,7 @@ func Kind(err error) string {
 func Explain(what string, err error) error {
 	switch Kind(err) {
 	case KindSignedOut:
-		return fmt.Errorf("could not read %s: your Nautilus sign-in has expired or is missing. Run `kubectl auth whoami` in a terminal to sign in again, then retry (nothing was changed): %w", what, err)
+		return fmt.Errorf("could not read %s: your Nautilus sign-in has expired or is missing. Run `nrp-mcp kubectl auth whoami` in a terminal to sign in again, then retry (nothing was changed): %w", what, err)
 	case KindForbidden:
 		return fmt.Errorf("could not read %s: Nautilus says you are not allowed to (check the namespace, or ask its admin to add you): %w", what, err)
 	case KindTimeout:

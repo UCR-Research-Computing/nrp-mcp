@@ -375,3 +375,34 @@ func TestKubeloginTagPrefersRedirect(t *testing.T) {
 		t.Fatalf("fallback: %q %v", tag, err)
 	}
 }
+
+func TestPathHintsAndSignInFixAvoidBareKubectlAndSetx(t *testing.T) {
+	win := &Env{GOOS: "windows", BinDir: `C:\Users\jane\AppData\Local\Programs\nrp-mcp\bin`}
+	wh := pathHint(win)
+	if strings.Contains(strings.ToLower(wh), "setx") || !strings.Contains(wh, `[Environment]::SetEnvironmentVariable("Path"`) {
+		t.Fatalf("windows pathHint must use SetEnvironmentVariable, never setx: %s", wh)
+	}
+	mac := &Env{GOOS: "darwin", BinDir: "/Users/jane/.local/bin"}
+	if mh := pathHint(mac); !strings.Contains(mh, "~/.zprofile") {
+		t.Fatalf("darwin pathHint must default to ~/.zprofile: %s", mh)
+	}
+	lin := &Env{GOOS: "linux", BinDir: "/home/jane/.local/bin"}
+	if lh := pathHint(lin); !strings.Contains(lh, "~/.bashrc") {
+		t.Fatalf("linux pathHint must default to ~/.bashrc: %s", lh)
+	}
+	e, _ := fakeEnv(t, false)
+	_ = os.MkdirAll(e.BinDir, 0o755)
+	for _, f := range []string{"kubectl", "kubectl-oidc_login"} {
+		_ = os.WriteFile(filepath.Join(e.BinDir, f), []byte("x"), 0o755)
+	}
+	_ = os.MkdirAll(filepath.Join(e.Home, ".kube"), 0o700)
+	_ = os.WriteFile(filepath.Join(e.Home, ".kube", "config"), []byte(nrpConfig), 0o600)
+	r := e.Inspect(context.Background(), false)
+	for _, c := range r.Checks {
+		if c.ID == "signin" {
+			if !strings.Contains(c.Fix, filepath.Join(e.BinDir, "kubectl")) && !strings.Contains(c.Fix, "nrp-mcp kubectl") {
+				t.Fatalf("signin fix must use full kubectl path or nrp-mcp kubectl: %q", c.Fix)
+			}
+		}
+	}
+}

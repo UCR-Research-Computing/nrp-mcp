@@ -239,7 +239,7 @@ func signInHint(err error) error {
 	case strings.Contains(msg, "context") && strings.Contains(msg, "does not exist"):
 		return fmt.Errorf("your kubeconfig has no Nautilus context; download the NRP config from https://nrp.ai/config and run nrp_setup: %w", err)
 	}
-	return fmt.Errorf("could not reach Nautilus as you (run `kubectl auth whoami` in a terminal once to sign in in the browser): %w", err)
+	return fmt.Errorf("could not reach Nautilus as you (run `nrp-mcp kubectl auth whoami` in a terminal once to sign in in the browser): %w", err)
 }
 
 func mapGet(m map[string]any, k string) map[string]any {
