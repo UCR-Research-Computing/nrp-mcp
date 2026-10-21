@@ -185,16 +185,16 @@ func TestEightTools(t *testing.T) {
 			t.Errorf("missing %s", n)
 		}
 	}
-	if len(r.Tools) != 9 {
-		t.Errorf("want 9 tools, got %d", len(r.Tools))
+	if len(r.Tools) != 10 {
+		t.Errorf("want 10 tools, got %d", len(r.Tools))
 	}
 	res, _ := cs.ListResources(context.Background(), nil)
 	if len(res.Resources) != 5 {
 		t.Errorf("want 5 resources, got %d", len(res.Resources))
 	}
 	pr, _ := cs.ListPrompts(context.Background(), nil)
-	if len(pr.Prompts) != 6 {
-		t.Errorf("want 6 prompts, got %d", len(pr.Prompts))
+	if len(pr.Prompts) != 7 {
+		t.Errorf("want 7 prompts, got %d", len(pr.Prompts))
 	}
 }
 

@@ -1,4 +1,4 @@
-// Package mcpserver exposes nrp-mcp's nine tools, resources and prompts over MCP.
+// Package mcpserver exposes nrp-mcp's ten tools, resources and prompts over MCP.
 package mcpserver
 
 import (
@@ -40,7 +40,8 @@ import (
 const Instructions = `nrp: run research work on the National Research Platform's Nautilus cluster, as the
 signed-in researcher, safely.
 
-Always: start with nrp_status (if it says kubectl, the sign-in plugin or the NRP config is
+New or unsure person: call nrp_guide and follow it one step at a time (it says what to ask
+and what to call next). Otherwise start with nrp_status (if it says kubectl, the sign-in plugin or the NRP config is
 missing, use nrp_setup: check first, then fix=true after the user agrees). Before anything runs, call nrp_plan and SHOW THE USER the
 summary, decisions and any refusals in plain words. Public web apps, GPU work, deleting,
 uploads and installs need the person's own approval: nrp-mcp asks them directly or shows
@@ -93,7 +94,7 @@ type planIn struct {
 	Namespace     string   `json:"namespace,omitempty"`
 	Name          string   `json:"name,omitempty" jsonschema:"name for the workload or web host; nrp suggests names if empty"`
 	Image         string   `json:"image,omitempty" jsonschema:"container image to use instead of nrp's choice"`
-	GPU           int      `json:"gpu,omitempty" jsonschema:"number of GPUs (0 = none; default 1 if the code uses a GPU)"`
+	GPU           *int     `json:"gpu,omitempty" jsonschema:"number of GPUs (0 = CPU only; left out = 1 if the code uses a GPU, else none)"`
 	GPUType       string   `json:"gpu_type,omitempty" jsonschema:"a40, rtxa6000, a100, ... (default: any standard GPU)"`
 	CPU           string   `json:"cpu,omitempty" jsonschema:"CPU cores, e.g. 4"`
 	Memory        string   `json:"memory,omitempty" jsonschema:"memory, e.g. 16Gi"`
@@ -116,6 +117,8 @@ type planIn struct {
 	AvoidNode     string   `json:"avoid_node,omitempty" jsonschema:"node(s) to keep the pod off, comma separated, e.g. a slow node named by nrp_watch"`
 	Discard       bool     `json:"discard_results,omitempty" jsonschema:"job/sweep without S3 results set up: true only after the person said yes, discard results"`
 	ShowManifests bool     `json:"show_manifests,omitempty" jsonschema:"include the full Kubernetes manifests in the result (omitted by default to keep plans small)"`
+
+	answers map[string]any // what the person answered in the details form (not an input)
 }
 
 // ObjectResource summarizes one object in a plan without echoing full manifests.
@@ -153,6 +156,7 @@ type planOut struct {
 	Resources    []ObjectResource    `json:"resources"`
 	Manifests    map[string]any      `json:"manifests,omitempty" jsonschema:"a Kubernetes List of every object the plan would create (only when show_manifests=true)"`
 	Kubectl      []string            `json:"kubectl_equivalent"`
+	Answers      map[string]any      `json:"answers_to_reuse,omitempty" jsonschema:"what the person answered in nrp-mcp's details form; pass these again on any later nrp_plan call so they are not asked twice"`
 	Next         string              `json:"next"`
 }
 
@@ -336,7 +340,7 @@ func New(s *Server) *mcp.Server {
 			return nil, st, nil
 		})
 
-	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_plan", Description: "Draft a plan for running a project on Nautilus. Creates nothing and changes nothing. Returns summary, decisions, refusals (each with a fix), warnings, code_files, skipped_files, resources (cpu/memory/gpu/hours per object), and plan_id; pass show_manifests=true for full manifests. goal is job, sweep, web, session, llm-batch, volume or pull. If a value is missing, ask the person; do not guess. Tell the person the summary, decisions, refusals and warnings in plain words, and for web plans say clearly the URL will be PUBLIC with no login.", Annotations: readOnly("Plan"), InputSchema: singleTypeSchema[planIn]()}, s.planTool)
+	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_plan", Description: "Draft a plan for running a project on Nautilus. Creates nothing and changes nothing. Missing details: nrp-mcp asks the person in a form if the app can, else ask them; never guess. Returns summary, decisions, refusals (each with a fix), warnings, code_files, skipped_files, resources and plan_id; show_manifests=true adds manifests. goal is job, sweep, web, session, llm-batch, volume or pull. Tell the person the summary, decisions, refusals and warnings in plain words, and for web plans say clearly the URL will be PUBLIC with no login.", Annotations: readOnly("Plan"), InputSchema: singleTypeSchema[planIn]()}, s.planTool)
 
 	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_run", Description: "Start an approved plan from nrp_plan. Creates objects on a shared cluster, may use GPUs, and for web plans PUBLISHES a site to the whole internet. Call only after the person has seen the plan and said yes in their own message; casual requests like 'make a page' or 'try it' are not approval. If needs_person_approval is true, pass plan_id only (then approval_code after they type it); otherwise pass plan_id and confirm_token. Never guess a code or use kubectl. Tell the person what started (run_id, URL or next step), or when waiting_for_approval ask them to type their approval code.", Annotations: writes("Run", false)}, s.runTool)
 
@@ -364,6 +368,8 @@ func New(s *Server) *mcp.Server {
 
 	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_setup", Description: "Is this computer ready for Nautilus? Checks kubectl (and its version against the cluster), the kubelogin sign-in plugin, the NRP config file and, with sign_in=true, the sign-in. Read-only unless fix=true: then it downloads the official kubectl and kubelogin into a user folder (no admin rights), verifies their published SHA256, keeps any old copy as a backup, and puts a downloaded NRP config in place (backing up an existing one). Ask the user before fix=true. Use this first if nrp_status says kubectl or the sign-in is missing.", Annotations: writes("Setup", false)}, s.setupTool)
 
+	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_guide", Description: "Walk a person through Nautilus one step at a time. Read-only: checks this computer, the sign-in, the namespace, saving results and the person's runs, and returns the one step they are on, the question to ask them (ask_the_person), what to call next, and any terminal_command the PERSON runs themselves. Use it when someone is new, unsure what to do, or comes back later; call it again after each step. Ask one question at a time, in plain words.", Annotations: readOnly("Guide")}, s.guideTool)
+
 	addResources(srv)
 	addPrompts(srv)
 	return srv
@@ -371,7 +377,7 @@ func New(s *Server) *mcp.Server {
 
 // ToolNames lists every tool, for docs and tests.
 func ToolNames() []string {
-	return []string{"nrp_setup", "nrp_status", "nrp_plan", "nrp_run", "nrp_watch", "nrp_cleanup", "nrp_session", "nrp_data", "nrp_build"}
+	return []string{"nrp_guide", "nrp_setup", "nrp_status", "nrp_plan", "nrp_run", "nrp_watch", "nrp_cleanup", "nrp_session", "nrp_data", "nrp_build"}
 }
 
 // attachUpdateNotice checks (cached once a day) whether a newer nrp-mcp release exists
@@ -409,8 +415,16 @@ func splitNodes(v string) []string {
 	return strings.Split(v, ",")
 }
 
-func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn) (*mcp.CallToolResult, *planOut, error) {
+func (s *Server) planTool(ctx context.Context, req *mcp.CallToolRequest, in planIn) (*mcp.CallToolResult, *planOut, error) {
 	ns := s.nsCtx(ctx, in.Namespace)
+	var answered []string
+	if ask, got, err := s.planQuestions(ctx, req, &in); err != nil {
+		return nil, nil, err
+	} else if ask != nil {
+		return ask, nil, nil
+	} else {
+		answered = got
+	}
 	var facts *inspect.Facts
 	project := ""
 	if in.Project != "" {
@@ -431,12 +445,16 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 	if ns == "" && len(w.Namespaces) > 0 {
 		ns = w.Namespaces[0]
 	}
-	req := plan.Request{Goal: in.Goal, Namespace: ns, Name: in.Name, Command: in.Command, Image: in.Image, GPU: in.GPU, GPUType: in.GPUType,
+	gpu, noGPU := 0, false
+	if in.GPU != nil {
+		gpu, noGPU = *in.GPU, *in.GPU == 0
+	}
+	preq := plan.Request{Goal: in.Goal, Namespace: ns, Name: in.Name, Command: in.Command, Image: in.Image, GPU: gpu, NoGPU: noGPU, GPUType: in.GPUType,
 		CPU: in.CPU, Memory: in.Memory, Hours: in.Hours, Count: in.Count, Parallel: in.Parallel, Host: in.Host, Port: in.Port,
 		DataPVC: in.DataVolume, Owner: owner, Session: in.Session, LLMSecret: in.LLMSecret, Opportun: in.Opportunist,
 		Size: in.Size, Region: in.Region, Scratch: in.Scratch, URLs: in.URLs, Subdir: in.Subdir, DataIsP1: in.DataIsP1, PullSecret: in.PullSecret,
 		AvoidNodes: splitNodes(in.AvoidNode), WebDays: s.Cfg.WebDays, GPUSessionHours: s.Cfg.GPUSessionHours}
-	p, err := plan.Build(facts, req)
+	p, err := plan.Build(facts, preq)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -446,8 +464,8 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 			return nil, nil, err
 		}
 		if run != "" && run != p.Run {
-			req.Run = run
-			if p, err = plan.Build(facts, req); err != nil {
+			preq.Run = run
+			if p, err = plan.Build(facts, preq); err != nil {
 				return nil, nil, err
 			}
 			p.Decisions = append(p.Decisions, "Updates your running "+p.Name+" in place (run "+run+", same address): Kubernetes starts the new version and switches over once it answers.")
@@ -485,7 +503,7 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 	}
 	if p.Goal == plan.GoalWeb && s.Ops != nil {
 		p.Suggested = s.availableHosts(ctx, p.Suggested)
-		if s.HTTP != nil && p.PublicURL != "" && req.Run == "" {
+		if s.HTTP != nil && p.PublicURL != "" && preq.Run == "" {
 			code, err := s.HTTP(p.PublicURL)
 			switch {
 			case err == nil && code != 404 && code != 503:
@@ -515,9 +533,12 @@ func (s *Server) planTool(ctx context.Context, _ *mcp.CallToolRequest, in planIn
 			Message: fmt.Sprintf("The project has %d data file(s) (%s). Only non-sensitive (P1) data may go to Nautilus.", len(needsP1), strings.Join(needsP1, ", ")),
 			Fix:     "Ask the person whether these files are free of HIPAA, FERPA, PII, CUI and restrictive data-use terms. Only if they say yes, plan again with data_is_p1=true. Or move the data files out of the project folder."})
 	}
+	for _, a := range answered {
+		p.Decisions = append([]string{a}, p.Decisions...)
+	}
 	out := &planOut{Summary: p.Summary, PlanID: p.ID, PublicURL: p.PublicURL, Suggested: p.Suggested, Decisions: p.Decisions,
 		Refusals: []rules.Finding{}, Warnings: []rules.Finding{}, Image: p.Image, NeedsBuild: p.NeedsBuild, Slurm: p.Slurm, CodeFiles: codeFiles, Skipped: skippedFiles,
-		Resources: summarizeResources(p.Objects), Kubectl: p.Kubectl}
+		Resources: summarizeResources(p.Objects), Kubectl: p.Kubectl, Answers: in.answers}
 	for _, f := range findings {
 		if f.Severity == rules.Refuse {
 			out.Refusals = append(out.Refusals, f)
@@ -1616,6 +1637,7 @@ func addResources(srv *mcp.Server) {
 
 func addPrompts(srv *mcp.Server) {
 	prompts := []struct{ name, title, text string }{
+		{"walk_me_through", "Walk me through it, step by step", "I am new to Nautilus. Call nrp_guide and ask me its ask_the_person question, one question at a time, in plain words. After I answer or finish a step, do what its next says, then call nrp_guide again. Never run a terminal_command for me: show it and wait until I say I ran it. Show me every plan before anything starts."},
 		{"first_run", "Run my code on Nautilus for the first time", "Call nrp_status. Then ask me for my project folder and what I want to run. Call nrp_plan, explain the plan and every decision in plain words, and wait for my yes before nrp_run. Then follow it with nrp_watch and offer to copy results back."},
 		{"port_slurm_script", "Move a Slurm job to Nautilus", "Ask for the folder that holds my sbatch script. Call nrp_plan on it, show the slurm_mapping table (what each #SBATCH line became and what has no equivalent), and explain the differences from the HPCC before I run anything."},
 		{"parameter_sweep", "Run many tasks with different parameters", "Help me turn my script into a sweep: it must read $JOB_COMPLETION_INDEX to pick its parameters. Show the change, then nrp_plan goal=sweep with count and parallel, and wait for my yes."},

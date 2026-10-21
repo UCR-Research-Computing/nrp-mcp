@@ -1,6 +1,6 @@
 # nrp-mcp SPEC
 
-Version 1.0.0 (2026-10-20; code 1.0.0). Owner: UCR Research Computing.
+Version 1.1.0 (2026-10-21; code 1.1.0). Owner: UCR Research Computing.
 Repo: `UCR-Research-Computing/nrp-mcp`. License: MIT.
 
 ## 1. What it is
@@ -11,7 +11,7 @@ kubeconfig, acts as them, and turns "here is my code and my data, run it on Naut
 a reviewed plan and then a running workload. It knows the NRP cluster policies and refuses
 plans that break them, explaining why and offering the fixed version.
 
-It has nine tools, all named `nrp_*`, each at the level of what the researcher wants rather
+It has ten tools, all named `nrp_*`, each at the level of what the researcher wants rather
 than Kubernetes objects.
 
 ## 2. Decisions
@@ -36,7 +36,7 @@ than Kubernetes objects.
 MCP client (Claude Code, Claude Desktop, Gemini CLI, VS Code, Cursor, ...)
    | stdio
 nrp-mcp serve
-   |-- internal/mcpserver   9 tools, resources, prompts
+   |-- internal/mcpserver   10 tools, resources, prompts, guided mode (guide.go)
    |-- internal/plan        build a Plan (pure: project facts + goal -> manifests)
    |-- internal/inspect     read the local project folder (no uploads)
    |-- internal/rules       NRP policy checks on manifests (pure, unit-tested)
@@ -104,6 +104,7 @@ useful the `kubectl` equivalent so people learn. Errors are explanations, not st
 
 | Tool | Changes things? | Confirm? | Purpose |
 |---|---|---|---|
+| `nrp_guide` | no | - | guided mode: checks laptop, sign-in, namespace, saving results and the person's runs; returns the stage, a checklist, `ask_the_person`, `next` and any `terminal_command` the person runs themselves (5.5) |
 | `nrp_setup` | only with `fix=true` | the model asks the user; CLI `nrp-mcp setup` asks [y/N] | laptop readiness: kubectl (version vs the cluster's public /version, verified against the kubeconfig CA), kubelogin, NRP config, sign-in. Fix: official kubectl (dl.k8s.io, matched to the cluster's minor line via stable-X.Y.txt) and kubelogin (GitHub latest release) into the user bin folder, SHA256 verified against the published files, atomic install with a dated backup of any old copy; downloaded NRP config copied to ~/.kube/config (0600), or merged with `kubectl config view --flatten` after a dated backup when a non-NRP config exists. Never needs admin rights; never reads the sign-in token |
 | `nrp_status` | no | - | who am I, namespaces, quotas, limit ranges, running workloads and their use, policy warnings, public URLs, upcoming purges/expiries |
 | `nrp_plan` | no | - | inspect a project + goal; return summary, decisions, `resources`, rules applied, warnings, refusals, `code_files`, `skipped_files`, suggested names (web), `plan_id`, and, when runnable, a `confirm_token` (low-risk) or `needs_person_approval` (web, GPU). Full manifests only with `show_manifests=true`. No plan when the caller's identity cannot be confirmed |
@@ -173,6 +174,35 @@ random bytes (crypto/rand), base64url, returned once. The store keeps sha256(tok
 id, plan hash (sha256 of the canonical manifests + goal + public URL), expiry (10 min)
 and a used flag. `nrp_run`/`nrp_build`/`nrp_cleanup` recompute the plan hash and refuse
 on mismatch, expiry or reuse.
+
+### 5.5 Guided mode
+
+Deterministic code, no model calls. Two parts:
+
+- **Details form in `nrp_plan`.** Before planning, nrp-mcp lists what is missing: the project
+  (when no project and no image), the goal (unless the folder is a web app), which file
+  starts it (several top-level scripts and no conventional entry), GPU or not (when `gpu` is
+  left out and the code shows no GPU use), the sweep task count (goal sweep or not yet
+  chosen; optional when the goal is not chosen), and, for jobs and sweeps without S3 keys,
+  whether to set up results first or discard them. When the client supports elicitation it
+  asks all of them in one form (`InputRequests["details"]`, single-choice fields as titled
+  `oneOf` enums). The answer counts only with the request state nrp-mcp issued for that
+  project and goal (single use, 10 minutes). Answers fill the inputs, are added to
+  `decisions` in plain words, and are returned as `answers_to_reuse`. No form support, or a
+  declined form: planning goes on with what was given, as in 1.0 (the question in `next`, or
+  a refusal with its fix). Approval questions (5.2) are separate and unchanged.
+- **`nrp_guide`.** Stages in order: `laptop` (setup checks other than sign-in not ok ->
+  `nrp_setup fix=true` with approval, or `nrp-mcp setup`), `sign-in` (`auth whoami` fails ->
+  the person runs `nrp-mcp kubectl auth whoami`), `namespace` (none -> nrp.ai/namespaces),
+  `results` (no S3 keys -> `nrp-mcp s3 setup`, or skip and confirm discarding at plan time),
+  `project` (nothing running -> ask what to run, then `nrp_plan`), then by the person's own
+  Jobs and Deployments: `running`, `failed` (-> `nrp_watch`, fixed plan, cleanup),
+  `finished` (-> `nrp_data down`, then `nrp_cleanup`), or a choice when several runs exist.
+  `terminal_command` is always for the person; the assistant never runs it for them.
+  Prompt `walk_me_through` tells the assistant to follow `nrp_guide` one question at a time.
+
+`gpu=0` given explicitly means CPU only (`plan.Request.NoGPU`); a left-out `gpu` still gets 1
+GPU when the code uses one.
 
 ### 5.4 Results (NRP S3)
 
@@ -322,6 +352,7 @@ Prompts: `first_run`, `port_slurm_script`, `parameter_sweep`, `my_job_failed`,
 | P6d | 0.8.0 | honest Pending diagnosis (node, pull, age, events) and `avoid_node` | done 2026-10-15; live test in section 12 |
 | P6e | 0.9.0-0.9.1 | person approval (question or 6-char code), per-person S3 results, safe packing, web hardening, kubectl error handling and watch conditions | done 2026-10-20; live test in section 12 |
 | P6f | 0.10.0 | GPU sessions as Jobs, pinned images with single-container unpack/upload, policy (ephemeral-storage, CPU sweep affinity, region storage, namespace_gpus, H100/H200/GH200 quota), plain apps and R packages, compact plans (< 6 KB) and operator tool descriptions | done 2026-10-20; live test in section 12 |
+| P8 | 1.1.0 | Guided mode: `nrp_plan` details form (elicitation, falls back to text), `nrp_guide` stage checklist, `walk_me_through` prompt; explicit `gpu=0`; cleanup listings show status | done 2026-10-21; live test in section 12 |
 | P7 | 1.0.0 | Onboarding, support and supply chain: `install.sh` (shell PATH offer, full path) and `install.ps1` (Windows User `Path`, `Unblock-File`), `nrp-mcp kubectl`, `nrp-mcp client <name>` (7 clients, user scope, `.bak`), `nrp-mcp doctor` actionable `FAIL ->` steps + 0-namespace fail + S3/consent/release checks, 24h update check in `version` and `nrp_status`, `docs/START-HERE.md` + jargon table + 20 examples refreshed, pinned workflow SHAs + `kubelogin` v1.36.4 SHA256 + GitHub artifact attestations, and novice dry-run kit | done 2026-10-20; live test in section 12 |
 
 ## 12. Testing
@@ -333,7 +364,7 @@ tests run only in an RC namespace, labelled and cleaned up after; no GPU or publ
 without the namespace admin's go.
 
 In-process MCP tests (`internal/mcpserver`) drive the real protocol over an in-memory
-transport with a fake kubectl: nine tools, five resources, six prompts; plan creates
+transport with a fake kubectl: ten tools, five resources, seven prompts; plan creates
 nothing; wrong, reused tokens refused; web refused without or with a wrong `public_ack`
 (token survives a failed ack); A100 with quota 0 not runnable; cleanup two-step and only
 by the managed-by label; volume refused without `data_is_p1`; build writes nothing; build
@@ -566,4 +597,5 @@ answered HTTP 200 in 31 s, and three-step code cleanup deleted all 4 objects and
 | 0.9.0 | 2026-10-20 | Code 0.9.0: person approval (elicitation or code) for risky steps; safe packing with packed/skipped lists; results to a per-person NRP S3 bucket; web hardening (R20-R22, no API token, 14-day expiry); untrusted text and owner checks; D3 revised, D9-D11 added |
 | 0.9.1 | 2026-10-20 | Code 0.9.1: kubectl errors are errors; dry run before approval and run card first; no plan without identity, R6Q; per-command time limits; locked token/approval stores; nrp_watch Job conditions, scoped events and new diagnoses; input validation and Slurm fixes; 0.9.0 review leftovers |
 | 0.10.0 | 2026-10-20 | Code 0.10.0: GPU sessions as Jobs (`gpu_session_hours`); pinned images with single-container unpack and exit results upload; policy (`ephemeral-storage` 10Gi default + R2, CPU-only sweep anti-GPU nodeAffinity + `opportunistic`, `region` storage classes, `namespace_gpus` running-GPU cap, missing H100/H200/GH200 quota = 0); plain Python web apps without `command=`, guided entry questions, R package install steps; compact plans (`resources`, `show_manifests=true`, < 6 KB) and < 600-char tool descriptions; live test recorded |
+| 1.1.0 | 2026-10-21 | Code 1.1.0: guided mode (5.5): `nrp_plan` asks missing details in one elicitation form, `nrp_guide` tenth tool, `walk_me_through` prompt; explicit `gpu=0` honored; cleanup listings show status; live test recorded |
 | 1.0.0 | 2026-10-20 | Code 1.0.0: `install.sh` (shell PATH offer, full path) and `install.ps1` (Windows User `Path`, `Unblock-File`, no `setx`); `nrp-mcp kubectl` passthrough and no bare `kubectl` hints; `nrp-mcp client <name>` for 7 clients (user scope, `.bak`, VS Code `"servers"`); `nrp-mcp doctor` actionable `FAIL ->` steps, 0-namespace failure, multi-file `KUBECONFIG`, consent/S3/release checks; 24-hour update check in `version` and `nrp_status`; `docs/START-HERE.md`, jargon table, and all 20 examples refreshed to 1.0; supply chain pinning (commit SHAs, `kubelogin` v1.36.4 SHA256, GitHub build provenance attestations); live test recorded |

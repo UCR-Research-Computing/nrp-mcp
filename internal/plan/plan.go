@@ -40,6 +40,7 @@ type Request struct {
 	Command         string // shell command; inferred if empty
 	Image           string // override
 	GPU             int
+	NoGPU           bool   // the person asked for CPU only (gpu=0 given explicitly)
 	GPUType         string // e.g. a100, a40; empty = any standard GPU
 	CPU             string
 	Memory          string
@@ -603,6 +604,13 @@ func orList(xs []string) string {
 	}
 }
 
+// CommandForFile is the command that runs one script (python, Rscript, julia, bash), or
+// "" for a file type nrp-mcp does not know how to start.
+func CommandForFile(file string) string {
+	cmd, _ := inferCommand(&inspect.Facts{Entry: file}, Request{})
+	return cmd
+}
+
 func inferCommand(f *inspect.Facts, r Request) (string, string) {
 	if r.Command != "" {
 		return r.Command, "the command you gave"
@@ -643,7 +651,7 @@ func buildJob(f *inspect.Facts, r Request, p *Plan) error {
 		p.Decisions = append(p.Decisions, "Runs the image's own start command (CMD/ENTRYPOINT).")
 	}
 	gpu := r.GPU
-	if gpu == 0 && f != nil && f.UsesGPU && r.Goal != GoalLLMBatch {
+	if gpu == 0 && !r.NoGPU && f != nil && f.UsesGPU && r.Goal != GoalLLMBatch {
 		gpu = 1
 		p.Decisions = append(p.Decisions, "1 GPU because the code uses one ("+f.GPUReason+"). Pass gpu=0 to run on CPU only.")
 	}

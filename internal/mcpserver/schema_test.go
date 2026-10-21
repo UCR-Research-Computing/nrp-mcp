@@ -23,8 +23,8 @@ func listToolsForTest(t *testing.T) []*mcp.Tool {
 // "type": ["null", "array"] (seen through OpenCode on gemini-3.8-flash).
 func TestToolSchemasAreSingleTyped(t *testing.T) {
 	tools := listToolsForTest(t)
-	if len(tools) != 9 {
-		t.Fatalf("want 9 tools, got %d", len(tools))
+	if len(tools) != 10 {
+		t.Fatalf("want 10 tools, got %d", len(tools))
 	}
 	for _, tl := range tools {
 		b, _ := json.Marshal(tl.InputSchema)

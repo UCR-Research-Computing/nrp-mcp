@@ -137,15 +137,7 @@ func (o *Ops) StatusOf(ctx context.Context, ns string) (*Status, error) {
 	owned := map[string]bool{}
 	for _, j := range jobs.Items {
 		wl := wlFrom("Job", j)
-		st := mapGet(j, "status")
-		switch {
-		case num(st, "succeeded") > 0 && num(st, "active") == 0:
-			wl.Status = fmt.Sprintf("done (%d succeeded)", int(num(st, "succeeded")))
-		case num(st, "failed") > 0 && num(st, "active") == 0:
-			wl.Status = fmt.Sprintf("failed (%d failed)", int(num(st, "failed")))
-		default:
-			wl.Status = fmt.Sprintf("running (%d active, %d done)", int(num(st, "active")), int(num(st, "succeeded")))
-		}
+		wl.Status = jobStatus(j)
 		wl.Requests = podRequests(mapGet(mapGet(mapGet(mapGet(j, "spec"), "template"), "spec"), ""))
 		s.Workloads = append(s.Workloads, wl)
 		owned[wl.Name] = true
@@ -266,6 +258,18 @@ func created(m map[string]any) time.Time {
 	s, _ := mapGet(m, "metadata")["creationTimestamp"].(string)
 	t, _ := time.Parse(time.RFC3339, s)
 	return t
+}
+
+// jobStatus is a Job's state in plain words: done, failed or running.
+func jobStatus(j map[string]any) string {
+	st := mapGet(j, "status")
+	switch {
+	case num(st, "succeeded") > 0 && num(st, "active") == 0:
+		return fmt.Sprintf("done (%d succeeded)", int(num(st, "succeeded")))
+	case num(st, "failed") > 0 && num(st, "active") == 0:
+		return fmt.Sprintf("failed (%d failed)", int(num(st, "failed")))
+	}
+	return fmt.Sprintf("running (%d active, %d done)", int(num(st, "active")), int(num(st, "succeeded")))
 }
 
 func wlFrom(kind string, m map[string]any) Workload {
@@ -750,6 +754,12 @@ func (o *Ops) CleanupList(ctx context.Context, ns, run string, sc Scope) ([]Work
 				}
 			}
 			wl := wlFrom(strings.ToUpper(kind[:1])+kind[1:], it)
+			switch kind {
+			case "job":
+				wl.Status = jobStatus(it)
+			case "deployment":
+				wl.Status = fmt.Sprintf("%d/%d ready", int(num(mapGet(it, "status"), "readyReplicas")), int(num(mapGet(it, "spec"), "replicas")))
+			}
 			if !wl.Managed && run == "" {
 				continue
 			}

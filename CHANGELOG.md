@@ -3,6 +3,30 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before 1.0
 minor versions may change behavior.
 
+## [1.1.0] - 2026-10-21
+
+### Added
+
+- Guided mode. `nrp_plan` asks the person for missing details in one short form inside the
+  AI app (MCP elicitation) instead of leaving it to the assistant: the project folder, what to
+  do (job, sweep, web app, notebook), which file starts it when several could, GPU or not, the
+  number of sweep tasks, and, when saving results is not set up, whether to set it up first or
+  discard results. Answers show up as decisions in the plan and as `answers_to_reuse`. Apps
+  that cannot show forms, and people who decline, get the old behavior (the question in
+  `next` or a refusal with its fix).
+- `nrp_guide` (tenth tool, read-only): checks this computer, the sign-in, the namespace,
+  saving results and the person's runs, and returns the step they are on, a checklist, the
+  question to ask them (`ask_the_person`), what to call next, and any `terminal_command` the
+  person runs themselves. Stages: laptop, sign-in, namespace, results, project, running,
+  failed, finished.
+- Prompt `walk_me_through`: the assistant drives `nrp_guide` one question at a time.
+
+### Fixed
+
+- `gpu=0` now means CPU only. Before, an explicit `gpu=0` was ignored when the code looked
+  like it used a GPU, although the plan told people to pass it.
+- `nrp_cleanup` listings now show Job and Deployment status (done, failed, running, ready).
+
 ## [1.0.0] - 2026-10-20
 
 ### Added
