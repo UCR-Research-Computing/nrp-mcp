@@ -3,6 +3,22 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before 1.0
 minor versions may change behavior.
 
+## [1.1.2] - 2026-10-21
+
+### Changed
+
+- Smoother approvals. In AI apps that show MCP questions as a plain yes/no (Hermes Agent),
+  pressing yes in the app's own prompt now approves: the assistant cannot press it, so no
+  code is needed. 1.1.1 asked for a code instead. A decline, a cancel, or a prompt the app
+  could not show still falls back to a code, and an unticked box is still a no.
+- Removing your own finished run with no volumes (finished Jobs plus their ConfigMaps,
+  Secrets and bare pods) loses nothing, so it needs only your yes in the chat (a single-use
+  confirm token), not an approval. nrp-mcp lists the run again right before deleting and
+  refuses if anything changed. Volumes, web apps, anything still running and admin
+  "everyone" cleanups still need your approval.
+- The approval-code desktop notification now has the code in its text too ("Type ABC-234
+  in the chat to approve: ...") and plays a sound on macOS.
+
 ## [1.1.1] - 2026-10-21
 
 ### Fixed

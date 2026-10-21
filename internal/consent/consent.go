@@ -156,7 +156,7 @@ func (c *Codes) Issue(planID, planHash, action, summary string) (string, time.Ti
 	if notify == nil {
 		notify = DesktopNotify
 	}
-	notify("nrp-mcp approval code "+shown, summary)
+	notify("nrp-mcp approval code "+shown, "Type "+shown+" in the chat to approve: "+summary)
 	return code, exp, nil
 }
 
@@ -210,7 +210,7 @@ func DesktopNotify(title, body string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("osascript", "-e", fmt.Sprintf("display notification %q with title %q", body, title))
+		cmd = exec.Command("osascript", "-e", fmt.Sprintf("display notification %q with title %q sound name \"Glass\"", body, title))
 	case "linux":
 		if _, err := exec.LookPath("notify-send"); err != nil {
 			return

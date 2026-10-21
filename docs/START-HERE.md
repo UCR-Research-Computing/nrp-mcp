@@ -265,8 +265,10 @@ researchers can use the shared cluster:
 
 1. Ask: **"What runs do I have?"** (`nrp_cleanup` with no arguments lists every run labelled
    with your identity in the namespace).
-2. Ask: **"Clean up run `<id>`."** `nrp_cleanup` lists the exact objects it will remove and
-   waits for your approval code before deleting them.
+2. Ask: **"Clean up run `<id>`."** `nrp_cleanup` lists the exact objects it will remove.
+   A finished run with no volumes loses nothing, so your "yes" in the chat is enough.
+   Anything with a volume, a web app or still running waits for your own approval (a
+   question from your AI app, or a code).
 3. **Volumes hold data:** if a run includes a shared volume (`PersistentVolumeClaim`), copy
    your files down with `nrp_data action=down` before approving its deletion.
 

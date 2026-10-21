@@ -50,13 +50,13 @@
 <section class="hero">
   <div class="container hero-grid">
     <div class="hero-copy">
-      <div class="kicker">MCP server<span class="sep">/</span>Nautilus<span class="sep">/</span>v1.1.1</div>
+      <div class="kicker">MCP server<span class="sep">/</span>Nautilus<span class="sep">/</span>v1.1.2</div>
       <h1>Run your research on Nautilus by talking to your AI assistant.</h1>
       <p class="lead"><code>nrp-mcp</code> is a small MCP server that runs on your own computer. Point it at your Nautilus sign-in and it turns "here is my code, run it on a GPU" into a reviewed plan and a running job. It knows the NRP's rules, so you don't have to learn Kubernetes first.</p>
       <div class="actions">
         <a class="btn gold solid" href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/docs/START-HERE.md"><i class="fa-solid fa-play" aria-hidden="true"></i> Start here</a>
         <a class="btn gold" href="https://github.com/UCR-Research-Computing/nrp-mcp"><i class="fa-brands fa-github" aria-hidden="true"></i> View on GitHub</a>
-        <a class="btn gold" href="https://github.com/UCR-Research-Computing/nrp-mcp/releases/latest"><i class="fa-solid fa-tag" aria-hidden="true"></i> Release v1.1.1</a>
+        <a class="btn gold" href="https://github.com/UCR-Research-Computing/nrp-mcp/releases/latest"><i class="fa-solid fa-tag" aria-hidden="true"></i> Release v1.1.2</a>
       </div>
       <div class="badges">
         <a href="https://github.com/UCR-Research-Computing/nrp-mcp/actions/workflows/ci.yml"><img src="https://github.com/UCR-Research-Computing/nrp-mcp/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status" height="20" loading="lazy"></a>
@@ -218,7 +218,7 @@
     </div>
     <div class="safety">
       <div class="s-item"><i class="fa-solid fa-user-lock" aria-hidden="true"></i><div><h3>Runs as you, on your computer</h3><p>Uses your kubeconfig and the NRP's sign-in. Never reads or stores your token.</p></div></div>
-      <div class="s-item"><i class="fa-solid fa-key" aria-hidden="true"></i><div><h3>Your approval, not the AI's</h3><p>Public web, GPUs, deleting and uploading wait for you: a question from your AI app, or a one-time code from <code>nrp-mcp approve</code>. Other runs need a single-use token bound to the exact plan.</p></div></div>
+      <div class="s-item"><i class="fa-solid fa-key" aria-hidden="true"></i><div><h3>Your approval, not the AI's</h3><p>Public web, GPUs, deleting data and uploading wait for you: a yes in your AI app's own prompt, or a one-time code in a desktop notification. Other runs, and removing a finished run, need your yes and a single-use token bound to the exact plan.</p></div></div>
       <div class="s-item"><i class="fa-solid fa-globe" aria-hidden="true"></i><div><h3>Nothing goes public by accident</h3><p>A web plan publishes only after your approval code, and public apps expire after 14 days.</p></div></div>
       <div class="s-item"><i class="fa-solid fa-users" aria-hidden="true"></i><div><h3>Shared namespaces are safe</h3><p>Every object is labelled with its owner; cleanup sees only your runs unless a namespace admin asks for everyone's.</p></div></div>
       <div class="s-item"><i class="fa-solid fa-gauge" aria-hidden="true"></i><div><h3>Caps</h3><p>On pods and GPUs running at once, tasks per sweep, and hours per run.</p></div></div>

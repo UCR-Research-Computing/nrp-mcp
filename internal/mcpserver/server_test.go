@@ -1354,10 +1354,10 @@ func TestDeclinedQuestionFallsBackToCode(t *testing.T) {
 	}
 }
 
-// Hermes Agent shows MCP questions as a plain yes/no and answers accept with no content.
-// That is not the person ticking approve: nrp-mcp must not run, must show a code, and must
-// use codes (not questions) for the rest of the session.
-func TestYesNoOnlyClientGetsACode(t *testing.T) {
+// Hermes Agent shows MCP questions as a plain yes/no in its own prompt and answers accept
+// with no content. The person pressed yes there (the assistant cannot), so it approves
+// (1.1.2). Each risky step still asks again.
+func TestYesNoClientApprovesInItsOwnPrompt(t *testing.T) {
 	asked := 0
 	cs, fk, codes := setupWith(t, "ask", func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
 		asked++
@@ -1366,16 +1366,94 @@ func TestYesNoOnlyClientGetsACode(t *testing.T) {
 	dir := project(t, map[string]string{"app.py": "import streamlit as st\nst.write('hi')\n"})
 	m, _, _ := call(t, cs, "nrp_plan", map[string]any{"project": dir, "goal": "web"})
 	out, isErr, text := call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"]})
-	if isErr || out["waiting_for_approval"] != true || fk.applied() != 0 || codes.lastCode() == "" {
-		t.Fatalf("empty accept must not run; want a code: %v %s", out, text)
+	if isErr || out["started"] != true || fk.applied() != 1 || codes.lastCode() != "" {
+		t.Fatalf("a yes in the app's own prompt should run it with no code: %v %s", out, text)
 	}
-	if _, isErr, _ = call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"], "approval_code": codes.lastCode()}); isErr || fk.applied() != 1 {
-		t.Fatal("the person's code should run it")
-	}
-	// Next risky step in the same session: straight to a code, no second question.
 	c1, _, _ := call(t, cs, "nrp_cleanup", map[string]any{"run": "r-1"})
-	w, _, _ := call(t, cs, "nrp_cleanup", map[string]any{"plan_id": c1["plan_id"]})
-	if asked != 1 || w["waiting_for_approval"] != true {
-		t.Fatalf("after an empty accept the session should use codes: asked=%d %v", asked, w)
+	if _, isErr, text = call(t, cs, "nrp_cleanup", map[string]any{"plan_id": c1["plan_id"]}); isErr || fk.deleted() != 2 {
+		t.Fatalf("cleanup: %s", text)
+	}
+	if asked != 2 {
+		t.Fatalf("every risky step asks the person again: asked=%d", asked)
+	}
+}
+
+// A ticked-off box (accept with approve=false) is a no.
+func TestUntickedBoxIsANo(t *testing.T) {
+	cs, fk, _ := setupWith(t, "ask", func(context.Context, *mcp.ElicitRequest) (*mcp.ElicitResult, error) {
+		return &mcp.ElicitResult{Action: "accept", Content: map[string]any{approveKey: false}}, nil
+	})
+	dir := project(t, map[string]string{"app.py": "import streamlit as st\nst.write('hi')\n"})
+	m, _, _ := call(t, cs, "nrp_plan", map[string]any{"project": dir, "goal": "web"})
+	if _, isErr, _ := call(t, cs, "nrp_run", map[string]any{"plan_id": m["plan_id"]}); !isErr || fk.applied() != 0 {
+		t.Fatal("approve=false must not run")
+	}
+}
+
+const finishedJob = `{"items":[{"metadata":{"name":"train","labels":{"app.kubernetes.io/managed-by":"nrp-mcp","nrp-mcp/run":"r-1"},"creationTimestamp":"2026-10-06T10:00:00Z"},"status":{"succeeded":1}}]}`
+
+// Removing your own finished run with no volumes loses nothing: it needs only the
+// person's yes in the chat (a confirm token), no approval code or question (1.1.2).
+func TestFinishedRunCleanupNeedsOnlyAChatYes(t *testing.T) {
+	cs, fk, codes := setupWith(t, "code", nil)
+	fk.out = map[string]string{"get job -l": finishedJob}
+	m, isErr, text := call(t, cs, "nrp_cleanup", map[string]any{"run": "r-1"})
+	if isErr || m["confirm_token"] == nil || m["needs_person_approval"] == true || !strings.Contains(fmt.Sprint(m["next"]), "Ask the person in the chat") {
+		t.Fatalf("finished run should get a confirm token: %v %s", m, text)
+	}
+	if fk.deleted() != 0 {
+		t.Fatal("listing must not delete")
+	}
+	_, isErr, text = call(t, cs, "nrp_cleanup", map[string]any{"plan_id": m["plan_id"], "confirm_token": m["confirm_token"]})
+	if isErr || fk.deleted() != 2 || codes.lastCode() != "" {
+		t.Fatalf("delete with the token: %s (%d)", text, fk.deleted())
+	}
+	if _, isErr, _ = call(t, cs, "nrp_cleanup", map[string]any{"plan_id": m["plan_id"], "confirm_token": m["confirm_token"]}); !isErr {
+		t.Fatal("a confirm token works once")
+	}
+}
+
+// If the run changed after it was listed (a volume appeared, or it is running again),
+// the token deletes nothing.
+func TestFinishedRunTokenRefusedWhenRunChanged(t *testing.T) {
+	cs, fk, _ := setupWith(t, "code", nil)
+	fk.out = map[string]string{"get job -l": finishedJob}
+	m, _, _ := call(t, cs, "nrp_cleanup", map[string]any{"run": "r-1"})
+	fk.mu.Lock()
+	fk.out = map[string]string{"get job -l": finishedJob, "get pvc -l": `{"items":[{"metadata":{"name":"data","labels":{"app.kubernetes.io/managed-by":"nrp-mcp","nrp-mcp/run":"r-1"}}}]}`}
+	fk.mu.Unlock()
+	_, isErr, text := call(t, cs, "nrp_cleanup", map[string]any{"plan_id": m["plan_id"], "confirm_token": m["confirm_token"]})
+	if !isErr || fk.deleted() != 0 || !strings.Contains(text, "changed") {
+		t.Fatalf("a changed run must not be deleted with the token: %s (%d)", text, fk.deleted())
+	}
+}
+
+// Volumes, web apps, running jobs and everyone's runs still need the person's approval.
+func TestRiskyCleanupStillNeedsApproval(t *testing.T) {
+	for name, objs := range map[string][]ops.Workload{
+		"running": {{Kind: "Job", Status: "running (1 active, 0 done)"}},
+		"volume":  {{Kind: "Job", Status: "done (1 succeeded)"}, {Kind: "Pvc"}},
+		"web":     {{Kind: "Deployment", Status: "1/1 ready"}, {Kind: "Ingress"}},
+		"empty":   {},
+		"no job":  {{Kind: "Configmap"}},
+	} {
+		if lowRiskCleanup(objs, false) {
+			t.Errorf("%s: must need approval", name)
+		}
+	}
+	if lowRiskCleanup([]ops.Workload{{Kind: "Job", Status: "done (1 succeeded)"}}, true) {
+		t.Error("everyone's runs must need approval")
+	}
+	if !lowRiskCleanup([]ops.Workload{{Kind: "Job", Status: "failed (1 failed)"}, {Kind: "Configmap"}, {Kind: "Secret"}, {Kind: "Pod"}}, false) {
+		t.Error("a failed job with its config and secret is low risk")
+	}
+	// A confirm token is never accepted for a plan that needs approval.
+	cs, fk, _ := setupWith(t, "code", nil)
+	m, _, _ := call(t, cs, "nrp_cleanup", map[string]any{"run": "r-1"}) // fake job: still running
+	if m["confirm_token"] != nil || m["needs_person_approval"] != true {
+		t.Fatalf("running job should need approval: %v", m)
+	}
+	if _, isErr, _ := call(t, cs, "nrp_cleanup", map[string]any{"plan_id": m["plan_id"], "confirm_token": "nrp-made-up"}); fk.deleted() != 0 && !isErr {
+		t.Fatal("a made-up token deleted a run that needs approval")
 	}
 }

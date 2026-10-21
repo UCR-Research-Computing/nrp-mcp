@@ -23,7 +23,7 @@ import (
 func main() {
 	bin := flag.String("bin", "nrp-mcp", "nrp-mcp binary")
 	ns := flag.String("ns", "", "namespace")
-	yesno := flag.Bool("yesno", false, "act like Hermes Agent: show questions as plain yes/no and answer accept with nothing filled in; approvals then use the code (read from approve.txt, as the person)")
+	yesno := flag.Bool("yesno", false, "act like Hermes Agent: show questions as plain yes/no and answer accept with nothing filled in (the person pressed yes in the app's prompt)")
 	flag.Parse()
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 	defer cancel()
@@ -163,33 +163,40 @@ print("fit done")
 		fail("results not downloaded: %v", err)
 	}
 
+	// 1.1.2: a finished run with no volumes loses nothing, so cleanup needs only the
+	// person's yes in the chat (a confirm token), no approval question or code.
 	c1 := call("nrp_cleanup", map[string]any{"run": run})
-	c2 := call("nrp_cleanup", map[string]any{"plan_id": c1["plan_id"]})
-	if *yesno {
-		if c2["waiting_for_approval"] != true {
-			fail("yes/no app: cleanup should wait for a code, got %v", c2)
-		}
-		fmt.Println("CLEANUP waiting for the person's code (as the person, read approve.txt)")
-		home, _ := os.UserHomeDir()
-		b, err := os.ReadFile(filepath.Join(home, ".local", "state", "nrp-mcp", "approve.txt"))
-		must(err)
-		code := ""
-		if l, _, ok := strings.Cut(string(b), "\n"); ok {
-			code = strings.TrimSpace(strings.TrimPrefix(l, "nrp-mcp approval code:"))
-		}
-		if code == "" {
-			fail("no code in approve.txt")
-		}
-		c2 = call("nrp_cleanup", map[string]any{"plan_id": c1["plan_id"], "approval_code": code})
+	fmt.Println("CLEANUP STEP 1:", c1["summary"])
+	if c1["confirm_token"] == nil || c1["needs_person_approval"] == true {
+		fail("finished run should be a low-risk cleanup with a confirm token, got %v", c1)
 	}
-	fmt.Println("CLEANUP:", c2["summary"], c2["deleted"])
-	if !*yesno && approvals != 1 {
-		fail("expected one approval question for cleanup, got %d", approvals)
+	c2 := call("nrp_cleanup", map[string]any{"plan_id": c1["plan_id"], "confirm_token": c1["confirm_token"]})
+	fmt.Println("CLEANUP (chat yes):", c2["summary"])
+	if approvals != 0 {
+		fail("a finished-run cleanup must not ask an approval question, got %d", approvals)
 	}
-	if *yesno && approvals != 0 {
-		// The empty form answer already told nrp-mcp this app cannot fill in questions,
-		// so cleanup goes straight to a code.
-		fail("yes/no app: expected no approval question after the empty form answer, got %d", approvals)
+
+	// A still-running job is not low risk: removing it needs the person's approval in the
+	// app's own prompt. A yes/no app answers accept with nothing filled in; that is the
+	// person's yes (1.1.2).
+	must(os.WriteFile(filepath.Join(dir, "fit.py"), []byte("import time\nprint('waiting')\ntime.sleep(600)\n"), 0o644))
+	sp := call("nrp_plan", map[string]any{"project": dir, "cpu": "1", "memory": "1Gi", "hours": 1, "name": "e2e-guide-run", "command": "python fit.py", "gpu": 0, "goal": "job"})
+	if sp["runnable"] != true {
+		fail("sleep plan not runnable: %v | %v", sp["refusals"], sp["next"])
+	}
+	sr := call("nrp_run", map[string]any{"plan_id": sp["plan_id"], "confirm_token": sp["confirm_token"]})
+	srun := fmt.Sprint(sr["run_id"])
+	fmt.Println("RUN 2 (keeps running):", sr["summary"])
+	time.Sleep(15 * time.Second)
+	d1 := call("nrp_cleanup", map[string]any{"run": srun})
+	fmt.Println("CLEANUP 2 STEP 1:", d1["summary"])
+	if d1["confirm_token"] != nil || d1["needs_person_approval"] != true {
+		fail("a running job must need approval, got %v", d1)
+	}
+	d2 := call("nrp_cleanup", map[string]any{"plan_id": d1["plan_id"]})
+	fmt.Println("CLEANUP 2:", d2["summary"])
+	if approvals != 1 || d2["waiting_for_approval"] == true || d2["deleted"] == nil {
+		fail("expected one approval question answered in the app and the run deleted: approvals=%d %v", approvals, d2)
 	}
 	g = call("nrp_guide", nil)
 	fmt.Printf("GUIDE END: stage=%v | %v\n", g["stage"], g["summary"])

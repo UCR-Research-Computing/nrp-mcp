@@ -60,7 +60,7 @@ Hermes Agent, Gemini CLI, OpenCode, Claude Code, Claude Desktop, VS Code, Cursor
 | "Put my lab's tool on the web" | Deployment, Service and HTTPS address; suggests names; publishes only after your approval code and expires after 14 days |
 | "Containerize this" | A Dockerfile and a GitHub Actions workflow that builds your image on every push (no new account, no keys); NRP GitLab as an option |
 | "Deploy the new version" | Updates your running web app in place, same address |
-| "Clean up" | Lists what you made and deletes it after your approval code |
+| "Clean up" | Lists what you made and deletes it after your yes (finished runs) or your approval (volumes, web apps, anything running) |
 
 See it applied to real science: [20 research examples](docs/examples/README.md), from bee
 repellent screening and climate ensembles to mission records, seismology and econometrics.
@@ -216,10 +216,12 @@ See [SECURITY.md](SECURITY.md) for details and how to report a problem.
 
 ### Approving risky steps
 
-Public web apps, GPU work, deleting, uploading and installing need your approval, not the
-AI's. If your AI app can ask you a question, nrp-mcp asks you directly. Otherwise it shows
-you a short code, for example ABC-234, in a desktop notification and in `nrp-mcp approve`
-(run it in your own terminal). Type the code into the chat; the assistant passes it as
+Public web apps, GPU work, deleting volumes or anything still running, uploading and
+installing need your approval, not the AI's. If your AI app can ask you a question (a
+yes/no prompt is enough), nrp-mcp asks you directly. Otherwise it shows you a short code,
+for example ABC-234, in a desktop notification (with a sound on macOS) and in
+`nrp-mcp approve` (run it in your own terminal). Removing a finished run with no volumes
+loses nothing, so your "yes" in the chat is enough for that. Type the code into the chat; the assistant passes it as
 `approval_code`. Codes work once, for that plan only, for 10 minutes. Never share a code
 with anyone, and never paste one you did not ask for.
 

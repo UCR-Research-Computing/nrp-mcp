@@ -358,7 +358,7 @@ func New(s *Server) *mcp.Server {
 			return nil, r, err
 		})
 
-	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_cleanup", Description: "Remove what nrp-mcp created. Step 1 (run=<id>): lists that run's objects and returns a cleanup plan_id. Step 2: call again with plan_id; deleting needs the person's own approval (a question in the app, or a code shown only to them that they type here; then call again with approval_code). Never guess a code. Never touches objects nrp-mcp did not create.", Annotations: writes("Clean up", true)}, s.cleanupTool)
+	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_cleanup", Description: "Remove what nrp-mcp created. Step 1 (run=<id>): lists that run's objects and returns a cleanup plan_id. Step 2: if step 1 returned a confirm_token (a finished run with no volumes: nothing is lost), ask the person in the chat and only after their yes call again with plan_id and confirm_token. Otherwise deleting needs the person's own approval: call again with plan_id; nrp-mcp asks them in the app or shows them a code to type here (then call again with approval_code). Never guess a code. Never touches objects nrp-mcp did not create.", Annotations: writes("Clean up", true)}, s.cleanupTool)
 
 	mcp.AddTool(srv, &mcp.Tool{Name: "nrp_session", Description: "Connect to an interactive Jupyter or VS Code session started with nrp_plan(goal=session) + nrp_run: reports readiness, gives the kubectl port-forward command and the local URL with its sign-in token. Sessions are never public. For no install, the NRP's hosted JupyterHub is https://jupyterhub-west.nrp-nautilus.io.", Annotations: readOnly("Session")}, s.sessionTool)
 
@@ -974,7 +974,23 @@ func (s *Server) cleanupTool(ctx context.Context, req *mcp.CallToolRequest, in c
 		if p.Goal != plan.GoalCleanup {
 			return nil, nil, errors.New("that plan is not a cleanup plan")
 		}
-		if s.Cfg.Consent == "token" {
+		lowRisk, _ := p.Extra["low_risk"].(bool)
+		if s.Cfg.Consent == "token" || (lowRisk && in.ConfirmToken != "" && in.ApprovalCode == "") {
+			if lowRisk && s.Cfg.Consent != "token" {
+				// Check again right before deleting: the token only covers a finished run
+				// with no volumes and nothing still running.
+				sc := ops.Scope{}
+				if o, _ := p.Extra["owner_scope"].(string); o != "" {
+					sc.Owner = o
+				}
+				now, err := s.Ops.CleanupList(ctx, p.Namespace, p.Run, sc)
+				if err != nil {
+					return nil, nil, err
+				}
+				if !lowRiskCleanup(now, false) || !sameTargets(now, p.Extra["targets"]) {
+					return nil, nil, fmt.Errorf("run %s changed since it was listed (something new or still running), so nothing was deleted. Call nrp_cleanup run=%s again", p.Run, p.Run)
+				}
+			}
 			if err := s.Store.Redeem(in.ConfirmToken, p, "cleanup"); err != nil {
 				return nil, nil, err
 			}
@@ -1043,19 +1059,27 @@ func (s *Server) cleanupTool(ctx context.Context, req *mcp.CallToolRequest, in c
 	}
 	cp := plan.Cleanup(ns, in.Run, names)
 	cp.Extra["owner_scope"] = sc.Owner
+	low := s.Cfg.Consent != "token" && lowRiskCleanup(objs, in.Everyone)
+	if low {
+		cp.Extra["low_risk"] = true
+	}
 	cp.Hash = plan.Hash(cp)
 	if err := s.Store.SavePlan(cp); err != nil {
 		return nil, nil, err
 	}
 	out.Summary = fmt.Sprintf("Run %s has %d object(s) in %s: %s. Volumes listed here are deleted with their data; copy results down first (nrp_data action=down).", in.Run, len(objs), ns, strings.Join(names, ", "))
 	out.PlanID = cp.ID
-	if s.Cfg.Consent == "token" {
+	if s.Cfg.Consent == "token" || low {
 		tok, _, err := s.Store.Issue(cp, "cleanup")
 		if err != nil {
 			return nil, nil, err
 		}
 		out.ConfirmToken = tok
 		out.Next = "If the person agrees, call nrp_cleanup with plan_id and confirm_token."
+		if low {
+			out.Summary = fmt.Sprintf("Run %s is finished and has %d object(s) in %s: %s. No volumes and nothing running, so removing it loses no data.", in.Run, len(objs), ns, strings.Join(names, ", "))
+			out.Next = "Ask the person in the chat if they want this finished run removed. Only if they say yes, call nrp_cleanup with plan_id and confirm_token."
+		}
 		return nil, out, nil
 	}
 	out.NeedsOK = true
@@ -1691,4 +1715,52 @@ func collapseNullable(s *jsonschema.Schema) {
 	for _, sub := range s.AnyOf {
 		collapseNullable(sub)
 	}
+}
+
+// lowRiskCleanup reports whether deleting objs loses nothing: the person's own run (not
+// everyone's), at least one Job, every Job finished, and nothing but its ConfigMaps,
+// Secrets and bare pods. No volumes, no web apps, nothing still running. Such a cleanup
+// needs only the person's yes in the chat (a confirm token), not an approval (1.1.2).
+func lowRiskCleanup(objs []ops.Workload, everyone bool) bool {
+	if everyone || len(objs) == 0 {
+		return false
+	}
+	jobs := 0
+	for _, o := range objs {
+		switch o.Kind {
+		case "Job":
+			if !strings.HasPrefix(o.Status, "done") && !strings.HasPrefix(o.Status, "failed") {
+				return false
+			}
+			jobs++
+		case "Configmap", "Secret", "Pod":
+		default:
+			return false
+		}
+	}
+	return jobs > 0
+}
+
+// sameTargets reports whether objs are still exactly the Kind/Name list that was shown.
+func sameTargets(objs []ops.Workload, targets any) bool {
+	want := map[string]bool{}
+	switch v := targets.(type) {
+	case []string:
+		for _, s := range v {
+			want[s] = true
+		}
+	case []any:
+		for _, s := range v {
+			want[fmt.Sprint(s)] = true
+		}
+	}
+	if len(want) != len(objs) {
+		return false
+	}
+	for _, o := range objs {
+		if !want[o.Kind+"/"+o.Name] {
+			return false
+		}
+	}
+	return true
 }
