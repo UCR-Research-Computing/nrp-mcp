@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/UCR-Research-Computing/nrp-mcp/internal/client"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/config"
 )
 
@@ -201,6 +202,61 @@ func TestInstallPs1Structure(t *testing.T) {
 		}
 		if strings.Contains(strings.ToLower(trimmed), "setx") {
 			t.Fatalf("install.ps1 must never use setx: %s", line)
+		}
+	}
+}
+
+func TestRunClientCLIOutputAndBackup(t *testing.T) {
+	home := t.TempDir()
+	env := &client.Env{
+		GOOS:    "darwin",
+		Home:    home,
+		BinPath: "/opt/nrp/bin/nrp-mcp",
+	}
+	wantRestart := map[string]string{
+		"claude-desktop": "restart Claude Desktop",
+		"claude-code":    "restart Claude Code",
+		"vscode":         "restart VS Code",
+		"cursor":         "restart Cursor",
+		"gemini":         "restart Gemini CLI",
+		"opencode":       "restart OpenCode",
+		"hermes":         "restart Hermes Agent",
+	}
+
+	oldOut := os.Stdout
+	defer func() { os.Stdout = oldOut }()
+
+	for _, name := range client.All {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stdout = w
+		code := runClientWithEnv(env, []string{name})
+		_ = w.Close()
+		os.Stdout = oldOut
+		buf := make([]byte, 4096)
+		n, _ := r.Read(buf)
+		out := string(buf[:n])
+		if code != 0 {
+			t.Fatalf("runClientWithEnv(%s) code=%d out=%s", name, code, out)
+		}
+		if !strings.Contains(out, wantRestart[name]) {
+			t.Fatalf("output for %s missing %q: %s", name, wantRestart[name], out)
+		}
+		if !strings.Contains(out, `["serve"]`) {
+			t.Fatalf("output for %s missing [\"serve\"]: %s", name, out)
+		}
+		// Run a second time to verify .bak is created and mentioned.
+		r2, w2, _ := os.Pipe()
+		os.Stdout = w2
+		code2 := runClientWithEnv(env, []string{name})
+		_ = w2.Close()
+		os.Stdout = oldOut
+		n2, _ := r2.Read(buf)
+		out2 := string(buf[:n2])
+		if code2 != 0 || !strings.Contains(out2, ".bak") {
+			t.Fatalf("second run for %s did not report .bak: code=%d out=%s", name, code2, out2)
 		}
 	}
 }

@@ -92,23 +92,27 @@ signs you in through your browser. It ends with *"This computer is ready for Nau
 
 **4. Add it to your AI client**
 
-Tested end to end (live cluster, Gemini API key) with each of these:
+Run `nrp-mcp client <name>` once in your terminal:
 
-| Client | Add nrp |
-|---|---|
-| [Hermes Agent](https://hermes-agent.nousresearch.com/) | `hermes mcp add nrp --command nrp-mcp --args serve` |
-| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `gemini mcp add nrp nrp-mcp serve` |
-| [OpenCode](https://opencode.ai/) | add `"mcp": {"nrp": {"type": "local", "command": ["nrp-mcp", "serve"]}}` to `opencode.json` |
-| Claude Code | `claude mcp add nrp -- nrp-mcp serve` |
-
-Claude Desktop, Cursor, VS Code and others (`mcpServers` block):
-
-```json
-{"mcpServers": {"nrp": {"command": "nrp-mcp", "args": ["serve"]}}}
+```
+nrp-mcp client claude-desktop   # or: claude-code, vscode, cursor, gemini, opencode, hermes
 ```
 
-Use the full path to `nrp-mcp` if your client doesn't see your shell's PATH, and add
-`"--namespace", "<your-namespace>"` to `args` to pick a default.
+It writes your user-scope client configuration with the full path to `nrp-mcp` and `["serve"]`,
+backs up any existing config file to `.bak`, and tells you to restart the app. Pass
+`--namespace <your-namespace>` to pin a default namespace.
+
+Tested end to end (live cluster, Gemini API key) with each of these:
+
+| Client | Automatic (`nrp-mcp client`) | Manual CLI / config |
+|---|---|---|
+| [Hermes Agent](https://hermes-agent.nousresearch.com/) | `nrp-mcp client hermes` (`~/.hermes/config.yaml`) | `hermes mcp add nrp --command /full/path/to/nrp-mcp --args serve` |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `nrp-mcp client gemini` (`~/.gemini/settings.json`) | `gemini mcp add --scope user nrp /full/path/to/nrp-mcp serve` |
+| [OpenCode](https://opencode.ai/) | `nrp-mcp client opencode` (`~/.config/opencode/opencode.json`) | `"mcp": {"nrp": {"type": "local", "command": ["/full/path/to/nrp-mcp", "serve"], "enabled": true}}` |
+| Claude Code | `nrp-mcp client claude-code` (`~/.claude.json`) | `claude mcp add --scope user nrp -- /full/path/to/nrp-mcp serve` |
+| Claude Desktop | `nrp-mcp client claude-desktop` | `mcpServers` in `claude_desktop_config.json` |
+| Cursor | `nrp-mcp client cursor` (`~/.cursor/mcp.json`) | `mcpServers` in `~/.cursor/mcp.json` |
+| VS Code | `nrp-mcp client vscode` (`User/mcp.json`) | `"servers": {"nrp": {"type": "stdio", "command": "/full/path/to/nrp-mcp", "args": ["serve"]}}` |
 
 **5. Ask:** *"Where do I stand on Nautilus?"*
 
@@ -224,6 +228,8 @@ Command-line flags for `serve`, `setup` and `doctor`: `--kubeconfig`, `--context
 | `nrp-mcp init` | Write an example config (never overwrites) |
 | `nrp-mcp approve` | Show the current approval code (run it in your own terminal) |
 | `nrp-mcp s3 setup` | Save your NRP S3 keys for job results (hidden input, file 0600) |
+| `nrp-mcp client <name>` | Add nrp-mcp (user scope, full binary path) to `claude-desktop`, `claude-code`, `vscode`, `cursor`, `gemini`, `opencode`, or `hermes` (keeps `.bak`) |
+| `nrp-mcp kubectl ...` | Run the installed `kubectl` with the NRP kubeconfig and context |
 | `nrp-mcp version` | Print the version |
 
 ## How it works

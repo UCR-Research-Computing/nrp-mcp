@@ -21,6 +21,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/term"
 
+	"github.com/UCR-Research-Computing/nrp-mcp/internal/client"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/config"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/consent"
 	"github.com/UCR-Research-Computing/nrp-mcp/internal/kube"
@@ -43,13 +44,15 @@ Usage:
   nrp-mcp init       write an example ~/.config/nrp-mcp/config.yaml (never overwrites)
   nrp-mcp approve    show the newest approval code (for when no notification appeared)
   nrp-mcp s3 setup   save your NRP S3 keys (from https://nrp.ai/s3token/) so job results are kept
+  nrp-mcp client <name>  add nrp-mcp (user scope, full path) to an MCP client:
+                     claude-desktop, claude-code, vscode, cursor, gemini, opencode, hermes
   nrp-mcp kubectl    run the installed kubectl with the NRP kubeconfig and context
   nrp-mcp version
 
 Flags (serve, doctor, setup): --config PATH  --kubeconfig PATH  --context NAME  --namespace NS
 
-Add to an MCP client, e.g. Claude Desktop or Claude Code:
-  {"mcpServers": {"nrp": {"command": "nrp-mcp", "args": ["serve"]}}}
+Add to an MCP client automatically with ` + "`" + `nrp-mcp client <name>` + "`" + `, or in JSON (Claude Desktop, Cursor):
+  {"mcpServers": {"nrp": {"command": "/full/path/to/nrp-mcp", "args": ["serve"]}}}
 `
 
 func main() {
@@ -73,6 +76,8 @@ func main() {
 		os.Exit(runS3Setup(config.Load(config.DefaultPath())))
 	case "kubectl":
 		os.Exit(runKubectl(config.Load(config.DefaultPath()), args))
+	case "client":
+		os.Exit(runClient(args))
 	case "serve", "doctor", "setup":
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 		cfgPath := fs.String("config", config.DefaultPath(), "config file")
@@ -278,6 +283,45 @@ func runKubectl(cfg config.Config, args []string) int {
 	return 0
 }
 
+// runClient writes the user-scope MCP configuration for the named client.
+func runClient(args []string) int {
+	e, err := client.DefaultEnv()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return runClientWithEnv(e, args)
+}
+
+func runClientWithEnv(e *client.Env, args []string) int {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
+		fmt.Fprintf(os.Stderr, "usage: nrp-mcp client <%s>\n", strings.Join(client.All, "|"))
+		return 2
+	}
+	name := args[0]
+	fs := flag.NewFlagSet("client", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	ns := fs.String("namespace", "", "optional default namespace to pass to nrp-mcp serve")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	var extra []string
+	if *ns != "" {
+		extra = []string{"--namespace", *ns}
+	}
+	res, err := e.Configure(name, extra...)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	fmt.Printf("Wrote %s (%s, user scope) with %s [\"serve\"].\n", res.Path, res.App, e.BinPath)
+	if res.Backup != "" {
+		fmt.Printf("Backed up previous file to %s.\n", res.Backup)
+	}
+	fmt.Printf("Next: %s so it picks up the new nrp server.\n", res.Restart)
+	return 0
+}
+
 func runInit() int {
 	p := config.DefaultPath()
 	if _, err := os.Stat(p); err == nil {
@@ -366,7 +410,7 @@ func runSetup(cfg config.Config, yes, noSignIn bool) int {
 		fmt.Println("To use kubectl in your own terminal:", r.PathHint)
 	}
 	if r.Ready {
-		fmt.Println("Next: add nrp-mcp to your AI client (see README), or run `nrp-mcp doctor`.")
+		fmt.Println("Next: run `nrp-mcp client <claude-desktop|claude-code|vscode|cursor|gemini|opencode|hermes>` to connect your AI assistant, or `nrp-mcp doctor`.")
 		return 0
 	}
 	return 1

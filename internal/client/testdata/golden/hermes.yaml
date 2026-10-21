@@ -1,0 +1,4 @@
+mcp_servers:
+  nrp:
+    command: "/opt/nrp/bin/nrp-mcp"
+    args: ["serve"]
