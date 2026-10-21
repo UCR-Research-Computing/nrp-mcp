@@ -30,11 +30,11 @@ None of these groups use nrp-mcp today; this is an illustration.
 
 **Researcher:** Done. The project folder has `fetch_subject.py`, `run_fmriprep.sh` and `subjects.txt`.
 
-**Assistant:** First a shared volume for outputs, then the license. [nrp_plan goal=volume name=ds201 size=500Gi data_is_p1=true] Plan: one 500 GiB CephFS volume (ReadWriteMany), mounted at /data by jobs; purged after 6 months without use, so it is not an archive. Approve? **Researcher:** Yes. [nrp_run] Created. [nrp_data action=up volume=ds201 local=~/fs/license.txt path=/license data_is_p1=true] The license is at /data/license/license.txt.
+**Assistant:** First a shared volume for outputs, then the license. [nrp_plan goal=volume name=ds201 size=500Gi data_is_p1=true] Plan (`resources` shown per object; pass `show_manifests=true` for full YAML): one 500 GiB CephFS volume (ReadWriteMany), mounted at /data by jobs; purged after 6 months without use, so it is not an archive. Approve? **Researcher:** Yes. [nrp_run] Created. [nrp_data action=up volume=ds201 local=~/fs/license.txt path=/license data_is_p1=true approval_code=...] (uploaded after you enter the 6-character code from `nrp-mcp approve`). The license is at /data/license/license.txt.
 
 **Researcher:** Start with a two-subject pilot. (An MRIQC sweep, 4 CPU / 8 GiB per subject, already ran the same way.)
 
-**Assistant:** [nrp_plan goal=sweep count=2 parallel=2 cpu=8 memory=16Gi image=nipreps/fmriprep:25.2.6 data_volume=ds201 hours=24 command="bash run_fmriprep.sh"] Summary: an Indexed Job with 2 tasks, 8 CPU and 16 GiB each, limits equal to requests, no GPU. Each task picks its subject from `subjects.txt` via $SLURM_ARRAY_TASK_ID, downloads it into pod scratch, and writes derivatives to /data/derivatives. Warning R16: requests over 1 CPU / 2 GiB are checked for usage, and FreeSurfer is partly single-threaded, so CPU use will dip. Approve? **Researcher:** Yes. [nrp_run] Running; run card written to `.nrp/runs/`.
+**Assistant:** [nrp_plan goal=sweep count=2 parallel=2 cpu=8 memory=16Gi scratch=50Gi image=nipreps/fmriprep:25.2.6 data_volume=ds201 hours=24 discard_results=true command="bash run_fmriprep.sh"] Summary: an Indexed Job with 2 tasks, 8 CPU, 16 GiB RAM and 50 GiB ephemeral scratch each, limits equal to requests, no GPU (`discard_results=true` satisfies R23 if S3 keys are not set, since derivatives go to `/data/derivatives`). Each task picks its subject from `subjects.txt` via $SLURM_ARRAY_TASK_ID, downloads it into pod scratch, and writes derivatives to /data/derivatives. Warning R16: requests over 1 CPU / 2 GiB are checked for usage, and FreeSurfer is partly single-threaded, so CPU use will dip. Approve? **Researcher:** Yes. [nrp_run] Running; run card written to `.nrp/runs/`.
 
 **Researcher:** How is it going? (next morning)
 
@@ -42,15 +42,15 @@ None of these groups use nrp-mcp today; this is an illustration.
 
 **Researcher:** Fine. Run all 86, as fast as is polite.
 
-**Assistant:** 43 at a time is within the default cap of 50 pods at once, and the total of 86 tasks is well under the per-sweep task cap, so no config change is needed. The time limit covers the whole sweep, so for two waves of 8-10 h I will set 36 h. [nrp_plan goal=sweep count=86 parallel=43 cpu=8 memory=24Gi image=nipreps/fmriprep:25.2.6 data_volume=ds201 hours=36] Summary: 86 tasks, 43 at a time, 8 CPU / 24 GiB each, about 344 cores at peak, no GPU. Approve? **Researcher:** Yes. [nrp_run]
+**Assistant:** 43 at a time is within the default cap of 50 pods at once, and the total of 86 tasks is well under the per-sweep task cap, so no config change is needed. The time limit covers the whole sweep, so for two waves of 8-10 h I will set 36 h. [nrp_plan goal=sweep count=86 parallel=43 cpu=8 memory=24Gi scratch=50Gi image=nipreps/fmriprep:25.2.6 data_volume=ds201 hours=36 discard_results=true] Summary: 86 tasks, 43 at a time, 8 CPU / 24 GiB / 50 GiB scratch each, about 344 cores at peak, no GPU. Approve? **Researcher:** Yes. [nrp_run]
 
 **Researcher:** Status?
 
-**Assistant:** [nrp_watch target=<run> grep="fMRIPrep finished"] 84 succeeded, 2 failed with exit 1. Last log lines for both: "No BOLD images found". That points at the input, not the cluster: check whether those two subjects have functional runs in this snapshot, and if not, record them as exclusions in your methods. My script also copied each subject's HTML report and confounds TSVs to /data/summary. [nrp_data action=down volume=ds201 path=/summary local=./results] Reports and confounds are in `./results`; the full derivatives (about 200 GB) stay on the volume for your denoising jobs.
+**Assistant:** [nrp_watch target=<run> grep="fMRIPrep finished"] 84 succeeded, 2 failed with exit 1. Last log lines (`untrusted_logs`) for both: "No BOLD images found". That points at the input, not the cluster: check whether those two subjects have functional runs in this snapshot, and if not, record them as exclusions in your methods. My script also copied each subject's HTML report and confounds TSVs to /data/summary. [nrp_data action=down volume=ds201 path=/summary local=./results] Reports and confounds are in `./results`; the full derivatives (about 200 GB) stay on the volume for your denoising jobs.
 
 **Researcher:** Clean up the jobs but keep the volume.
 
-**Assistant:** [nrp_cleanup] Step 1 lists your runs: the pilot, the full sweep, the MRIQC sweep and the volume run. I will remove only the three job runs. [nrp_cleanup run=<sweep-run>] (and the same for the other two) Each step 1 lists the Job and its ConfigMap. Confirm? **Researcher:** Yes. [nrp_cleanup plan_id=...] You approve each deletion (a question in your AI app, or the code nrp-mcp shows you). Deleted; the ds201 volume is untouched.
+**Assistant:** [nrp_cleanup] Step 1 lists your runs: the pilot, the full sweep, the MRIQC sweep and the volume run. I will remove only the three job runs. [nrp_cleanup run=<sweep-run>] (and the same for the other two) Each step 1 lists the Job and its ConfigMap. Confirm? **Researcher:** Yes. [nrp_cleanup plan_id=... approval_code=...] You approve each deletion with your approval code (`nrp-mcp approve`). Deleted; the ds201 volume is untouched.
 
 ## What nrp builds
 
@@ -78,8 +78,8 @@ Assumptions: 8-10 h per subject at 8 cores with FreeSurfer, about 2 GB input and
 ## Limits and honest caveats
 
 - **Data sensitivity is the main boundary.** Only public, de-identified data (OpenNeuro CC0) belongs here. Your own IRB-governed scans, and any dataset under a data use agreement, go to Ursa Major Tier 2, the Secure Enclave or HPCC as RC advises.
-- **FreeSurfer license:** nrp-mcp has no option to mount an arbitrary Kubernetes Secret into a Job (it does so only for the LLM token). The volume route above works but is readable by your namespace; a Secret created with kubectl and mounted by hand is cleaner. Never put `license.txt` in the project folder, which is copied into a ConfigMap.
-- **Scratch disk:** fMRIPrep's work directory can reach tens of GB per subject. The sketch uses the pod's local scratch (`/work`), which is fast but has no ephemeral-storage request, so a very full node could evict a task. Scratch on CephFS is safer but slow (about 86 MiB/s per writer in a UCR test).
+- **FreeSurfer license:** nrp-mcp has no option to mount an arbitrary Kubernetes Secret into a Job (it does so only for the LLM token and S3 results). The volume route above works but is readable by your namespace; a Secret created with `nrp-mcp kubectl` and mounted by hand is cleaner. Never put `license.txt` in the project folder, which is copied into a ConfigMap.
+- **Scratch disk:** fMRIPrep's work directory can reach tens of GB per subject. `nrp-mcp` sets a 10 GiB `ephemeral-storage` request by default (R4) and accepts `scratch=50Gi` for large per-subject scratch in `/work`. Scratch on CephFS is larger but slower (about 86 MiB/s per writer in a UCR test).
 - **Usage checks:** single-threaded FreeSurfer phases can pull average CPU toward the 20% floor of an 8-core request; 6 cores is a reasonable compromise.
 - **Sweep time limit** covers all waves (cap 48 h unless raised).
 - **Not an archive:** volumes are purged after 6 months idle.

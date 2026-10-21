@@ -38,7 +38,7 @@ Your caps are fine as they are: 50 pods at the same time is within `pods_per_run
 
 **Researcher:** Makes sense. Use 36 hours.
 
-**Assistant:** First a volume for the output: [nrp_plan goal=volume size=100Gi data_is_p1=true] [nrp_run]. Then [nrp_plan project=~/proj/floes hours=36 data_volume=floes-data] Plan: an Indexed Job `floes` with 1,000 tasks, 50 at a time, image python:3.12-slim with requirements.txt (numpy, numba, pandas) installed at start, 2 CPU and 4 GiB each with limits equal to requests (required above 100 pods), output to /data/runs, 36 h limit, and no GPU. Your code is CPU numba, and a GPU would sit idle and get the account flagged. Run it?
+**Assistant:** First a volume for the output: [nrp_plan goal=volume size=100Gi data_is_p1=true] [nrp_run]. `params.csv` in your project is P1 simulation parameters (`data_is_p1=true`), and because `sim.py` writes outputs to `/data/runs` on the shared volume (or to your personal S3 bucket if you ran `nrp-mcp s3 setup`), we pass `discard_results=true` if S3 keys are not set. [nrp_plan project=~/proj/floes hours=36 data_volume=floes-data data_is_p1=true discard_results=true] Plan (`resources` shown per object; pass `show_manifests=true` for full YAML): an Indexed Job `floes` with 1,000 tasks, 50 at a time, image python:3.12-slim with requirements.txt (numpy, numba, pandas) installed at start, 2 CPU and 4 GiB each with limits equal to requests (required above 100 pods), output to /data/runs, 36 h limit, and no GPU. Your code is CPU numba, and a GPU would sit idle and get the account flagged. Run it?
 
 **Researcher:** Yes.
 
@@ -46,15 +46,15 @@ Your caps are fine as they are: 50 pods at the same time is within `pods_per_run
 
 **Researcher:** Status?
 
-**Assistant:** [nrp_watch] 612 succeeded, 50 running, 7 failed. All 7 exited with code 1, and the last log lines are `FloatingPointError: floe velocities non-finite at step 41210`. [nrp_watch grep="SLURM_ARRAY_TASK_ID="] They are tasks 88, 176, 264, 352, 440, 528 and 616. In params.csv all of them have wind speed 20 m/s and restitution 0.95. That points to the explicit time step being too large for fast, nearly elastic collisions, not a cluster problem. Fix: cap dt by the collision time, for example dt = min(dt, 0.05 * t_contact). When the sweep finishes, I'll rerun just those IDs. Your script takes an `--ids` list, so a 7-task sweep maps $JOB_COMPLETION_INDEX onto them.
+**Assistant:** [nrp_watch] 612 succeeded, 50 running, 7 failed. All 7 exited with code 1, and the last log lines (`untrusted_logs`) are `FloatingPointError: floe velocities non-finite at step 41210`. [nrp_watch grep="SLURM_ARRAY_TASK_ID="] They are tasks 88, 176, 264, 352, 440, 528 and 616. In params.csv all of them have wind speed 20 m/s and restitution 0.95. That points to the explicit time step being too large for fast, nearly elastic collisions, not a cluster problem. Fix: cap dt by the collision time, for example dt = min(dt, 0.05 * t_contact). When the sweep finishes, I'll rerun just those IDs. Your script takes an `--ids` list, so a 7-task sweep maps $JOB_COMPLETION_INDEX onto them.
 
 **Researcher:** Patched. Rerun them.
 
-**Assistant:** [nrp_watch] Main sweep: 993 succeeded. [nrp_plan project=~/proj/floes count=7 parallel=7 hours=4 data_volume=floes-data command="python sim.py --ids 88,176,264,352,440,528,616"] [nrp_run] All 7 succeeded in about 70 minutes. [nrp_plan goal=job command="python collect.py" data_volume=floes-data] [nrp_run] collect.py merges the 1,000 summaries into `phase_map.parquet` (40 MB) and compares spreading rates against the NSIDC-0116 Fram Strait subset you uploaded. [nrp_data down path=summary/] The results are in ~/proj/floes/summary. [nrp_cleanup] lists 4 runs. Confirm?
+**Assistant:** [nrp_watch] Main sweep: 993 succeeded. [nrp_plan project=~/proj/floes count=7 parallel=7 hours=4 data_volume=floes-data data_is_p1=true discard_results=true command="python sim.py --ids 88,176,264,352,440,528,616"] [nrp_run] All 7 succeeded in about 70 minutes. [nrp_plan goal=job command="python collect.py" data_volume=floes-data data_is_p1=true discard_results=true] [nrp_run] collect.py merges the 1,000 summaries into `phase_map.parquet` (40 MB) and compares spreading rates against the NSIDC-0116 Fram Strait subset you uploaded (with your `approval_code` on `nrp_data action=up`). [nrp_data action=down volume=floes-data path=summary/] The results are in ~/proj/floes/summary. [nrp_cleanup] lists 4 runs. Confirm?
 
 **Researcher:** Confirm. Keep the volume a month.
 
-**Assistant:** [nrp_cleanup plan_id=...] You approve the deletion (a question in your AI app, or the code nrp-mcp shows you). Deleted. The volume `floes-data` stays. Untouched volumes are purged after 6 months.
+**Assistant:** [nrp_cleanup plan_id=... approval_code=...] You approve the deletion with your approval code (`nrp-mcp approve`). Deleted. The volume `floes-data` stays. Untouched volumes are purged after 6 months.
 
 ## What nrp builds
 
@@ -78,7 +78,7 @@ For comparison, on a 10-core laptop it would take about 8 days of continuous run
 - **The pod cap counts pods running at the same time.** `%50` fits the default `pods_per_run` of 50, and the 1,000 total counts against `tasks_per_run` (default 10,000). A higher `%` needs a lower parallel or `pods_per_run` raised on purpose. Above 100 pods in a run the NRP requires limits equal to requests, and nrp-mcp sets that automatically.
 - **No MPI.** Lines like `--nodes`/`--ntasks` get a note that multi-node MPI belongs on the HPCC or Ursa Major. A single very large simulation, such as millions of floes with domain decomposition, is a poor fit for Nautilus. Many independent small runs are ideal.
 - **What does not carry over.** Partitions, accounts, QOS, `--output` paths, mail notifications and job dependencies have no equivalent here. Logs come from nrp_watch, and anything you want to keep must be written to /data.
-- **Data behind a login.** NSIDC needs an Earthdata login, which the anonymous `pull` goal does not support. Use small uploads, or NRP S3 for larger staging. UCR RC has not yet tested S3 with nrp-mcp.
+- **Data behind a login.** NSIDC needs an Earthdata login, which the anonymous `pull` goal does not support. Use small uploads (`nrp_data action=up`, approved with your code), or standard S3 tools for larger staging; job outputs written to `/work/results` go to your personal NRP S3 bucket once you run `nrp-mcp s3 setup`.
 
 ## Starter kit
 

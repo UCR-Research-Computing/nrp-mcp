@@ -35,15 +35,15 @@ Nothing here is sensitive. If a follow-up study probed models on real user chats
 
 **Assistant:** [nrp_plan goal=volume size=500Gi data_is_p1=true] Plan: one shared CephFS volume "probe-data" (rook-cephfs-central, ReadWriteMany), mounted at /data by jobs and sessions. Note: unused volumes are purged after 6 months. Approve? **Researcher:** Yes. [nrp_run] Created.
 
-**Assistant:** Llama and Gemma are gated, and nrp-mcp only wires a Secret for the NRP LLM token. The simplest path: start a private session, sign in to Hugging Face there, and download the weights and SAEs into /data once. [nrp_plan goal=session data_volume=probe-data cpu=4 memory=16Gi] then [nrp_session] gives you a port-forward command and a local Jupyter link. The token stays in that session, not in any spec.
+**Assistant:** Llama and Gemma are gated, and nrp-mcp only wires a Secret for the NRP LLM token. The simplest path: start a private session, sign in to Hugging Face there, and download the weights and SAEs into /data once. [nrp_plan goal=session data_volume=probe-data cpu=4 memory=16Gi] then [nrp_session] gives you an `nrp-mcp kubectl ... port-forward` command and a local Jupyter link. The token stays in that session, not in any spec.
 
 **Researcher:** Done, weights are in /data/models. Now plan the sweep: extract.py reads SLURM_ARRAY_TASK_ID and picks a model x benchmark cell, looping over layers.
 
-**Assistant:** [nrp_plan goal=sweep count=12 parallel=4 gpu=1 data_volume=probe-data] Summary: an Indexed Job, 12 tasks, 4 at a time, each on 1 standard GPU with 4 CPU and 16 GiB (limits equal requests), image pytorch/pytorch, requirements.txt installed at start, /data mounted, 8 GiB /dev/shm, 24 h limit, retries. Each task gets $SLURM_ARRAY_TASK_ID 0..11. 4 GPUs at the same time is within your gpus_per_run cap of 4, so the default caps pass; the 12 tasks run in three waves of 4. The 24 h limit covers the whole sweep, all three waves, not each task; at 1-3 h per cell that fits. Confirm token valid 10 minutes. **Researcher:** Go. [nrp_run] Running; run card written to .nrp/runs/.
+**Assistant:** [nrp_plan goal=sweep count=12 parallel=4 gpu=1 data_volume=probe-data discard_results=true] Summary (`resources` shown per object; full YAML omitted unless `show_manifests=true`): an Indexed Job, 12 tasks, 4 at a time, each on 1 standard GPU with 4 CPU and 16 GiB (limits equal requests), image pytorch/pytorch, requirements.txt installed at start, /data mounted, 8 GiB /dev/shm, 24 h limit, retries (`discard_results=true` satisfies R23 if S3 keys are not set, since activations go to `/data/acts`). Each task gets $SLURM_ARRAY_TASK_ID 0..11. 4 GPUs at the same time is within your gpus_per_run cap of 4, so the default caps pass; the 12 tasks run in three waves of 4. The 24 h limit covers the whole sweep, all three waves, not each task; at 1-3 h per cell that fits. Because this plan uses GPUs (`needs_person_approval: true`), [nrp_run plan_id=...] sends a 6-character code to your notification and `nrp-mcp approve`. **Researcher:** P4N-7VR. [nrp_run plan_id=... approval_code=P4N-7VR] Running; run card written to .nrp/runs/.
 
 **Researcher:** How is it going?
 
-**Assistant:** [nrp_watch] 9 of 12 running or done. Tasks 4-7 (Gemma-2-9B) failed: exit 1, last log lines show "torch.OutOfMemoryError: CUDA out of memory" on an RTX A4000 (16 GB). This is GPU memory, not pod memory: 9B in bf16 plus SAEs needs more than 16 GB. Fix: request a 48 GB card. [nrp_plan goal=sweep count=4 gpu=1 gpu_type=a40 command="SLURM_OFFSET=4 python extract.py"] reruns just those four on A40s. **Researcher:** Yes. [nrp_run]
+**Assistant:** [nrp_watch] 9 of 12 running or done. Tasks 4-7 (Gemma-2-9B) failed: exit 1, last log lines (`untrusted_logs`) show "torch.OutOfMemoryError: CUDA out of memory" on an RTX A4000 (16 GB). This is GPU memory, not pod memory: 9B in bf16 plus SAEs needs more than 16 GB. Fix: request a 48 GB card. [nrp_plan goal=sweep count=4 gpu=1 gpu_type=a40 data_volume=probe-data discard_results=true command="SLURM_OFFSET=4 python extract.py"] reruns just those four on A40s. **Researcher:** Yes, code is H2K-9BM. [nrp_run plan_id=... approval_code=H2K-9BM]
 
 **Researcher:** Also run the black-box baseline: ask qwen3 and gpt-oss each question with a 0-100 confidence.
 
@@ -51,7 +51,7 @@ Nothing here is sensitive. If a follow-up study probed models on real user chats
 
 **Researcher:** All done? Bring back the summaries and clean up, but keep the volume.
 
-**Assistant:** [nrp_watch] All 12 cells and the baseline succeeded. [nrp_data down volume=probe-data path=results/] copied 310 MB of probe scores, AUROC tables and feature lists to ./results. [nrp_cleanup] lists 4 runs (two sweeps, the session, the LLM job); after your second yes they are deleted. The volume stays.
+**Assistant:** [nrp_watch] All 12 cells and the baseline succeeded. [nrp_data action=down volume=probe-data path=results/] copied 310 MB of probe scores, AUROC tables and feature lists to ./results. [nrp_cleanup] lists 4 runs (two sweeps, the session, the LLM job); after you approve with your approval code (`nrp-mcp approve`) they are deleted. The volume stays.
 
 ## What nrp builds
 

@@ -49,27 +49,27 @@ None of these groups use nrp-mcp today; this is an illustration.
 
 > **Instructor:** Yes.
 
-> **Assistant:** [nrp_run] volume Bound; [nrp_run] pull finished. [nrp_plan goal=job gpu=1 cpu=4 memory=16Gi command="python train_reference.py"] picks pytorch/pytorch, one regular GPU, 24 h limit, 2 retries. Confirm?
+> **Assistant:** [nrp_run] volume Bound; [nrp_run] pull finished. [nrp_plan goal=job gpu=1 cpu=4 memory=16Gi data_volume=course-data discard_results=true command="python train_reference.py"] picks pytorch/pytorch, one regular GPU, 24 h limit, 2 retries (`resources` shown per object; full YAML omitted unless `show_manifests=true`). Because this plan uses a GPU (`needs_person_approval: true`), [nrp_run plan_id=...] sends a 6-character code to your notification and `nrp-mcp approve`.
 
-> **Instructor:** Confirm.
+> **Instructor:** Code is T8N-5KW.
 
-> **Assistant:** [nrp_run] Started. [nrp_watch] after a minute: failed, exit code 1, `ModuleNotFoundError: No module named 'timm'`. The stock image lacks it and the project has no requirements.txt. Fix: add `timm` to requirements.txt (installed at start), or use [nrp_build] for a reusable course image built on NRP GitLab.
+> **Assistant:** [nrp_run plan_id=... approval_code=T8N-5KW] Started. [nrp_watch] after a minute: failed, exit code 1, `ModuleNotFoundError: No module named 'timm'` (`untrusted_logs`). The stock image lacks it and the project has no requirements.txt (`nrp_plan` also flags imported packages when `requirements.txt` is missing). Fix: add `timm` to requirements.txt (installed at start), or use [nrp_build] for a reusable course image built on GitHub Actions or NRP GitLab (`target=gitlab`).
 
 > **Instructor:** Use requirements.txt for now and rerun.
 
-> **Assistant:** Added. [nrp_plan] again, confirm, [nrp_run]. [nrp_watch]: running on an RTX A5000, GPU utilization 85%, epoch 12/30. Finished in 41 minutes, 93.1% test accuracy; checkpoint at /data/checkpoints/resnet18_cifar10.pt.
+> **Assistant:** Added. [nrp_plan] again, approved with your code, [nrp_run]. [nrp_watch]: running on an RTX A5000, GPU utilization 85%, epoch 12/30. Finished in 41 minutes, 93.1% test accuracy; checkpoint at /data/checkpoints/resnet18_cifar10.pt.
 
 > **Instructor:** Students on the hosted hub can't mount that volume, right?
 
-> **Assistant:** Correct. [nrp_data down path=/data/checkpoints] brings the 45 MB checkpoint to your laptop; publish it so the notebook can download it. To dry-run the student notebook: [nrp_plan goal=session gpu=1 cpu=4 memory=16Gi], a private Jupyter. Because NRP policy (R8) forbids Deployments from requesting GPUs, a GPU session runs as a Job with a 6 h time limit (`activeDeadlineSeconds`, configurable up to 12 h via `gpu_session_hours`) plus a Service for port-forward, and must be used actively (>= 40% GPU utilization). Approve?
+> **Assistant:** Correct. [nrp_data action=down volume=course-data path=/data/checkpoints] brings the 45 MB checkpoint to your laptop; publish it so the notebook can download it. To dry-run the student notebook: [nrp_plan goal=session gpu=1 cpu=4 memory=16Gi data_volume=course-data], a private Jupyter. Because NRP policy (R8) forbids Deployments from requesting GPUs, a GPU session runs as a Job with a 6 h time limit (`activeDeadlineSeconds`, configurable up to 12 h via `gpu_session_hours`) plus a Service for port-forward, and must be used actively (>= 40% GPU utilization). Approve with your approval code?
 
 > **Instructor:** Confirm, and pin it to an A40 so the timings match my slides.
 
-> **Assistant:** Replanned with gpu=a40, confirm, [nrp_run]. [nrp_watch] after 5 minutes: Pending, `Insufficient nvidia.com/gpu`: no free node with that GPU type right now. Fix: ask for any regular GPU instead of a specific model. Replanned with gpu=1; [nrp_session] shows it ready, with the port-forward command and a local URL with its sign-in token. On class day, keep a CPU path through each GPU exercise.
+> **Assistant:** Replanned with `gpu_type=a40`, approved with your code, [nrp_run]. [nrp_watch] after 5 minutes: Pending, `Insufficient nvidia.com/a40`: no free node with that GPU type right now. Fix: ask for any regular GPU instead of a specific model. Replanned with `gpu=1`; [nrp_session] shows it ready, with the `nrp-mcp kubectl ... port-forward` command and a local URL with its sign-in token. On class day, keep a CPU path through each GPU exercise.
 
 > **Instructor:** Notebook works. Clean up my test runs and keep the volume until the end of term.
 
-> **Assistant:** [nrp_cleanup] lists the pull, both training jobs and the sessions; deletes them after your second yes. The volume stays. At the end of term, `nrp_cleanup everyone=true` (as admin) removes anything students made with nrp-mcp; objects made by hand with kubectl need KB030 section 11.
+> **Assistant:** [nrp_cleanup] lists the pull, both training jobs and the sessions; deletes them after your approval code (`nrp-mcp approve`). The volume stays. At the end of term, `nrp_cleanup everyone=true` (as admin) removes anything students made with nrp-mcp; objects made by hand with kubectl need KB030 section 11.
 
 ## What nrp builds
 
@@ -96,7 +96,7 @@ Assumptions: 40 students, 10 weeks, CPU labs of about 2 hours a week on 1-2 core
 
 - **No reserved capacity.** A class asking for GPUs at once can leave students Pending. Stagger GPU labs, pair students, keep a CPU path.
 - **Join links last at most 90 days.** Semester courses add students directly.
-- **The hosted hub cannot mount the class volume** (per KB030; to be confirmed with the NRP). Distribute data by Git or public URLs; public NRP S3 objects work too, but S3 is not yet tested by UCR RC.
+- **The hosted hub cannot mount the class volume** (per KB030; to be confirmed with the NRP). Distribute data by Git, public URLs, or public NRP S3 objects (`nrp-mcp s3 setup` configures personal S3 keys for job results).
 - **Per-student nrp sessions:** GPU sessions run as Jobs with `activeDeadlineSeconds` (default 6 h, max 12 h) because NRP policy forbids Deployments from holding GPUs, and must stay above 40% GPU utilization or the namespace is flagged. CPU-only sessions are Deployments and are removed after 2 weeks.
 - **5 GB home folders** on the hub fill fast with model weights.
 - **Instructor responsibility.** Teach the day-one rules in KB030 section 10 (no `sleep` jobs, limits within 20% of requests, give GPUs back, no secrets in specs).

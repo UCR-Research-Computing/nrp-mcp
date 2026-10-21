@@ -22,35 +22,35 @@ The motivating real-data analysis is different. The United States Renal Data Sys
 
 **Researcher:** This folder has jmsim.R and jmsim.sbatch. On the HPCC I run it with --array=1-3000%50. Can I run it on Nautilus without changing it?
 
-**Assistant:** [nrp_status] No CPU quota limits, nothing running. [nrp_plan goal=sweep slurm_script=jmsim.sbatch] Each line becomes: --job-name -> object name jmsim; --cpus-per-task=1 -> cpu 1; --mem=2G -> memory 2Gi; --time=02:00:00 -> a 2 h Job time limit, but on Kubernetes that limit covers the whole sweep, not each task, and 60 waves of 5-15 minutes need far longer, so I set hours=16 instead; --array=1-3000%50 -> Indexed Job with 3,000 tasks, each with its own $SLURM_ARRAY_TASK_ID (1..3000), and %50 becomes parallelism 50; "module load R" -> replaced by the container image (rocker/r-ver); Rscript jmsim.R -> the command. The default caps pass: 50 pods at the same time is within pods_per_run (50), and 3,000 tasks is under tasks_per_run (10,000). With more than 100 pods in the run, R4 applies and nrp sets limits equal to requests.
+**Assistant:** [nrp_status] No CPU quota limits, nothing running. [nrp_plan goal=sweep slurm_script=jmsim.sbatch discard_results=true] Each line becomes: --job-name -> object name jmsim; --cpus-per-task=1 -> cpu 1; --mem=2G -> memory 2Gi; --time=02:00:00 -> a 2 h Job time limit, but on Kubernetes that limit covers the whole sweep, not each task, and 60 waves of 5-15 minutes need far longer, so I set hours=16 instead; --array=1-3000%50 -> Indexed Job with 3,000 tasks, each with its own $SLURM_ARRAY_TASK_ID (1..3000), and %50 becomes parallelism 50; "module load R" -> replaced by the container image (`rocker/r-ver:4.4.2`); Rscript jmsim.R -> the command. The default caps pass: 50 pods at the same time is within pods_per_run (50), and 3,000 tasks is under tasks_per_run (10,000). With more than 100 pods in the run, R4 applies and nrp sets limits equal to requests (`resources` are returned concisely unless `show_manifests=true`).
 
 **Researcher:** Good. Where do results go?
 
-**Assistant:** I need somewhere to keep them: [nrp_plan goal=volume size=10Gi data_is_p1=true] (synthetic data only). **Researcher:** Yes to the volume. [nrp_run] Created "jmsim-results".
+**Assistant:** Two options: run `nrp-mcp s3 setup` once so each task uploads `/work/results` to your personal NRP S3 bucket (`nrp_data action=down run=<id>`), or keep all 3,000 RDS files on a shared cluster volume so a combine job can reduce them to one table first: [nrp_plan goal=volume size=10Gi data_is_p1=true] (synthetic data only). **Researcher:** Yes to the volume. [nrp_run] Created "jmsim-results".
 
 **Researcher:** Before 3,000 tasks, try 5.
 
-**Assistant:** [nrp_plan goal=job command="Rscript jmsim.R --ids 1,2,3,4,5" data_volume=jmsim-results] One Job that fits replicates 1-5 in a row, 1 CPU and 2 GiB, image rocker/r-ver. **Researcher:** Go. [nrp_run] [nrp_watch] Failed, exit 1: "Error in library(JM): there is no package called 'JM'". rocker/r-ver is plain R; your HPCC module had the packages preinstalled. Installing them in 3,000 tasks would waste time and hammer CRAN; build an image once.
+**Assistant:** [nrp_plan goal=job command="Rscript jmsim.R --ids 1,2,3,4,5" data_volume=jmsim-results discard_results=true] One Job that fits replicates 1-5 in a row, 1 CPU and 2 GiB, image `rocker/r-ver:4.4.2`. Note: `nrp_plan` warns that `jmsim.R` loads `JM`, `nlme` and `survival` with no `install.R` in the folder. **Researcher:** Go anyway to check. [nrp_run] [nrp_watch] Failed, exit 1: "Error in library(JM): there is no package called 'JM'". `nrp-mcp` runs `install.R` at start when present, but compiling `JM` in 3,000 pods would waste time and hammer CRAN; build an image once.
 
 **Researcher:** Build one.
 
-**Assistant:** [nrp_build] Two files for a project on NRP GitLab (https://gitlab.nrp-nautilus.io): a Dockerfile FROM rocker/r-ver:4.4 adding JM, JMbayes2, nlme, survival and splines2, and a .gitlab-ci.yml that builds it with kaniko into gitlab-registry.nrp-nautilus.io/<group>/jmsim:1.0. nrp_build writes nothing; you commit and GitLab builds it.
+**Assistant:** [nrp_build target=gitlab] Two files for a project on NRP GitLab (https://gitlab.nrp-nautilus.io): a Dockerfile FROM `rocker/r-ver:4.4.2` adding JM, JMbayes2, nlme, survival and splines2, and a .gitlab-ci.yml that builds it with kaniko into gitlab-registry.nrp-nautilus.io/<group>/jmsim:1.0. nrp_build writes nothing; you commit and GitLab builds it.
 
 **Researcher:** Pipeline passed. Run the trial again with that image.
 
-**Assistant:** [nrp_plan goal=job command="Rscript jmsim.R --ids 1,2,3,4,5" image=gitlab-registry.nrp-nautilus.io/<group>/jmsim:1.0 data_volume=jmsim-results] [nrp_run] [nrp_watch] Succeeded; the 5 fits took 6-9 minutes each; five files rep_0001.rds .. rep_0005.rds in /data/sim.
+**Assistant:** [nrp_plan goal=job command="Rscript jmsim.R --ids 1,2,3,4,5" image=gitlab-registry.nrp-nautilus.io/<group>/jmsim:1.0 data_volume=jmsim-results discard_results=true] [nrp_run] [nrp_watch] Succeeded; the 5 fits took 6-9 minutes each; five files rep_0001.rds .. rep_0005.rds in /data/sim.
 
 **Researcher:** Now the full 3,000.
 
-**Assistant:** [nrp_plan goal=sweep slurm_script=jmsim.sbatch hours=16 image=gitlab-registry.nrp-nautilus.io/<group>/jmsim:1.0 data_volume=jmsim-results] Summary: an Indexed Job, 3,000 tasks, 50 at a time, 1 CPU and 2 GiB each (limits equal requests), 16 h limit for the whole sweep (60 waves). Each task gets $SLURM_ARRAY_TASK_ID 1..3000, which your script uses as the seed and to pick the scenario. Confirm token valid 10 minutes. **Researcher:** Go. [nrp_run] Running. Run card in .nrp/runs/.
+**Assistant:** [nrp_plan goal=sweep slurm_script=jmsim.sbatch hours=16 image=gitlab-registry.nrp-nautilus.io/<group>/jmsim:1.0 data_volume=jmsim-results discard_results=true] Summary: an Indexed Job, 3,000 tasks, 50 at a time, 1 CPU and 2 GiB each (limits equal requests), 16 h limit for the whole sweep (60 waves). Each task gets $SLURM_ARRAY_TASK_ID 1..3000, which your script uses as the seed and to pick the scenario. Confirm token valid 10 minutes. **Researcher:** Go. [nrp_run] Running. Run card in .nrp/runs/.
 
 **Researcher:** Status?
 
-**Assistant:** [nrp_watch] 2,991 succeeded, 9 failed. All 9 are in scenario 6 (n = 1000, 60% censoring); exit 137 with reason OOMKilled: they reached the 2 GiB limit. Fix: rerun those 9 with 3 GiB (raise memory 50%). [nrp_plan goal=job memory=3Gi command="Rscript jmsim.R --ids 2507,2533,..."] One Job that refits the 9 replicates in a row (about 75 minutes). **Researcher:** Yes. [nrp_run] [nrp_watch] 9 of 9 succeeded.
+**Assistant:** [nrp_watch] 2,991 succeeded, 9 failed. All 9 are in scenario 6 (n = 1000, 60% censoring); exit 137 with reason OOMKilled: they reached the 2 GiB limit. Fix: rerun those 9 with 3 GiB (raise memory 50%). [nrp_plan goal=job memory=3Gi data_volume=jmsim-results discard_results=true command="Rscript jmsim.R --ids 2507,2533,..."] One Job that refits the 9 replicates in a row (about 75 minutes). **Researcher:** Yes. [nrp_run] [nrp_watch] 9 of 9 succeeded.
 
 **Researcher:** Combine and bring the table home, then clean up.
 
-**Assistant:** [nrp_plan goal=job command="Rscript combine.R" image=...jmsim:1.0 data_volume=jmsim-results cpu=2 memory=4Gi] [nrp_run] Writes summary.csv (bias, ESE, ASE, coverage, MSE by scenario). [nrp_data down volume=jmsim-results path=summary/] 2 MB copied to ./summary. [nrp_cleanup] lists 5 runs; deleted after your second yes. The volume stays.
+**Assistant:** [nrp_plan goal=job command="Rscript combine.R" image=...jmsim:1.0 data_volume=jmsim-results cpu=2 memory=4Gi discard_results=true] [nrp_run] Writes summary.csv (bias, ESE, ASE, coverage, MSE by scenario). [nrp_data action=down volume=jmsim-results path=summary/] 2 MB copied to ./summary. [nrp_cleanup] lists 5 runs; deleted after you approve with [nrp_cleanup plan_id=... approval_code=...] (`nrp-mcp approve`). The volume stays.
 
 ## What nrp builds
 

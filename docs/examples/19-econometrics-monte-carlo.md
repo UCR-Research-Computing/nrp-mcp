@@ -27,19 +27,19 @@ Most of a Monte Carlo study is synthetic, so the data question is mostly about c
 
 > **Researcher:** I have an R Monte Carlo study for a new heteroskedasticity-robust IV estimator. On the HPCC I run `mc.sbatch` with `--array=1-2000%50`; each task is one design cell and one block of 500 replications. Can it run on Nautilus?
 
-> **Assistant:** [nrp_plan goal=sweep slurm_script=mc.sbatch] Reading your script: `--array=1-2000%50` becomes an Indexed Job with 2,000 tasks, 50 at a time, and each task keeps its own `$SLURM_ARRAY_TASK_ID` (1..2000), so `mc.R` runs unchanged. `--cpus-per-task=1` and `--mem=2G` become 1 CPU / 2Gi with limits equal to requests (required above 100 tasks, and this size is exempt from the usage-violation checks). `--time=02:00:00` is a per-task limit in Slurm, but on Kubernetes the Job's time limit covers the whole sweep (all waves): 2,000 tasks at 50 at a time is 40 waves, so at a few minutes per task I override it with hours=8 rather than 2 h. `--mail-user` has no equivalent; use nrp_watch. Image: rocker/r-ver, with `install.R` run at start. Results go to a volume, so first [nrp_plan goal=volume name=mc-results size=20Gi]. Confirm both?
+> **Assistant:** [nrp_plan goal=sweep slurm_script=mc.sbatch data_is_p1=true discard_results=true] Reading your script: `--array=1-2000%50` becomes an Indexed Job with 2,000 tasks, 50 at a time, and each task keeps its own `$SLURM_ARRAY_TASK_ID` (1..2000), so `mc.R` runs unchanged. `--cpus-per-task=1` and `--mem=2G` become 1 CPU / 2Gi with limits equal to requests (required above 100 tasks, and this size is exempt from the usage-violation checks; `resources` are returned concisely unless `show_manifests=true`). `--time=02:00:00` is a per-task limit in Slurm, but on Kubernetes the Job's time limit covers the whole sweep (all waves): 2,000 tasks at 50 at a time is 40 waves, so at a few minutes per task I override it with hours=8 rather than 2 h. `--mail-user` has no equivalent; use nrp_watch. Image: `rocker/r-ver:4.4.2`, with `install.R` run at start. Results can go to your personal NRP S3 bucket (`nrp-mcp s3 setup`) or to a shared volume (`discard_results=true`), so first [nrp_plan goal=volume name=mc-results size=20Gi data_is_p1=true]. Confirm both?
 
 > **Researcher:** Confirm.
 
-> **Assistant:** [nrp_run] volume Bound. [nrp_run] sweep mc-iv started; run card in .nrp/runs/. [nrp_watch] after 15 minutes: 0 succeeded, 50 running, but every pod's log shows the same thing: `install.packages` is compiling `sandwich`, `AER` and their dependencies from source, about 12 minutes per task. Across 2,000 tasks that wastes about 400 CPU-hours.
+> **Assistant:** [nrp_run] volume Bound. [nrp_run] sweep mc-iv started; run card in .nrp/runs/. [nrp_watch] after 15 minutes: 0 succeeded, 50 running, but every pod's log (`untrusted_logs`) shows the same thing: `install.packages` is compiling `sandwich`, `AER` and their dependencies from source, about 12 minutes per task. Across 2,000 tasks that wastes about 400 CPU-hours.
 
 > **Researcher:** That's silly. How do I avoid it?
 
-> **Assistant:** Build an image once. [nrp_build] writes a Dockerfile (FROM rocker/r-ver, then the packages from install.R, using the Posit binary repository so nothing compiles) and a .gitlab-ci.yml that builds it on NRP GitLab with kaniko into gitlab-registry.nrp-nautilus.io. It writes nothing itself; you commit the two files to a GitLab project. Meanwhile I can stop the current run with [nrp_cleanup].
+> **Assistant:** Build an image once. [nrp_build target=gitlab] writes a Dockerfile (FROM `rocker/r-ver:4.4.2`, then the packages from install.R, using the Posit binary repository so nothing compiles) and a .gitlab-ci.yml that builds it on NRP GitLab with kaniko into gitlab-registry.nrp-nautilus.io (or GitHub Actions into `ghcr.io` by default). It writes nothing itself; you commit the two files to a GitLab project. Meanwhile I can stop the current run with [nrp_cleanup].
 
 > **Researcher:** Done, the image built. Clean up the old run and start again with the image.
 
-> **Assistant:** [nrp_cleanup] lists mc-iv; deleted after your second yes. [nrp_plan goal=sweep slurm_script=mc.sbatch hours=8 image=gitlab-registry.nrp-nautilus.io/<group>/mc-iv:latest]. Confirm? ... [nrp_run]. [nrp_watch] an hour later: 412 succeeded, 50 running, packages load in 2 seconds, about 7 minutes per task.
+> **Assistant:** [nrp_cleanup] lists mc-iv; deleted after your approval code (`nrp-mcp approve`). [nrp_plan goal=sweep slurm_script=mc.sbatch hours=8 image=gitlab-registry.nrp-nautilus.io/<group>/mc-iv:v1 data_volume=mc-results data_is_p1=true discard_results=true]. Confirm? ... [nrp_run]. [nrp_watch] an hour later: 412 succeeded, 50 running, packages load in 2 seconds, about 7 minutes per task.
 
 > **Researcher:** Any failures?
 
@@ -47,11 +47,11 @@ Most of a Monte Carlo study is synthetic, so the data question is mostly about c
 
 > **Researcher:** Patched `mc.R` with tryCatch. Rerun those four.
 
-> **Assistant:** [nrp_plan goal=sweep count=4 parallel=4 command="Rscript mc.R --tasks 1201,1202,1203,1204"] Confirm? ... [nrp_run], [nrp_watch]: all 4 succeeded; 0.8% of replications in the hardest cell are singular. [nrp_data down path=/data/results] brought back 2,000 small RDS files (140 MB); `collect.R` on your laptop builds the bias, RMSE, coverage and size tables.
+> **Assistant:** [nrp_plan goal=sweep count=4 parallel=4 image=gitlab-registry.nrp-nautilus.io/<group>/mc-iv:v1 data_volume=mc-results data_is_p1=true discard_results=true command="Rscript mc.R --tasks 1201,1202,1203,1204"] Confirm? ... [nrp_run], [nrp_watch]: all 4 succeeded; 0.8% of replications in the hardest cell are singular. [nrp_data action=down volume=mc-results path=/data/results] brought back 2,000 small RDS files (140 MB); `collect.R` on your laptop builds the bias, RMSE, coverage and size tables.
 
 > **Researcher:** Great. Clean up, but keep the volume until the revision comes back.
 
-> **Assistant:** [nrp_cleanup] removes the two runs after your yes. The volume stays; it is purged after 6 months without access, so keep the RDS files and the seed log in your repository.
+> **Assistant:** [nrp_cleanup] removes the two runs after [nrp_cleanup plan_id=... approval_code=...] (`nrp-mcp approve`). The volume stays; it is purged after 6 months without access, so keep the RDS files and the seed log in your repository.
 
 ## What nrp builds
 

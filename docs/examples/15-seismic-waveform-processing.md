@@ -36,23 +36,23 @@ None of these groups use nrp-mcp today; this is an illustration.
 
 **Researcher:** OK. Here is the folder: `pick_station_year.py`, `stations.txt`, `requirements.txt`.
 
-**Assistant:** A small volume for results and a model cache first. [nrp_plan goal=volume name=seis size=200Gi data_is_p1=true] Approve? **Researcher:** Yes. [nrp_run] Now a 4-task pilot (one station, 4 years). [nrp_plan goal=sweep count=4 parallel=4 cpu=4 memory=8Gi data_volume=seis command="python pick_station_year.py"] Summary: Indexed Job, `python:3.12-slim` with `requirements.txt` installed at start, no GPU, each task reads $SLURM_ARRAY_TASK_ID and streams its days from the SCEDC bucket into the pod, writing picks to /data/picks. Approve? **Researcher:** Yes. [nrp_run]
+**Assistant:** A small volume for results and a model cache first. [nrp_plan goal=volume name=seis size=200Gi data_is_p1=true] Approve? **Researcher:** Yes. [nrp_run] Now a 4-task pilot (one station, 4 years). [nrp_plan goal=sweep count=4 parallel=4 cpu=4 memory=8Gi data_volume=seis discard_results=true command="python pick_station_year.py"] Summary (`resources` shown per object; full YAML omitted unless `show_manifests=true`): Indexed Job, `python:3.12-slim` with `requirements.txt` installed at start, no GPU (`discard_results=true` satisfies R23 if S3 keys are not set, since picks go to `/data/picks`), each task reads $SLURM_ARRAY_TASK_ID and streams its days from the SCEDC bucket into the pod, writing picks to /data/picks. Approve? **Researcher:** Yes. [nrp_run]
 
 **Researcher:** How did the pilot go?
 
-**Assistant:** [nrp_watch target=<run>] 3 succeeded, 1 failed after 2 retries, exit 1. Last log lines: `ConnectionError ... hifis-storage.desy.de ... Read timed out` while downloading PhaseNet weights. Each pod also spent several minutes installing SeisBench and PyTorch. With 200 tasks, that is 200 installs and 200 weight downloads from a shared server. Fix: build an image with SeisBench preinstalled, and keep the weights on the volume by setting `SEISBENCH_CACHE_ROOT=/data/sbcache`. [nrp_build project=.] I wrote a `Dockerfile` (FROM pytorch/pytorch, pip install seisbench) and a `.gitlab-ci.yml`. Push the folder to a project on gitlab.nrp-nautilus.io; kaniko builds `gitlab-registry.nrp-nautilus.io/<you>/seis-picker:latest`. A one-off Job then pre-fetches the weights into the cache.
+**Assistant:** [nrp_watch target=<run>] 3 succeeded, 1 failed after 2 retries, exit 1. Last log lines (`untrusted_logs`): `ConnectionError ... hifis-storage.desy.de ... Read timed out` while downloading PhaseNet weights. Each pod also spent several minutes installing SeisBench and PyTorch. With 200 tasks, that is 200 installs and 200 weight downloads from a shared server. Fix: build an image with SeisBench preinstalled, and keep the weights on the volume by setting `SEISBENCH_CACHE_ROOT=/data/sbcache`. [nrp_build project=. target=gitlab] I wrote a `Dockerfile` (FROM pytorch/pytorch, pip install seisbench) and a `.gitlab-ci.yml`. Push the folder to a project on gitlab.nrp-nautilus.io; kaniko builds `gitlab-registry.nrp-nautilus.io/<you>/seis-picker:v1`. A one-off Job then pre-fetches the weights into the cache.
 
 **Researcher:** Pushed and built. Run the whole thing.
 
-**Assistant:** [nrp_plan goal=sweep count=200 parallel=50 cpu=4 memory=8Gi hours=24 image=gitlab-registry.nrp-nautilus.io/<you>/seis-picker:latest data_volume=seis] 50 at a time is within the default cap of 50 pods at once, so no config change is needed. Over 100 pods in the run, the NRP requires limits equal to requests, which nrp sets. Summary: 200 tasks, 50 at a time, 4 CPU / 8 GiB each (200 cores at peak), limits equal to requests, 24 h limit for the whole sweep (about 4 waves of 3-4 h). Approve? **Researcher:** Yes. [nrp_run]
+**Assistant:** [nrp_plan goal=sweep count=200 parallel=50 cpu=4 memory=8Gi hours=24 image=gitlab-registry.nrp-nautilus.io/<you>/seis-picker:v1 data_volume=seis discard_results=true] 50 at a time is within the default cap of 50 pods at once, so no config change is needed. Over 100 pods in the run, the NRP requires limits equal to requests, which nrp sets. Summary: 200 tasks, 50 at a time, 4 CPU / 8 GiB each (200 cores at peak), limits equal to requests, 24 h limit for the whole sweep (about 4 waves of 3-4 h). Approve? **Researcher:** Yes. [nrp_run]
 
 **Researcher:** Status? (next day)
 
-**Assistant:** [nrp_watch target=<run>] 198 succeeded, 2 failed. Logs: both are station-years where the station was not yet installed, so every day returned 404. Not a bug. Picks total about 9 million P and S picks. Next, the association Job: [nrp_plan goal=job cpu=16 memory=64Gi image=<same image> data_volume=seis command="python associate.py"] PyOcto over all picks, writes `catalog.csv`. Approve? **Researcher:** Yes. [nrp_run] Done in 2 h 10 min. [nrp_data action=down volume=seis path=/out local=./results] `catalog.csv` (about 38 MB) and a summary of matches against the SCEDC catalog are in `./results`.
+**Assistant:** [nrp_watch target=<run>] 198 succeeded, 2 failed. Logs: both are station-years where the station was not yet installed, so every day returned 404. Not a bug. Picks total about 9 million P and S picks. Next, the association Job: [nrp_plan goal=job cpu=16 memory=64Gi image=<same image> data_volume=seis discard_results=true command="python associate.py"] PyOcto over all picks, writes `catalog.csv`. Approve? **Researcher:** Yes. [nrp_run] Done in 2 h 10 min. [nrp_data action=down volume=seis path=/out local=./results] `catalog.csv` (about 38 MB) and a summary of matches against the SCEDC catalog are in `./results`.
 
 **Researcher:** Clean up the jobs; keep the picks for now.
 
-**Assistant:** [nrp_cleanup] lists your runs; I will delete the pilot, the sweep and the association Job but not the volume run. Confirm? **Researcher:** Yes. Deleted. The picks stay on the volume, which is purged after 6 months without use.
+**Assistant:** [nrp_cleanup] lists your runs; I will delete the pilot, the sweep and the association Job ([nrp_cleanup plan_id=... approval_code=...] with your code from `nrp-mcp approve`) but not the volume run. Confirm? **Researcher:** Yes. Deleted. The picks stay on the volume, which is purged after 6 months without use.
 
 ## What nrp builds
 
@@ -84,7 +84,7 @@ Assumptions: 40 stations x 1,826 days = 73,000 station-days; about 25 s per stat
 - **Model choice matters.** Pretrained weights differ by training region; compare a few (`scedc`, `original`, `stead`) on a hand-checked week before the full run.
 - **Not for real-time monitoring.** This is retrospective catalog building; a continuously running detector would hit the 2-week Deployment limit.
 - **Not an archive:** copy the catalog and picks to permanent storage.
-- **S3 tools:** the sketch uses plain HTTPS. Bulk S3 tools may be faster but S3 workflows have not been tested by UCR RC.
+- **S3 tools:** the sketch uses plain HTTPS to stream public SCEDC files. Job outputs written to `/work/results` go to your personal NRP S3 bucket once you run `nrp-mcp s3 setup`.
 
 ## Starter kit
 

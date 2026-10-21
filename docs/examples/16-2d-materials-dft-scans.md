@@ -39,11 +39,11 @@ Outputs are a few MB per calculation; delete wavefunctions after use.
 
 **Researcher:** OK. [shares folder with `make_inputs.py`, `run_point.sh`, `grid.csv`, `pseudo/`]
 
-**Assistant:** [nrp_build project=.] Wrote a `Dockerfile` (FROM mambaorg/micromamba; installs qe, wannier90 and openmpi from conda-forge) and a `.gitlab-ci.yml` for kaniko on NRP GitLab. Push to gitlab.nrp-nautilus.io; the image lands at `gitlab-registry.nrp-nautilus.io/<you>/qe-w90:7.5`. Note: `pseudo/` holds `.UPF` files, which ConfigMap code delivery skips (it copies text files with known extensions only), so I added `COPY pseudo/ /opt/pseudo/` to the Dockerfile.
+**Assistant:** [nrp_build project=. target=gitlab] Wrote a `Dockerfile` (FROM mambaorg/micromamba; installs qe, wannier90 and openmpi from conda-forge) and a `.gitlab-ci.yml` for kaniko on NRP GitLab. Push to gitlab.nrp-nautilus.io; the image lands at `gitlab-registry.nrp-nautilus.io/<you>/qe-w90:7.5`. Note: `pseudo/` holds `.UPF` files, which ConfigMap code delivery skips (it copies text files with known extensions only), so I added `COPY pseudo/ /opt/pseudo/` to the Dockerfile.
 
 **Researcher:** Built. Run a pilot of 4 grid points.
 
-**Assistant:** [nrp_plan goal=volume name=moire size=100Gi data_is_p1=true] then [nrp_plan goal=sweep count=4 parallel=4 cpu=8 memory=16Gi image=gitlab-registry.nrp-nautilus.io/<you>/qe-w90:7.5 data_volume=moire command="bash run_point.sh"] Summary: 100 GiB shared volume; Indexed Job, 4 tasks, 8 CPU / 16 GiB each, no GPU; each task reads row $SLURM_ARRAY_TASK_ID of `grid.csv`, runs `pw.x` (SCF then NSCF), `wannier90.x` and `pw2wannier90.x`, and writes `hr.dat` and band files to /data/runs/<row>. Approve both? **Researcher:** Yes. [nrp_run] [nrp_run]
+**Assistant:** [nrp_plan goal=volume name=moire size=100Gi data_is_p1=true] then [nrp_plan goal=sweep count=4 parallel=4 cpu=8 memory=16Gi image=gitlab-registry.nrp-nautilus.io/<you>/qe-w90:7.5 data_volume=moire data_is_p1=true discard_results=true command="bash run_point.sh"] Summary (`resources` shown per object; full YAML omitted unless `show_manifests=true`): 100 GiB shared volume; Indexed Job, 4 tasks, 8 CPU / 16 GiB each, no GPU (`data_is_p1=true` for `grid.csv`; `discard_results=true` satisfies R23 if S3 keys are not set, since band files go to `/data/runs`); each task reads row $SLURM_ARRAY_TASK_ID of `grid.csv`, runs `pw.x` (SCF then NSCF), `wannier90.x` and `pw2wannier90.x`, and writes `hr.dat` and band files to /data/runs/<row>. Approve both? **Researcher:** Yes. [nrp_run] [nrp_run]
 
 **Researcher:** Results?
 
@@ -51,15 +51,15 @@ Outputs are a few MB per calculation; delete wavefunctions after use.
 
 **Researcher:** Raise it and run everything, 40 at a time.
 
-**Assistant:** 40 at a time is within the default cap of 50 pods at once, and 420 tasks is well under the per-sweep task cap, so no config change is needed. [nrp_plan goal=sweep count=420 parallel=40 cpu=8 memory=24Gi hours=24 ...] Summary: 420 tasks, 40 at a time (320 cores at peak), 24 GiB each, limits equal to requests. Over 100 pods, the NRP requires limits equal to requests, which nrp already sets. Approve? **Researcher:** Yes. [nrp_run]
+**Assistant:** 40 at a time is within the default cap of 50 pods at once, and 420 tasks is well under the per-sweep task cap, so no config change is needed. [nrp_plan goal=sweep count=420 parallel=40 cpu=8 memory=24Gi hours=24 data_is_p1=true discard_results=true ...] Summary: 420 tasks, 40 at a time (320 cores at peak), 24 GiB each, limits equal to requests. Over 100 pods, the NRP requires limits equal to requests, which nrp already sets. Approve? **Researcher:** Yes. [nrp_run]
 
 **Researcher:** Status?
 
-**Assistant:** [nrp_watch target=<run> grep="convergence NOT achieved"] 411 succeeded; 9 exited non-zero with "convergence NOT achieved" in the SCF. All 9 are the largest displacement field at the smallest spacing, where the bilayer is close to metallic. Rerun those rows with smearing and a smaller `mixing_beta` (0.2): [nrp_plan goal=sweep count=9 ...] [nrp_run] All 9 converged. The continuum-model sweep is pure Python and fast: [nrp_plan goal=sweep count=200 parallel=50 cpu=2 memory=4Gi image=python:3.12-slim data_volume=moire command="python continuum.py"] 200 twist angles from 0.5 to 5 degrees, each solving the moire bands on a field and filling grid. [nrp_run] Done in 25 minutes. [nrp_data action=down volume=moire path=/summary local=./results] Flat-band widths, gaps and Wannier parameter tables (about 300 MB) are in `./results`.
+**Assistant:** [nrp_watch target=<run> grep="convergence NOT achieved"] 411 succeeded; 9 exited non-zero with "convergence NOT achieved" in the SCF (`untrusted_logs`). All 9 are the largest displacement field at the smallest spacing, where the bilayer is close to metallic. Rerun those rows with smearing and a smaller `mixing_beta` (0.2): [nrp_plan goal=sweep count=9 data_is_p1=true discard_results=true ...] [nrp_run] All 9 converged. The continuum-model sweep is pure Python and fast: [nrp_plan goal=sweep count=200 parallel=50 cpu=2 memory=4Gi image=python:3.12-slim data_volume=moire data_is_p1=true discard_results=true command="python continuum.py"] 200 twist angles from 0.5 to 5 degrees, each solving the moire bands on a field and filling grid. [nrp_run] Done in 25 minutes. [nrp_data action=down volume=moire path=/summary local=./results] Flat-band widths, gaps and Wannier parameter tables (about 300 MB) are in `./results`.
 
 **Researcher:** Clean up.
 
-**Assistant:** [nrp_cleanup] lists five runs: the pilot, the main sweep, the rerun, the continuum sweep and the volume. I will clean up the four job runs one by one with `run=` and leave the volume. Confirm? **Researcher:** Yes. [nrp_cleanup run=..., then plan_id=...] (x4, each approved by you with a question or a code) Done; the moire volume remains.
+**Assistant:** [nrp_cleanup] lists five runs: the pilot, the main sweep, the rerun, the continuum sweep and the volume. I will clean up the four job runs one by one with `run=` and leave the volume. Confirm? **Researcher:** Yes. [nrp_cleanup run=..., then plan_id=... approval_code=...] (x4, each approved by you with a question or a code from `nrp-mcp approve`) Done; the moire volume remains.
 
 ## What nrp builds
 

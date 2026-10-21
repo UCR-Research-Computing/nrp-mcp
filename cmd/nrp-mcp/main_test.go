@@ -484,3 +484,90 @@ func TestWorkflowsPinCommitSHAsAndAttestProvenance(t *testing.T) {
 		}
 	}
 }
+
+func TestStartHereJargonAndExamples10(t *testing.T) {
+	startBytes, err := os.ReadFile("../../docs/START-HERE.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	startStr := string(startBytes)
+	for _, want := range []string{
+		"https://nrp.ai/namespaces",
+		"darwin_arm64",
+		"darwin_amd64",
+		"windows_amd64",
+		"windows_arm64",
+		"linux_amd64",
+		"linux_arm64",
+		"com.apple.quarantine",
+		"SmartScreen",
+		"Unblock-File",
+		"nrp-mcp client",
+		"nrp-mcp approve",
+		"nrp-mcp s3 setup",
+		"https://nrp.ai/s3token/",
+		"discard_results=true",
+		"show_manifests=true",
+		"nrp_cleanup",
+		"14 days",
+		"| **pod** |",
+		"| **namespace** |",
+		"| **volume**",
+		"| **public URL**",
+		"| **P1**",
+	} {
+		if !strings.Contains(startStr, want) {
+			t.Errorf("docs/START-HERE.md missing %q", want)
+		}
+	}
+
+	readmeBytes, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readmeLines := strings.Split(string(readmeBytes), "\n")
+	if len(readmeLines) < 20 {
+		t.Fatal("README.md unexpectedly short")
+	}
+	top := strings.Join(readmeLines[:20], "\n")
+	if !strings.Contains(top, "docs/START-HERE.md") {
+		t.Errorf("README.md top 20 lines do not link docs/START-HERE.md:\n%s", top)
+	}
+
+	entries, err := filepath.Glob("../../docs/examples/[0-9][0-9]-*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 20 {
+		t.Fatalf("expected 20 numbered docs/examples files, got %d", len(entries))
+	}
+	for _, p := range entries {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(b)
+		for _, stale := range []string{
+			"type the exact URL back",
+			"type the URL back",
+			"typed-back URL",
+			"has not yet tested S3",
+			"is not yet tested by UCR RC",
+			"untested by UCR RC",
+			"have not been tested by UCR RC",
+		} {
+			if strings.Contains(s, stale) {
+				t.Errorf("%s still contains pre-1.0 text %q", filepath.Base(p), stale)
+			}
+		}
+		for _, want := range []string{
+			"approval_code",
+			"discard_results=true",
+			"show_manifests=true",
+		} {
+			if !strings.Contains(s, want) {
+				t.Errorf("%s missing 1.0 behavior %q", filepath.Base(p), want)
+			}
+		}
+	}
+}
