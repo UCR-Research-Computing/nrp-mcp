@@ -183,8 +183,13 @@ print("fit done")
 		c2 = call("nrp_cleanup", map[string]any{"plan_id": c1["plan_id"], "approval_code": code})
 	}
 	fmt.Println("CLEANUP:", c2["summary"], c2["deleted"])
-	if approvals != 1 {
+	if !*yesno && approvals != 1 {
 		fail("expected one approval question for cleanup, got %d", approvals)
+	}
+	if *yesno && approvals != 0 {
+		// The empty form answer already told nrp-mcp this app cannot fill in questions,
+		// so cleanup goes straight to a code.
+		fail("yes/no app: expected no approval question after the empty form answer, got %d", approvals)
 	}
 	g = call("nrp_guide", nil)
 	fmt.Printf("GUIDE END: stage=%v | %v\n", g["stage"], g["summary"])

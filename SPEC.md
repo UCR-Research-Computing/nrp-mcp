@@ -602,6 +602,17 @@ approval question once ("Delete 3 nrp-mcp object(s) ... run 1021-1249-ewkd9g") a
 the Job, pod, ConfigMap and results Secret. `nrp_guide` ended at stage `project` again and
 `nrp_status`: `0 workloads (0 active), 0 volumes, 0 public URLs` (`E2E GUIDE OK`).
 
+**Live test 1.1.1 (2026-10-21, `scripts/e2eguide`, CPU only, nothing public).** (a) With
+`-yesno`, the driver acts like Hermes Agent: it shows every question as a plain yes/no and
+answers accept with nothing filled in. The details form came back empty, so `nrp_plan`
+returned the chat question "Which file runs the project: fit.py or prep.py?"; planning
+again with the answer (`python fit.py`, `gpu=0`) gave a runnable CPU plan. Run
+`1021-1520-9e5ccs` finished, `nrp_guide` showed `finished`, results downloaded, and cleanup
+went straight to an approval code (no second question to an app that cannot fill it in);
+the code, read by the driver acting as the person, deleted the run. Ended at `0 workloads`
+(`E2E GUIDE OK`). (b) The full-form client (1.1.0 path) still passed: one form, answers
+applied, cleanup approved by one question, `0 workloads` (`E2E GUIDE OK`).
+
 ## 13. Change log
 
 | Version | Date | Change |
