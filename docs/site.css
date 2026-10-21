@@ -232,3 +232,8 @@ th { font-family: var(--font-cond); text-transform: uppercase; letter-spacing: .
   *, *::before, *::after { transition: none !important; animation: none !important; }
   .task:hover, .ex:hover { transform: none; }
 }
+
+/* architecture diagram (docs/architecture.svg) */
+.arch { margin: 28px 0 8px; }
+.arch img { display: block; width: 100%; height: auto; border-radius: 12px; border: 1px solid rgba(0, 0, 0, 0.12); background: #020617; }
+.arch figcaption { margin-top: 8px; font-size: 0.9rem; color: inherit; opacity: 0.75; }

@@ -267,6 +267,10 @@ Command-line flags for `serve`, `setup` and `doctor`: `--kubeconfig`, `--context
 
 ## How it works
 
+![nrp-mcp architecture: the researcher's laptop runs the AI assistant and nrp-mcp, which plans, checks the NRP rules, gets the person's approval and runs kubectl as them against Nautilus; job results go to their own S3 bucket](docs/architecture.svg)
+
+The same, in short:
+
 ```
 AI client (Hermes Agent, Gemini CLI, OpenCode, Claude Code, ...)
    | MCP over stdio

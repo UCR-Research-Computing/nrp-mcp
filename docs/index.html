@@ -199,6 +199,10 @@
         <span>Jobs, Deployments, volumes, Ingress in your namespace</span>
       </div>
     </div>
+    <figure class="arch">
+      <a href="architecture.svg"><img src="architecture.svg" width="1400" height="1010" loading="lazy" alt="nrp-mcp architecture: the researcher's laptop runs the AI assistant and nrp-mcp, which plans, checks the NRP rules, gets the person's approval and runs kubectl as them against Nautilus; job results go to their own S3 bucket."></a>
+      <figcaption>The whole picture: what runs on your laptop, what nrp-mcp creates on Nautilus, where results go, and a typical run from ask to cleanup. Click to open full size.</figcaption>
+    </figure>
     <p class="note">Small projects are copied into the pod as a ConfigMap and their requirements installed at start. Bigger ones get an image: <code>nrp_build</code> writes a GitHub Actions workflow, GitHub builds the image on every push into its container registry (ghcr.io), and <code>nrp_plan image=...</code> deploys it as built. A private image needs <code>pull_secret=</code> (a read-only token stored once in your namespace); a public one needs nothing. The full design, every rule and the test record are in <a href="https://github.com/UCR-Research-Computing/nrp-mcp/blob/main/SPEC.md">SPEC.md</a>.</p>
   </div>
 </section>
