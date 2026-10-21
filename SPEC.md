@@ -580,6 +580,21 @@ waited for the person's 6-character code, second `nrp_run` with the code started
 answered HTTP 200 in 31 s, and three-step code cleanup deleted all 4 objects and left
 `0 workloads (0 active), 0 volumes, 0 public URLs` (`E2E APPROVE OK`).
 
+**Live test 1.1.0 (2026-10-21, `scripts/e2eguide`, `NRP_CONSENT=ask`, CPU only, nothing
+public).** The driver is an MCP client that can show forms and answers like a person.
+`nrp_guide` first returned stage `project` ("Ready: signed in as you in
+ucr-research-computing, results are saved, nothing running") with the question to ask. On a
+folder with `prep.py` and `fit.py` and no `command`/`goal`/`gpu`, `nrp_plan` asked one
+details form (what to do, which file, GPU or not, optional sweep count), took the answers
+(job, `fit.py`, no GPU), recorded them as three decisions and `answers_to_reuse`, and
+returned a runnable plan for `python fit.py`, 1 CPU, no GPU. Run `1021-1249-ewkd9g` started;
+`nrp_guide run=` reported `running (1 active, 0 done)`, then `finished: done (1 succeeded)`
+with the ask "download its results, then clean it up?" and the exact `nrp_data` and
+`nrp_cleanup` calls. `nrp_data down` brought back `fit.txt` from S3; cleanup asked the
+approval question once ("Delete 3 nrp-mcp object(s) ... run 1021-1249-ewkd9g") and deleted
+the Job, pod, ConfigMap and results Secret. `nrp_guide` ended at stage `project` again and
+`nrp_status`: `0 workloads (0 active), 0 volumes, 0 public URLs` (`E2E GUIDE OK`).
+
 ## 13. Change log
 
 | Version | Date | Change |
