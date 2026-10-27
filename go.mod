@@ -1,11 +1,11 @@
 module github.com/UCR-Research-Computing/nrp-mcp
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	golang.org/x/sys v0.41.0
+	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.36.0
 )
 
