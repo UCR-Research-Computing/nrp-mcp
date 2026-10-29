@@ -3,6 +3,13 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before 1.0
 minor versions may change behavior.
 
+## [1.1.3] - 2026-10-29
+
+### Added
+
+- `CITATION.cff` so Zenodo archives each release with a DOI and GitHub shows "Cite this
+  repository". No code changes.
+
 ## [1.1.2] - 2026-10-21
 
 ### Changed

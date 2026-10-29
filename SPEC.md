@@ -1,6 +1,6 @@
 # nrp-mcp SPEC
 
-Version 1.1.2 (2026-10-21; code 1.1.2). Owner: UCR Research Computing.
+Version 1.1.3 (2026-10-29; code 1.1.3). Owner: UCR Research Computing.
 Repo: `UCR-Research-Computing/nrp-mcp`. License: MIT.
 
 ## 1. What it is
