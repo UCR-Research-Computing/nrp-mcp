@@ -3,6 +3,27 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before 1.0
 minor versions may change behavior.
 
+## [1.1.4] - 2026-11-02
+
+### Fixed
+
+- Cleanup of your own finished run with only a chat yes (1.1.2) now also checks bare pods
+  (data helpers): a pod that is still Pending or Running needs your approval, like a running
+  Job. Found by the 2026-11-02 public-readiness review.
+
+### Changed
+
+- README and project page: "Shared namespaces are safe" now says what nrp-mcp does (owner
+  labels, cleanup touches only your runs) and what Kubernetes still allows (members can see each
+  other's work).
+- S3 setup is described as needed for batch jobs to keep results, not optional.
+- New "Before you start" box (NRP account and namespace, a local MCP-capable AI app, which
+  project files are left out of jobs) in the README; START-HERE notes the namespace wait, the AI
+  app requirement, and where to get the examples.
+- Release workflow: write permissions moved from the workflow to the release job.
+- Test script e2e010 no longer defaults to a real namespace; `-ns` is required.
+- Dependencies: golang.org/x/sys 0.49.0, golang.org/x/term 0.47.0.
+
 ## [1.1.3] - 2026-10-29
 
 ### Added

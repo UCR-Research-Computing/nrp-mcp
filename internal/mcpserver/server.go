@@ -1733,7 +1733,12 @@ func lowRiskCleanup(objs []ops.Workload, everyone bool) bool {
 				return false
 			}
 			jobs++
-		case "Configmap", "Secret", "Pod":
+		case "Pod":
+			// A bare pod (data helper) loses nothing only once it has stopped.
+			if o.Status != "Succeeded" && o.Status != "Failed" {
+				return false
+			}
+		case "Configmap", "Secret":
 		default:
 			return false
 		}

@@ -22,10 +22,14 @@ import (
 
 func main() {
 	bin := flag.String("bin", "nrp-mcp", "nrp-mcp binary")
-	ns := flag.String("ns", "ucr-research-computing", "namespace")
+	ns := flag.String("ns", "", "namespace (required)")
 	step := flag.String("step", "all", "step to run: all|sweep|r|web|gpu|status")
 	host := flag.String("host", "nrp010-plain-test", "web host name")
 	flag.Parse()
+	if *ns == "" {
+		fmt.Fprintln(os.Stderr, "-ns is required (your NRP namespace)")
+		os.Exit(2)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()

@@ -759,6 +759,10 @@ func (o *Ops) CleanupList(ctx context.Context, ns, run string, sc Scope) ([]Work
 				wl.Status = jobStatus(it)
 			case "deployment":
 				wl.Status = fmt.Sprintf("%d/%d ready", int(num(mapGet(it, "status"), "readyReplicas")), int(num(mapGet(it, "spec"), "replicas")))
+			case "pod":
+				// Pod phase (Pending, Running, Succeeded, Failed, Unknown): cleanup needs it to tell a
+				// finished bare pod from one that is still running.
+				wl.Status, _ = mapGet(it, "status")["phase"].(string)
 			}
 			if !wl.Managed && run == "" {
 				continue
