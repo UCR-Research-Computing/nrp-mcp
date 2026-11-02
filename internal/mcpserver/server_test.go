@@ -1444,8 +1444,13 @@ func TestRiskyCleanupStillNeedsApproval(t *testing.T) {
 	if lowRiskCleanup([]ops.Workload{{Kind: "Job", Status: "done (1 succeeded)"}}, true) {
 		t.Error("everyone's runs must need approval")
 	}
-	if !lowRiskCleanup([]ops.Workload{{Kind: "Job", Status: "failed (1 failed)"}, {Kind: "Configmap"}, {Kind: "Secret"}, {Kind: "Pod"}}, false) {
-		t.Error("a failed job with its config and secret is low risk")
+	if !lowRiskCleanup([]ops.Workload{{Kind: "Job", Status: "failed (1 failed)"}, {Kind: "Configmap"}, {Kind: "Secret"}, {Kind: "Pod", Status: "Succeeded"}}, false) {
+		t.Error("a failed job with its config, secret and a stopped pod is low risk")
+	}
+	for _, phase := range []string{"Running", "Pending", "Unknown", ""} {
+		if lowRiskCleanup([]ops.Workload{{Kind: "Job", Status: "done (1 succeeded)"}, {Kind: "Pod", Status: phase}}, false) {
+			t.Errorf("a bare pod in phase %q must need approval", phase)
+		}
 	}
 	// A confirm token is never accepted for a plan that needs approval.
 	cs, fk, _ := setupWith(t, "code", nil)

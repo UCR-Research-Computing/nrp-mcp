@@ -220,7 +220,7 @@
       <div class="s-item"><i class="fa-solid fa-user-lock" aria-hidden="true"></i><div><h3>Runs as you, on your computer</h3><p>Uses your kubeconfig and the NRP's sign-in. Never reads or stores your token.</p></div></div>
       <div class="s-item"><i class="fa-solid fa-key" aria-hidden="true"></i><div><h3>Your approval, not the AI's</h3><p>Public web, GPUs, deleting data and uploading wait for you: a yes in your AI app's own prompt, or a one-time code in a desktop notification. Other runs, and removing a finished run, need your yes and a single-use token bound to the exact plan.</p></div></div>
       <div class="s-item"><i class="fa-solid fa-globe" aria-hidden="true"></i><div><h3>Nothing goes public by accident</h3><p>A web plan publishes only after your approval code, and public apps expire after 14 days.</p></div></div>
-      <div class="s-item"><i class="fa-solid fa-users" aria-hidden="true"></i><div><h3>Shared namespaces are safe</h3><p>Every object is labelled with its owner; cleanup sees only your runs unless a namespace admin asks for everyone's.</p></div></div>
+      <div class="s-item"><i class="fa-solid fa-users" aria-hidden="true"></i><div><h3>Shared namespaces, handled carefully</h3><p>Every object is labelled with its owner; cleanup touches only your runs unless a namespace admin asks for everyone's. Namespace members can still see each other's work, so share one only with people you work with.</p></div></div>
       <div class="s-item"><i class="fa-solid fa-gauge" aria-hidden="true"></i><div><h3>Caps</h3><p>On pods and GPUs running at once, tasks per sweep, and hours per run.</p></div></div>
       <div class="s-item"><i class="fa-solid fa-file-lines" aria-hidden="true"></i><div><h3>Audit log</h3><p>Every change is logged at <code>~/.local/state/nrp-mcp/audit.log</code>.</p></div></div>
     </div>
@@ -265,7 +265,7 @@
       <li>
         <h3>Get your computer ready (and optional S3 results)</h3>
         <div class="code"><pre><code>nrp-mcp setup
-nrp-mcp s3 setup   # optional once: keys from https://nrp.ai/s3token/</code></pre><button class="copy" type="button" aria-label="Copy setup command">Copy</button></div>
+nrp-mcp s3 setup   # once: keys from https://nrp.ai/s3token/ (batch jobs need it to keep results)</code></pre><button class="copy" type="button" aria-label="Copy setup command">Copy</button></div>
         <p><code>setup</code> checks everything first and asks before changing anything. Then it installs kubectl and the kubelogin sign-in plugin (official releases, SHA256-checked, into your user folder, no admin rights), puts the NRP config in <code>~/.kube/config</code> (backing up an existing one), and signs you in through your browser. Check readiness at any time with <code>nrp-mcp doctor</code>.</p>
       </li>
       <li>

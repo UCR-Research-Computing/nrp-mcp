@@ -67,6 +67,17 @@ repellent screening and climate ensembles to mission records, seismology and eco
 
 ## Quick start
 
+**Before you start**, you need three things:
+- An NRP account and a namespace (sign in once at https://nrp.ai, then join or request a
+  namespace; see [START-HERE section 0](docs/START-HERE.md#0-before-you-start-nrp-access-and-namespace-request)).
+  A namespace join can take a day for an admin to approve.
+- An AI app that runs local MCP servers on your computer (Claude Desktop or Claude Code, Gemini
+  CLI, OpenCode, VS Code, Cursor or Hermes) with its own sign-in or API key. Browser-only chat
+  sites can't run nrp-mcp.
+- Your project folder on your computer. Top-level `data/`, `results/` and `output/` folders and
+  data files (`.csv`, `.tsv`, `.parquet`, ...) are not copied into the job by default; put
+  input data on a cluster volume or S3, or say yes when the assistant asks about them.
+
 For the full one-page walkthrough (including per-OS manual downloads, macOS Gatekeeper,
 Windows SmartScreen, approval codes and troubleshooting), read
 **[docs/START-HERE.md](docs/START-HERE.md)**.
@@ -100,11 +111,11 @@ works everywhere.
 
 **2. Download your NRP config** at https://nrp.ai/config (it lands in Downloads).
 
-**3. Get your computer ready (and optional S3 results)**
+**3. Get your computer ready (and set up S3 so jobs can keep their results)**
 
 ```bash
 nrp-mcp setup
-nrp-mcp s3 setup   # optional once: paste keys from https://nrp.ai/s3token/ to save job results
+nrp-mcp s3 setup   # once: paste keys from https://nrp.ai/s3token/; batch jobs need it to keep results
 ```
 
 `setup` checks everything first and asks before changing anything. Then it installs kubectl
@@ -204,8 +215,10 @@ Also served: resources `nrp://policy`, `nrp://gpus`, `nrp://storage`, `nrp://llm
   - secrets kept out of specs (other users can see specs)
 
   A plan that breaks a rule is refused, with the reason and the fix.
-- **Shared namespaces are safe.** Every object is labelled with its owner, and cleanup only
-  sees your own runs unless you are the namespace admin and ask for everyone's.
+- **Shared namespaces are handled carefully.** Every object is labelled with its owner, and
+  cleanup only touches your own runs unless you are the namespace admin and ask for everyone's.
+  Kubernetes itself still lets namespace members see (and, with kubectl, change) each other's
+  objects, so share a namespace only with people you work with.
 - **Caps** on pods and GPUs running at once, tasks per sweep, and hours per run.
 - **Audit log** of every change at `~/.local/state/nrp-mcp/audit.log`.
 - **Setup only touches your user folder.** kubectl and kubelogin go into `~/.local/bin`

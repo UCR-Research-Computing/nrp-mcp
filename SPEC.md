@@ -1,6 +1,6 @@
 # nrp-mcp SPEC
 
-Version 1.1.3 (2026-10-29; code 1.1.3). Owner: UCR Research Computing.
+Version 1.1.4 (2026-11-02; code 1.1.4). Owner: UCR Research Computing.
 Repo: `UCR-Research-Computing/nrp-mcp`. License: MIT.
 
 ## 1. What it is
@@ -654,6 +654,7 @@ sound) was checked on screen.
 | 0.9.0 | 2026-10-20 | Code 0.9.0: person approval (elicitation or code) for risky steps; safe packing with packed/skipped lists; results to a per-person NRP S3 bucket; web hardening (R20-R22, no API token, 14-day expiry); untrusted text and owner checks; D3 revised, D9-D11 added |
 | 0.9.1 | 2026-10-20 | Code 0.9.1: kubectl errors are errors; dry run before approval and run card first; no plan without identity, R6Q; per-command time limits; locked token/approval stores; nrp_watch Job conditions, scoped events and new diagnoses; input validation and Slurm fixes; 0.9.0 review leftovers |
 | 0.10.0 | 2026-10-20 | Code 0.10.0: GPU sessions as Jobs (`gpu_session_hours`); pinned images with single-container unpack and exit results upload; policy (`ephemeral-storage` 10Gi default + R2, CPU-only sweep anti-GPU nodeAffinity + `opportunistic`, `region` storage classes, `namespace_gpus` running-GPU cap, missing H100/H200/GH200 quota = 0); plain Python web apps without `command=`, guided entry questions, R package install steps; compact plans (`resources`, `show_manifests=true`, < 6 KB) and < 600-char tool descriptions; live test recorded |
+| 1.1.4 | 2026-11-02 | Code 1.1.4: chat-yes cleanup also requires bare pods to have stopped (Succeeded/Failed); docs wording (shared namespaces, S3 needed, before-you-start); release job permissions; e2e010 needs -ns; x/sys, x/term updates. From the 2026-11-02 public-readiness review |
 | 1.1.2 | 2026-10-21 | Code 1.1.2: a yes in a yes/no app's own prompt (empty accept) approves; low-risk cleanup (own finished run, no volumes) needs only a chat yes and a confirm token, re-listed before deleting; notification text carries the code and a sound on macOS; live test recorded |
 | 1.1.1 | 2026-10-21 | Code 1.1.1: yes/no-only apps (Hermes Agent): an empty accept, decline or unshown question falls back to an approval code or the chat question, and the session stays on codes; no required fields in questions; live test recorded |
 | 1.1.0 | 2026-10-21 | Code 1.1.0: guided mode (5.5): `nrp_plan` asks missing details in one elicitation form, `nrp_guide` tenth tool, `walk_me_through` prompt; explicit `gpu=0` honored; cleanup listings show status; live test recorded |

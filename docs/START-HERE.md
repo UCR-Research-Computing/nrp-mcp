@@ -34,7 +34,11 @@ You need a National Research Platform (NRP) account and membership in at least o
      group's namespace at https://nrp.ai/namespaces.
    - **Faculty, staff and postdocs starting a new group:** request a namespace at
      https://nrp.ai/namespaces (or use a workshop join link if your instructor gave you one).
-3. **UCR researchers:** see
+3. **Time:** a namespace admin has to approve you, which can take a day; do this step first.
+4. **You also need an AI app that runs local MCP servers** (Claude Desktop/Code, Gemini CLI,
+   OpenCode, VS Code, Cursor or Hermes), signed in or with its API key. Browser-only chat sites
+   can't run nrp-mcp.
+5. **UCR researchers:** see
    [Getting access to Nautilus (KB024)](https://ucr-research-computing.github.io/kb/kb024-nautilus-getting-access/)
    or email `research-computing@ucr.edu`.
 
@@ -210,7 +214,10 @@ Open your AI client and ask in plain language:
    - Calls `nrp_status`. You should see your identity, your namespace(s), GPU quotas,
      running workloads, shared volumes, public URLs, and policy warnings.
 2. **"Run `train.py` in `~/proj/my-study` on a GPU."** (or *"Run the Slurm script in
-   `examples/slurm-array-bootstrap`."*)
+   `examples/slurm-array-bootstrap`."* The one-line installer installs only the program; get
+   the examples by downloading the repository from
+   https://github.com/UCR-Research-Computing/nrp-mcp (Code, Download ZIP) or with
+   `git clone`.)
    - Calls `nrp_plan`. Planning creates nothing on the cluster.
    - Returns a plain-language `summary`, `resources` (`cpu`, `memory`, `gpu`, `hours` per
      object), `decisions`, `refusals` (if any rule was broken, with the fix), `code_files`
