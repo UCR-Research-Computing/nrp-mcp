@@ -5,8 +5,8 @@ go 1.26.0
 require (
 	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	golang.org/x/sys v0.49.0
-	golang.org/x/term v0.47.0
+	golang.org/x/sys v0.50.0
+	golang.org/x/term v0.48.0
 )
 
 require (
