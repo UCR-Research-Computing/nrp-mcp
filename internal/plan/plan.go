@@ -486,6 +486,12 @@ func validateInputs(r *Request) error {
 				ok = true
 			}
 		}
+		for _, short := range []string{"l40", "l40s"} {
+			names = append(names, short)
+			if short == t {
+				ok = true
+			}
+		}
 		if !ok {
 			return fmt.Errorf("gpu_type %q is not a Nautilus GPU name; use one of: %s (or leave it empty for any standard GPU)", r.GPUType, strings.Join(names, ", "))
 		}
@@ -494,8 +500,37 @@ func validateInputs(r *Request) error {
 	return nil
 }
 
+// gpuProductLabels maps GPU short names that Nautilus schedules via generic
+// nvidia.com/gpu plus a nvidia.com/gpu.product nodeAffinity label (no dedicated
+// nvidia.com/<name> extended resource).
+var gpuProductLabels = map[string]string{
+	"l40":  "NVIDIA-L40",
+	"l40s": "NVIDIA-L40S",
+}
+
+func gpuProductLabel(gpuType string) (string, bool) {
+	t := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(gpuType)), "nvidia.com/")
+	lbl, ok := gpuProductLabels[t]
+	return lbl, ok
+}
+
+func applyGPUTypeAffinity(ps *k8s.PodSpec, gpu int, r Request, p *Plan) {
+	if gpu <= 0 {
+		return
+	}
+	lbl, ok := gpuProductLabel(r.GPUType)
+	if !ok {
+		return
+	}
+	addNodeRequirement(ps, k8s.NodeSelectorRequirement{Key: "nvidia.com/gpu.product", Operator: "In", Values: []string{lbl}})
+	p.Decisions = append(p.Decisions, fmt.Sprintf("%d x nvidia.com/gpu pinned to %s via nodeAffinity (nvidia.com/gpu.product=%s).", gpu, lbl, lbl))
+}
+
 func gpuResource(r Request) string {
 	if r.GPUType == "" || r.GPUType == "any" || r.GPUType == "gpu" {
+		return "nvidia.com/gpu"
+	}
+	if _, ok := gpuProductLabel(r.GPUType); ok {
 		return "nvidia.com/gpu"
 	}
 	return "nvidia.com/" + strings.TrimPrefix(strings.ToLower(r.GPUType), "nvidia.com/")
@@ -666,7 +701,9 @@ func buildJob(f *inspect.Facts, r Request, p *Plan) error {
 		g := gpuResource(r)
 		res.Requests[g], res.Limits[g] = strconv.Itoa(gpu), strconv.Itoa(gpu)
 		if g == "nvidia.com/gpu" {
-			p.Decisions = append(p.Decisions, fmt.Sprintf("%d standard GPU(s): Kubernetes picks any free one (in our tests an RTX A4000 at SDSC).", gpu))
+			if _, pinned := gpuProductLabel(r.GPUType); !pinned {
+				p.Decisions = append(p.Decisions, fmt.Sprintf("%d standard GPU(s): Kubernetes picks any free one (in our tests an RTX A4000 at SDSC).", gpu))
+			}
 		} else {
 			p.Decisions = append(p.Decisions, fmt.Sprintf("%d x %s requested by type.", gpu, g))
 		}
@@ -714,6 +751,7 @@ func buildJob(f *inspect.Facts, r Request, p *Plan) error {
 	pod := k8s.PodSpec{RestartPolicy: "Never", Containers: []k8s.Container{ctr}, Volumes: vols, ImagePullSecrets: pullSecrets(r, p), AutomountServiceAccountToken: k8s.BoolPtr(false)}
 	applyAvoid(&pod, r.AvoidNodes)
 	applyRegion(&pod, r.Region, p)
+	applyGPUTypeAffinity(&pod, gpu, r, p)
 	if r.Goal == GoalSweep && gpu == 0 {
 		addNodeRequirement(&pod, k8s.NodeSelectorRequirement{Key: "nvidia.com/gpu.present", Operator: "NotIn", Values: []string{"true"}})
 		if !r.Opportun {
@@ -1025,6 +1063,7 @@ func buildSession(r Request, p *Plan) error {
 	}
 	applyAvoid(&spec, r.AvoidNodes)
 	applyRegion(&spec, r.Region, p)
+	applyGPUTypeAffinity(&spec, gpu, r, p)
 	labels := copyLabels(p.Labels)
 	labels["nrp-mcp/session"] = "true"
 	sel := map[string]string{"nrp-mcp/name": p.Name, "nrp-mcp/run": p.Run}

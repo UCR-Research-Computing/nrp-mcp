@@ -95,7 +95,7 @@ type planIn struct {
 	Name          string   `json:"name,omitempty" jsonschema:"name for the workload or web host; nrp suggests names if empty"`
 	Image         string   `json:"image,omitempty" jsonschema:"container image to use instead of nrp's choice"`
 	GPU           *int     `json:"gpu,omitempty" jsonschema:"number of GPUs (0 = CPU only; left out = 1 if the code uses a GPU, else none)"`
-	GPUType       string   `json:"gpu_type,omitempty" jsonschema:"a40, rtxa6000, a100, ... (default: any standard GPU)"`
+	GPUType       string   `json:"gpu_type,omitempty" jsonschema:"a40, l40, l40s, rtxa6000, a100, ... (default: any standard GPU)"`
 	CPU           string   `json:"cpu,omitempty" jsonschema:"CPU cores, e.g. 4"`
 	Memory        string   `json:"memory,omitempty" jsonschema:"memory, e.g. 16Gi"`
 	Hours         int      `json:"hours,omitempty" jsonschema:"time limit in hours (default 24)"`

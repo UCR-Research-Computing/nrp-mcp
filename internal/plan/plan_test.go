@@ -905,3 +905,40 @@ func TestPlainAppsAndRPackagesTable(t *testing.T) {
 		})
 	}
 }
+
+func TestGPUTypeProductAffinity(t *testing.T) {
+	for _, tc := range []struct {
+		gpuType   string
+		wantLabel string
+	}{
+		{"l40", "NVIDIA-L40"},
+		{"l40s", "NVIDIA-L40S"},
+	} {
+		// Job
+		jp, err := Build(nil, Request{Namespace: "ucr-example", Goal: GoalJob, Command: "python train.py", GPU: 1, GPUType: tc.gpuType})
+		if err != nil {
+			t.Fatalf("job gpu_type=%s: %v", tc.gpuType, err)
+		}
+		ps := jp.Objects[0].PodSpecOf()
+		if got := ps.Containers[0].Resources.Requests["nvidia.com/gpu"]; got != "1" {
+			t.Fatalf("job gpu_type=%s: nvidia.com/gpu=%q, want 1", tc.gpuType, got)
+		}
+		terms := ps.Affinity.NodeAffinity.Required.NodeSelectorTerms
+		if len(terms) != 1 || terms[0].MatchExpressions[0].Key != "nvidia.com/gpu.product" || terms[0].MatchExpressions[0].Values[0] != tc.wantLabel {
+			t.Fatalf("job gpu_type=%s: affinity=%+v", tc.gpuType, terms)
+		}
+		// Session
+		sp, err := Build(nil, Request{Namespace: "ucr-example", Goal: GoalSession, GPU: 1, GPUType: tc.gpuType})
+		if err != nil {
+			t.Fatalf("session gpu_type=%s: %v", tc.gpuType, err)
+		}
+		sps := sp.Objects[1].PodSpecOf()
+		if got := sps.Containers[0].Resources.Requests["nvidia.com/gpu"]; got != "1" {
+			t.Fatalf("session gpu_type=%s: nvidia.com/gpu=%q, want 1", tc.gpuType, got)
+		}
+		sterms := sps.Affinity.NodeAffinity.Required.NodeSelectorTerms
+		if len(sterms) != 1 || sterms[0].MatchExpressions[0].Key != "nvidia.com/gpu.product" || sterms[0].MatchExpressions[0].Values[0] != tc.wantLabel {
+			t.Fatalf("session gpu_type=%s: affinity=%+v", tc.gpuType, sterms)
+		}
+	}
+}
