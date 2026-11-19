@@ -3,6 +3,14 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before 1.0
 minor versions may change behavior.
 
+## [1.1.5] - 2026-11-19
+
+### Added
+
+- `gpu_type=l40` and `gpu_type=l40s` in `nrp_plan`: requests generic `nvidia.com/gpu` and pins
+  pods to `NVIDIA-L40` or `NVIDIA-L40S` nodes via `nvidia.com/gpu.product` `nodeAffinity` (since
+  Nautilus schedules L40/L40S cards via node product labels rather than dedicated extended resources).
+
 ## [1.1.4] - 2026-11-02
 
 ### Fixed
